@@ -8,6 +8,17 @@ A next-generation clipboard tool, in planning
 
 [简体中文](README.md)
 
+<p align="center">
+  <a href="https://github.com/paralcor">
+    <picture>
+      <source media="(prefers-color-scheme: dark)" srcset="assets/brand/paralcor-horizontal-dark.png">
+      <img alt="PARALCOR" src="assets/brand/paralcor-horizontal-light.png" width="120">
+    </picture>
+  </a>
+  <br>
+  <sub>Pinfeather is a product of the PARALCOR brand.</sub>
+</p>
+
 </div>
 
 ## The name
@@ -37,15 +48,3 @@ Pinfeather is in planning and has no release yet. Planned directions:
 
 Suggestions are welcome as [issues](https://github.com/paralcor/pinfeather/issues/new/choose). Please report security problems privately as described in [SECURITY.md](SECURITY.md).
 
----
-
-<p align="center">
-  <a href="https://github.com/paralcor">
-    <picture>
-      <source media="(prefers-color-scheme: dark)" srcset="assets/brand/paralcor-horizontal-dark.png">
-      <img alt="PARALCOR" src="assets/brand/paralcor-horizontal-light.png" width="120">
-    </picture>
-  </a>
-  <br>
-  <sub>Pinfeather is a product of the PARALCOR brand.</sub>
-</p>

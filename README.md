@@ -8,6 +8,17 @@
 
 [English](README.en.md)
 
+<p align="center">
+  <a href="https://github.com/paralcor">
+    <picture>
+      <source media="(prefers-color-scheme: dark)" srcset="assets/brand/paralcor-horizontal-dark.png">
+      <img alt="PARALCOR" src="assets/brand/paralcor-horizontal-light.png" width="120">
+    </picture>
+  </a>
+  <br>
+  <sub>片羽是帕拉珂 / PARALCOR 品牌下的产品。</sub>
+</p>
+
 </div>
 
 ## 名字
@@ -37,15 +48,3 @@
 
 欢迎用 [issue](https://github.com/paralcor/pinfeather/issues/new/choose) 提建议。安全问题请按 [SECURITY.md](SECURITY.md) 私下报告。
 
----
-
-<p align="center">
-  <a href="https://github.com/paralcor">
-    <picture>
-      <source media="(prefers-color-scheme: dark)" srcset="assets/brand/paralcor-horizontal-dark.png">
-      <img alt="PARALCOR" src="assets/brand/paralcor-horizontal-light.png" width="120">
-    </picture>
-  </a>
-  <br>
-  <sub>片羽是帕拉珂 / PARALCOR 品牌下的产品。</sub>
-</p>
