@@ -1,0 +1,452 @@
+{
+  "description": "E02 fix-boundary cases (F1-F5) per implementation plan 7.1. Shared by Rust contracts.rs and TS ipc.ts.",
+  "fixture_version": 2,
+  "trim_cases": [
+    {
+      "id": "f1_nel_trims",
+      "value_units": [
+        133,
+        20013,
+        133
+      ],
+      "expect": "accept",
+      "normalized_units": [
+        20013
+      ]
+    },
+    {
+      "id": "f1_bom_not_trimmed",
+      "value_units": [
+        65279,
+        20013,
+        65279
+      ],
+      "expect": "accept",
+      "normalized_units": [
+        65279,
+        20013,
+        65279
+      ]
+    },
+    {
+      "id": "f1_nbsp_trims",
+      "value_units": [
+        160,
+        20013,
+        160
+      ],
+      "expect": "accept",
+      "normalized_units": [
+        20013
+      ]
+    },
+    {
+      "id": "f1_ideographic_space_trims",
+      "value_units": [
+        12288,
+        65,
+        12288
+      ],
+      "expect": "accept",
+      "normalized_units": [
+        65
+      ]
+    },
+    {
+      "id": "f1_tab_nl_trims",
+      "value_units": [
+        9,
+        10,
+        65,
+        13,
+        11
+      ],
+      "expect": "accept",
+      "normalized_units": [
+        65
+      ]
+    },
+    {
+      "id": "f1_inner_whitespace_kept",
+      "value_units": [
+        32,
+        65,
+        9,
+        66,
+        32
+      ],
+      "expect": "accept",
+      "normalized_units": [
+        65,
+        9,
+        66
+      ]
+    },
+    {
+      "id": "f1_unpaired_high_surrogate",
+      "value_units": [
+        55296,
+        20013
+      ],
+      "expect": "reject"
+    },
+    {
+      "id": "f1_unpaired_low_surrogate",
+      "value_units": [
+        20013,
+        56320
+      ],
+      "expect": "reject"
+    },
+    {
+      "id": "f1_lone_surrogate_only",
+      "value_units": [
+        55296
+      ],
+      "expect": "reject"
+    }
+  ],
+  "path_cases": [
+    {
+      "id": "f2_plain_ok",
+      "input": "C:\\App\\a.exe",
+      "expect": "accept",
+      "normalized": "C:\\App\\a.exe"
+    },
+    {
+      "id": "f2_space_ok",
+      "input": "C:\\Program Files\\My App\\app.exe",
+      "expect": "accept",
+      "normalized": "C:\\Program Files\\My App\\app.exe"
+    },
+    {
+      "id": "f2_ext_case_ok",
+      "input": "C:\\App\\a.EXE",
+      "expect": "accept",
+      "normalized": "C:\\App\\a.EXE"
+    },
+    {
+      "id": "f2_drive_lower_normalized",
+      "input": "c:\\app\\a.exe",
+      "expect": "accept",
+      "normalized": "C:\\app\\a.exe"
+    },
+    {
+      "id": "f2_slash_normalized",
+      "input": "C:/App/a.exe",
+      "expect": "accept",
+      "normalized": "C:\\App\\a.exe"
+    },
+    {
+      "id": "f2_dup_sep_collapsed",
+      "input": "C:\\App\\\\a.exe",
+      "expect": "accept",
+      "normalized": "C:\\App\\a.exe"
+    },
+    {
+      "id": "f2_dot_seg_removed",
+      "input": "C:\\App\\.\\a.exe",
+      "expect": "accept",
+      "normalized": "C:\\App\\a.exe"
+    },
+    {
+      "id": "f2_dotdot_resolved",
+      "input": "C:\\App\\..\\App\\a.exe",
+      "expect": "accept",
+      "normalized": "C:\\App\\a.exe"
+    },
+    {
+      "id": "f2_unc_ok",
+      "input": "\\\\server\\share\\dir\\app.exe",
+      "expect": "accept",
+      "normalized": "\\\\server\\share\\dir\\app.exe"
+    },
+    {
+      "id": "f2_unc_share_app_ok",
+      "input": "\\\\server\\share\\app.exe",
+      "expect": "accept",
+      "normalized": "\\\\server\\share\\app.exe"
+    },
+    {
+      "id": "f2_relative_rejected",
+      "input": "relative.exe",
+      "expect": "reject"
+    },
+    {
+      "id": "f2_drive_relative_rejected",
+      "input": "C:relative.exe",
+      "expect": "reject"
+    },
+    {
+      "id": "f2_root_relative_rejected",
+      "input": "\\relative.exe",
+      "expect": "reject"
+    },
+    {
+      "id": "f2_dir_no_exe_rejected",
+      "input": "C:\\Apps",
+      "expect": "reject"
+    },
+    {
+      "id": "f2_device_ns_question_rejected",
+      "input": "\\\\?\\C:\\a.exe",
+      "expect": "reject"
+    },
+    {
+      "id": "f2_device_ns_dot_rejected",
+      "input": "\\\\.\\C:\\a.exe",
+      "expect": "reject"
+    },
+    {
+      "id": "f2_unc_missing_share_rejected",
+      "input": "\\\\server",
+      "expect": "reject"
+    },
+    {
+      "id": "f2_unc_missing_share_path_rejected",
+      "input": "\\\\server\\",
+      "expect": "reject"
+    },
+    {
+      "id": "f2_trailing_sep_rejected",
+      "input": "C:\\App\\a.exe\\",
+      "expect": "reject"
+    },
+    {
+      "id": "f2_trailing_dot_rejected",
+      "input": "C:\\App\\a.exe.",
+      "expect": "reject"
+    },
+    {
+      "id": "f2_trailing_space_rejected",
+      "input": "C:\\App\\a.exe ",
+      "expect": "reject"
+    },
+    {
+      "id": "f2_forbidden_colon_rejected",
+      "input": "C:\\App\\a:b.exe",
+      "expect": "reject"
+    },
+    {
+      "id": "f2_forbidden_star_rejected",
+      "input": "C:\\App\\*.exe",
+      "expect": "reject"
+    },
+    {
+      "id": "f2_dotdot_above_root_rejected",
+      "input": "C:\\..\\a.exe",
+      "expect": "reject"
+    },
+    {
+      "id": "f2_dotdot_above_unc_share_rejected",
+      "input": "\\\\server\\share\\..\\a.exe",
+      "expect": "reject"
+    }
+  ],
+  "id_cases": [
+    {
+      "id": "f3_js_safe_max",
+      "value": "9007199254740991",
+      "expect": "accept"
+    },
+    {
+      "id": "f3_js_safe_max_plus_1",
+      "value": "9007199254740992",
+      "expect": "accept"
+    },
+    {
+      "id": "f3_16_digits",
+      "value": "9999999999999999",
+      "expect": "accept"
+    },
+    {
+      "id": "f3_17_digits",
+      "value": "10000000000000000",
+      "expect": "accept"
+    },
+    {
+      "id": "f3_i64_max",
+      "value": "9223372036854775807",
+      "expect": "accept"
+    },
+    {
+      "id": "f3_i64_max_plus_1",
+      "value": "9223372036854775808",
+      "expect": "reject"
+    },
+    {
+      "id": "f3_20_digits",
+      "value": "10000000000000000000",
+      "expect": "reject"
+    }
+  ],
+  "u64_cases": [
+    {
+      "id": "f3_u64_zero",
+      "value": "0",
+      "expect": "accept"
+    },
+    {
+      "id": "f3_u64_js_safe_max",
+      "value": "9007199254740991",
+      "expect": "accept"
+    },
+    {
+      "id": "f3_u64_max",
+      "value": "18446744073709551615",
+      "expect": "accept"
+    },
+    {
+      "id": "f3_u64_max_plus_1",
+      "value": "18446744073709551616",
+      "expect": "reject"
+    },
+    {
+      "id": "f3_u64_leading_zero",
+      "value": "01",
+      "expect": "reject"
+    },
+    {
+      "id": "f3_u64_negative",
+      "value": "-1",
+      "expect": "reject"
+    }
+  ],
+  "list_optional_cases": [
+    {
+      "id": "f4_missing_limit_defaults_50",
+      "expect": "accept",
+      "value": {
+        "request_id": "r1",
+        "query": ""
+      },
+      "expect_limit": 50,
+      "expect_cursor": null
+    },
+    {
+      "id": "f4_null_limit_rejected",
+      "expect": "reject",
+      "value": {
+        "request_id": "r1",
+        "query": "",
+        "limit": null,
+        "cursor": null
+      }
+    },
+    {
+      "id": "f4_missing_cursor_first_page",
+      "expect": "accept",
+      "value": {
+        "request_id": "r1",
+        "query": "hi",
+        "limit": 10
+      },
+      "expect_limit": 10,
+      "expect_cursor": null
+    },
+    {
+      "id": "f4_null_cursor_first_page",
+      "expect": "accept",
+      "value": {
+        "request_id": "r1",
+        "query": "hi",
+        "limit": 10,
+        "cursor": null
+      },
+      "expect_limit": 10,
+      "expect_cursor": null
+    },
+    {
+      "id": "f4_limit_float_rejected",
+      "expect": "reject",
+      "value": {
+        "request_id": "r1",
+        "query": "",
+        "limit": 1.5
+      }
+    },
+    {
+      "id": "f4_cursor_last_id_gt_upper_rejected",
+      "expect": "reject",
+      "value": {
+        "request_id": "r1",
+        "query": "hi",
+        "limit": 10,
+        "cursor": {
+          "normalized_query": "hi",
+          "upper_id": "5",
+          "last_captured_at_ms": 100,
+          "last_id": "6"
+        }
+      }
+    },
+    {
+      "id": "f4_cursor_last_id_eq_upper_ok",
+      "expect": "accept",
+      "value": {
+        "request_id": "r1",
+        "query": "hi",
+        "limit": 10,
+        "cursor": {
+          "normalized_query": "hi",
+          "upper_id": "6",
+          "last_captured_at_ms": 100,
+          "last_id": "6"
+        }
+      },
+      "expect_limit": 10,
+      "expect_cursor": "present"
+    }
+  ],
+  "epoch_raw_cases": [
+    {
+      "id": "f5_epoch_zero_ok",
+      "raw": "{\"version\":1,\"capture_id\":\"c1\",\"policy_epoch\":0}",
+      "expect": "accept"
+    },
+    {
+      "id": "f5_epoch_max_ok",
+      "raw": "{\"version\":1,\"capture_id\":\"c1\",\"policy_epoch\":9007199254740991}",
+      "expect": "accept"
+    },
+    {
+      "id": "f5_epoch_max_plus_1_rejected",
+      "raw": "{\"version\":1,\"capture_id\":\"c1\",\"policy_epoch\":9007199254740992}",
+      "expect": "reject"
+    },
+    {
+      "id": "f5_epoch_max_plus_2_rejected",
+      "raw": "{\"version\":1,\"capture_id\":\"c1\",\"policy_epoch\":9007199254740993}",
+      "expect": "reject"
+    },
+    {
+      "id": "f5_epoch_negative_rejected",
+      "raw": "{\"version\":1,\"capture_id\":\"c1\",\"policy_epoch\":-1}",
+      "expect": "reject"
+    },
+    {
+      "id": "f5_epoch_float_rejected",
+      "raw": "{\"version\":1,\"capture_id\":\"c1\",\"policy_epoch\":1.5}",
+      "expect": "reject"
+    },
+    {
+      "id": "f5_epoch_missing_rejected",
+      "raw": "{\"version\":1,\"capture_id\":\"c1\"}",
+      "expect": "reject"
+    },
+    {
+      "id": "f5_epoch_correlate_ok",
+      "raw": "{\"version\":1,\"capture_id\":\"c1\",\"policy_epoch\":7}",
+      "expect": "accept",
+      "correlate_with": "{\"version\":1,\"capture_id\":\"c1\",\"policy_epoch\":7}",
+      "correlate_expect": "accept"
+    },
+    {
+      "id": "f5_epoch_correlate_mismatch",
+      "raw": "{\"version\":1,\"capture_id\":\"c1\",\"policy_epoch\":7}",
+      "expect": "accept",
+      "correlate_with": "{\"version\":1,\"capture_id\":\"c1\",\"policy_epoch\":8}",
+      "correlate_expect": "reject"
+    }
+  ]
+}

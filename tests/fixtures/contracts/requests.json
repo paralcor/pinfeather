@@ -1,0 +1,31 @@
+{
+  "description": "E02 request DTO cases: unknown fields, enums, cursor-query binding. Shared by Rust and TS.",
+  "fixture_version": 1,
+  "cases": [
+    { "id": "list_clips_minimal", "group": "list_clips_request", "expect": "accept", "value": { "request_id": "r1", "query": "", "limit": 50, "cursor": null } },
+    { "id": "list_clips_with_cursor", "group": "list_clips_request", "expect": "accept", "value": { "request_id": "r1", "query": "hi", "limit": 10, "cursor": { "normalized_query": "hi", "upper_id": "9", "last_captured_at_ms": 100, "last_id": "9" } } },
+    { "id": "list_clips_unknown_field", "group": "list_clips_request", "expect": "reject", "reject_code": "invalid_input", "value": { "request_id": "r1", "query": "", "limit": 50, "cursor": null, "extra": 1 } },
+    { "id": "list_clips_cursor_query_mismatch", "group": "list_clips_request", "expect": "reject", "reject_code": "invalid_input", "value": { "request_id": "r1", "query": "hi", "limit": 10, "cursor": { "normalized_query": "bye", "upper_id": "9", "last_captured_at_ms": 100, "last_id": "9" } } },
+    { "id": "list_clips_cursor_unknown_field", "group": "list_clips_request", "expect": "reject", "reject_code": "invalid_input", "value": { "request_id": "r1", "query": "hi", "limit": 10, "cursor": { "normalized_query": "hi", "upper_id": "9", "last_captured_at_ms": 100, "last_id": "9", "x": 1 } } },
+    { "id": "list_clips_cursor_bad_upper_id", "group": "list_clips_request", "expect": "reject", "reject_code": "invalid_input", "value": { "request_id": "r1", "query": "hi", "limit": 10, "cursor": { "normalized_query": "hi", "upper_id": "01", "last_captured_at_ms": 100, "last_id": "9" } } },
+    { "id": "get_clip_text_ok", "group": "get_clip_text_request", "expect": "accept", "value": { "request_id": "r1", "clip_id": "1", "offset": 0 } },
+    { "id": "get_clip_text_bad_id", "group": "get_clip_text_request", "expect": "reject", "reject_code": "invalid_input", "value": { "request_id": "r1", "clip_id": "01", "offset": 0 } },
+    { "id": "get_clip_text_negative_offset", "group": "get_clip_text_request", "expect": "reject", "reject_code": "invalid_input", "value": { "request_id": "r1", "clip_id": "1", "offset": -1 } },
+    { "id": "get_clip_text_unknown_field", "group": "get_clip_text_request", "expect": "reject", "reject_code": "invalid_input", "value": { "request_id": "r1", "clip_id": "1", "offset": 0, "extra": 1 } },
+    { "id": "set_capture_enabled_ok", "group": "set_capture_enabled_request", "expect": "accept", "value": { "enabled": true } },
+    { "id": "set_capture_enabled_non_bool", "group": "set_capture_enabled_request", "expect": "reject", "reject_code": "invalid_input", "value": { "enabled": "true" } },
+    { "id": "set_excluded_apps_ok", "group": "set_excluded_apps_request", "expect": "accept", "value": { "paths": ["C:\\App\\a.exe"] } },
+    { "id": "set_excluded_apps_empty", "group": "set_excluded_apps_request", "expect": "accept", "value": { "paths": [] } },
+    { "id": "set_excluded_apps_too_many", "group": "set_excluded_apps_request", "expect": "reject", "reject_code": "invalid_input", "value": { "paths_count": 33 } },
+    { "id": "set_excluded_apps_wildcard", "group": "set_excluded_apps_request", "expect": "reject", "reject_code": "invalid_input", "value": { "paths": ["C:\\App\\*.exe"] } },
+    { "id": "set_excluded_apps_directory", "group": "set_excluded_apps_request", "expect": "reject", "reject_code": "invalid_input", "value": { "paths": ["C:\\App\\"] } },
+    { "id": "set_hotkey_ok", "group": "set_hotkey_request", "expect": "accept", "value": { "ctrl": true, "alt": true, "shift": false, "win": false, "key": "V" } },
+    { "id": "set_hotkey_reject_win_v", "group": "set_hotkey_request", "expect": "reject", "reject_code": "invalid_input", "value": { "ctrl": false, "alt": false, "shift": false, "win": true, "key": "V" } },
+    { "id": "set_hotkey_unknown_key", "group": "set_hotkey_request", "expect": "reject", "reject_code": "invalid_input", "value": { "ctrl": true, "alt": false, "shift": false, "win": false, "key": "NotAKey" } },
+    { "id": "panel_ready_ok", "group": "panel_ready_request", "expect": "accept", "value": { "panel_session_id": "s1" } },
+    { "id": "panel_ready_empty_session", "group": "panel_ready_request", "expect": "reject", "reject_code": "invalid_input", "value": { "panel_session_id": "" } },
+    { "id": "paste_clip_ok", "group": "paste_clip_request", "expect": "accept", "value": { "panel_session_id": "s1", "clip_id": "3" } },
+    { "id": "paste_clip_bad_clip_id", "group": "paste_clip_request", "expect": "reject", "reject_code": "invalid_input", "value": { "panel_session_id": "s1", "clip_id": "-3" } },
+    { "id": "dismiss_panel_ok", "group": "dismiss_panel_request", "expect": "accept", "value": { "panel_session_id": "s1" } }
+  ]
+}

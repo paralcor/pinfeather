@@ -1,0 +1,18 @@
+{
+  "description": "E02 error-leak and worker-frame cases. Sensitive sentinel must never appear in error fields.",
+  "fixture_version": 1,
+  "sensitive_sentinel": "SEN$ITIVE-PAYLOAD-7f3a9c2e",
+  "cases": [
+    { "id": "error_no_leak_query", "group": "error_no_leak", "expect": "reject", "reject_code": "invalid_input", "value": { "group": "query", "input_fill": { "char": "z", "count": 300, "prefix": "SEN$ITIVE-PAYLOAD-7f3a9c2e" } } },
+    { "id": "error_no_leak_request_id", "group": "error_no_leak", "expect": "reject", "reject_code": "invalid_input", "value": { "group": "request_id", "input_fill": { "char": "z", "count": 60, "prefix": "SEN$ITIVE-PAYLOAD-7f3a9c2e" } } },
+    { "id": "error_no_leak_id", "group": "error_no_leak", "expect": "reject", "reject_code": "invalid_input", "value": { "group": "positive_id", "input": "SEN$ITIVE-PAYLOAD-7f3a9c2e" } },
+    { "id": "worker_frame_empty_object", "group": "worker_frame", "expect": "reject", "reject_code": "protocol_error", "value": { "body": "{}" } },
+    { "id": "worker_frame_bad_json", "group": "worker_frame", "expect": "reject", "reject_code": "protocol_error", "value": { "body": "{" } },
+    { "id": "worker_frame_wrong_version", "group": "worker_frame", "expect": "reject", "reject_code": "protocol_error", "value": { "body": "{\"version\":2,\"capture_id\":\"c1\",\"policy_epoch\":1}" } },
+    { "id": "worker_frame_missing_epoch", "group": "worker_frame", "expect": "reject", "reject_code": "protocol_error", "value": { "body": "{\"version\":1,\"capture_id\":\"c1\"}" } },
+    { "id": "worker_frame_ok", "group": "worker_frame", "expect": "accept", "value": { "body": "{\"version\":1,\"capture_id\":\"c1\",\"policy_epoch\":7}" } },
+    { "id": "worker_frame_length_mismatch", "group": "worker_frame", "expect": "reject", "reject_code": "protocol_error", "value": { "body": "{\"version\":1,\"capture_id\":\"c1\",\"policy_epoch\":7}", "force_length_mismatch": true } },
+    { "id": "worker_frame_declared_over_request_cap", "group": "worker_frame", "expect": "reject", "reject_code": "protocol_error", "value": { "declared_length": 5000, "body": "x", "over_cap": "request" } },
+    { "id": "worker_frame_declared_over_response_cap", "group": "worker_frame", "expect": "reject", "reject_code": "protocol_error", "value": { "declared_length": 20000000, "body": "x", "over_cap": "response" } }
+  ]
+}

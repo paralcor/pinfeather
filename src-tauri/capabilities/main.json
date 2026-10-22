@@ -1,0 +1,6 @@
+{
+  "identifier": "main-capability",
+  "description": "主窗口最小能力：仅核心默认权限",
+  "windows": ["main"],
+  "permissions": ["core:default"]
+}

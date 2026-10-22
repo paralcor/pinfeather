@@ -1,0 +1,21 @@
+{
+  "description": "E02 response shape and enum cases. Shared by Rust and TS.",
+  "fixture_version": 1,
+  "cases": [
+    { "id": "summary_ok", "group": "clip_summary", "expect": "accept", "value": { "id": "1", "captured_at_ms": 1000, "kind": "text", "preview": "hi", "format_names": ["CF_UNICODETEXT"], "omitted_format_count": 0, "payload_bytes": 4, "source_process": null, "source_confidence": "unknown" } },
+    { "id": "summary_link_kind", "group": "clip_summary", "expect": "accept", "value": { "id": "1", "captured_at_ms": 1000, "kind": "link", "preview": "https://example.invalid/a", "format_names": ["CF_UNICODETEXT"], "omitted_format_count": 0, "payload_bytes": 24, "source_process": "C:\\App\\a.exe", "source_confidence": "owner" } },
+    { "id": "summary_png_kind", "group": "clip_summary", "expect": "accept", "value": { "id": "1", "captured_at_ms": 1000, "kind": "png", "preview": "[PNG]", "format_names": ["PNG"], "omitted_format_count": 1, "payload_bytes": 100, "source_process": null, "source_confidence": "unknown" } },
+    { "id": "summary_bad_kind", "group": "clip_summary", "expect": "reject", "reject_code": "invalid_input", "value": { "id": "1", "captured_at_ms": 1000, "kind": "video", "preview": "hi", "format_names": ["CF_UNICODETEXT"], "omitted_format_count": 0, "payload_bytes": 4, "source_process": null, "source_confidence": "unknown" } },
+    { "id": "summary_too_many_formats", "group": "clip_summary", "expect": "reject", "reject_code": "invalid_input", "value": { "id": "1", "captured_at_ms": 1000, "kind": "text", "preview": "hi", "format_names": ["a", "b", "c", "d"], "omitted_format_count": 0, "payload_bytes": 4, "source_process": null, "source_confidence": "unknown" } },
+    { "id": "summary_bad_confidence", "group": "clip_summary", "expect": "reject", "reject_code": "invalid_input", "value": { "id": "1", "captured_at_ms": 1000, "kind": "text", "preview": "hi", "format_names": ["a"], "omitted_format_count": 0, "payload_bytes": 4, "source_process": null, "source_confidence": "admin" } },
+    { "id": "summary_unknown_field", "group": "clip_summary", "expect": "reject", "reject_code": "invalid_input", "value": { "id": "1", "captured_at_ms": 1000, "kind": "text", "preview": "hi", "format_names": ["a"], "omitted_format_count": 0, "payload_bytes": 4, "source_process": null, "source_confidence": "unknown", "body": "leak" } },
+    { "id": "error_codes_all_known", "group": "error_code", "expect": "accept", "value": ["invalid_input", "not_found", "busy", "capacity_exceeded", "storage_unavailable", "shortcut_unavailable", "target_changed", "permission_unknown", "unsupported_input_state", "clipboard_changed", "injection_failed", "timeout", "protocol_error", "cleanup_failed"] },
+    { "id": "error_code_unknown", "group": "error_code", "expect": "reject", "reject_code": "invalid_input", "value": "oops" },
+    { "id": "status_state_enum", "group": "status_state", "expect": "accept", "value": ["startup", "listening", "paused", "overloaded", "failed", "stopping"] },
+    { "id": "status_state_unknown", "group": "status_state", "expect": "reject", "reject_code": "invalid_input", "value": "running" },
+    { "id": "clipboard_state_enum", "group": "clipboard_state", "expect": "accept", "value": ["not_written", "written", "failed", "replaced"] },
+    { "id": "input_state_enum", "group": "input_state", "expect": "accept", "value": ["not_sent", "sent", "cancelled", "failed"] },
+    { "id": "paste_clip_state_unknown", "group": "clipboard_state", "expect": "reject", "reject_code": "invalid_input", "value": "done" },
+    { "id": "paste_input_state_unknown", "group": "input_state", "expect": "reject", "reject_code": "invalid_input", "value": "done" }
+  ]
+}

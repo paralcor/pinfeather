@@ -1,0 +1,1330 @@
+{
+  "description": "E02 7.2 response DTO cases",
+  "fixture_version": 2,
+  "status_cases": [
+    {
+      "id": "st_ok",
+      "expect": "accept",
+      "value": {
+        "revision": "3",
+        "state": "listening",
+        "services": {
+          "listener": "ready",
+          "worker": "ready",
+          "storage": "ready",
+          "hotkey": "not_started",
+          "target_observer": "starting"
+        },
+        "capture": {
+          "user_enabled": true,
+          "admission_open": true,
+          "policy_epoch": 7
+        },
+        "counters": {
+          "observed": "0",
+          "captured": "12",
+          "persisted": "12",
+          "ignored": "0",
+          "superseded": "0",
+          "failed": "0",
+          "overloaded": "0",
+          "cancelled": "0"
+        },
+        "queue": {
+          "items": 0,
+          "bytes": 0
+        },
+        "history": {
+          "items": 12,
+          "payload_bytes": 4096
+        },
+        "data_dir": "C:\\Data\\pf",
+        "versions": {
+          "app": "0.1.0",
+          "schema": 1,
+          "worker_protocol": 1
+        },
+        "last_paste": null
+      }
+    },
+    {
+      "id": "st_null_last_paste",
+      "expect": "accept",
+      "value": {
+        "revision": "3",
+        "state": "listening",
+        "services": {
+          "listener": "ready",
+          "worker": "ready",
+          "storage": "ready",
+          "hotkey": "not_started",
+          "target_observer": "starting"
+        },
+        "capture": {
+          "user_enabled": true,
+          "admission_open": true,
+          "policy_epoch": 7
+        },
+        "counters": {
+          "observed": "0",
+          "captured": "12",
+          "persisted": "12",
+          "ignored": "0",
+          "superseded": "0",
+          "failed": "0",
+          "overloaded": "0",
+          "cancelled": "0"
+        },
+        "queue": {
+          "items": 0,
+          "bytes": 0
+        },
+        "history": {
+          "items": 12,
+          "payload_bytes": 4096
+        },
+        "data_dir": "C:\\Data\\pf",
+        "versions": {
+          "app": "0.1.0",
+          "schema": 1,
+          "worker_protocol": 1
+        },
+        "last_paste": {
+          "operation_id": "op1",
+          "clipboard_state": "written",
+          "input_state": "sent",
+          "reason": null
+        }
+      }
+    },
+    {
+      "id": "st_unknown_field",
+      "expect": "reject",
+      "value": {
+        "revision": "3",
+        "state": "listening",
+        "services": {
+          "listener": "ready",
+          "worker": "ready",
+          "storage": "ready",
+          "hotkey": "not_started",
+          "target_observer": "starting"
+        },
+        "capture": {
+          "user_enabled": true,
+          "admission_open": true,
+          "policy_epoch": 7
+        },
+        "counters": {
+          "observed": "0",
+          "captured": "12",
+          "persisted": "12",
+          "ignored": "0",
+          "superseded": "0",
+          "failed": "0",
+          "overloaded": "0",
+          "cancelled": "0"
+        },
+        "queue": {
+          "items": 0,
+          "bytes": 0
+        },
+        "history": {
+          "items": 12,
+          "payload_bytes": 4096
+        },
+        "data_dir": "C:\\Data\\pf",
+        "versions": {
+          "app": "0.1.0",
+          "schema": 1,
+          "worker_protocol": 1
+        },
+        "last_paste": null,
+        "extra": 1
+      }
+    },
+    {
+      "id": "st_bad_state",
+      "expect": "reject",
+      "value": {
+        "revision": "3",
+        "state": "running",
+        "services": {
+          "listener": "ready",
+          "worker": "ready",
+          "storage": "ready",
+          "hotkey": "not_started",
+          "target_observer": "starting"
+        },
+        "capture": {
+          "user_enabled": true,
+          "admission_open": true,
+          "policy_epoch": 7
+        },
+        "counters": {
+          "observed": "0",
+          "captured": "12",
+          "persisted": "12",
+          "ignored": "0",
+          "superseded": "0",
+          "failed": "0",
+          "overloaded": "0",
+          "cancelled": "0"
+        },
+        "queue": {
+          "items": 0,
+          "bytes": 0
+        },
+        "history": {
+          "items": 12,
+          "payload_bytes": 4096
+        },
+        "data_dir": "C:\\Data\\pf",
+        "versions": {
+          "app": "0.1.0",
+          "schema": 1,
+          "worker_protocol": 1
+        },
+        "last_paste": null
+      }
+    },
+    {
+      "id": "st_missing_service",
+      "expect": "reject",
+      "value": {
+        "revision": "3",
+        "state": "listening",
+        "services": {
+          "listener": "ready",
+          "worker": "ready",
+          "storage": "ready",
+          "target_observer": "starting"
+        },
+        "capture": {
+          "user_enabled": true,
+          "admission_open": true,
+          "policy_epoch": 7
+        },
+        "counters": {
+          "observed": "0",
+          "captured": "12",
+          "persisted": "12",
+          "ignored": "0",
+          "superseded": "0",
+          "failed": "0",
+          "overloaded": "0",
+          "cancelled": "0"
+        },
+        "queue": {
+          "items": 0,
+          "bytes": 0
+        },
+        "history": {
+          "items": 12,
+          "payload_bytes": 4096
+        },
+        "data_dir": "C:\\Data\\pf",
+        "versions": {
+          "app": "0.1.0",
+          "schema": 1,
+          "worker_protocol": 1
+        },
+        "last_paste": null
+      }
+    },
+    {
+      "id": "st_unknown_service",
+      "expect": "reject",
+      "value": {
+        "revision": "3",
+        "state": "listening",
+        "services": {
+          "listener": "ready",
+          "worker": "ready",
+          "storage": "ready",
+          "hotkey": "not_started",
+          "target_observer": "starting",
+          "other": "ready"
+        },
+        "capture": {
+          "user_enabled": true,
+          "admission_open": true,
+          "policy_epoch": 7
+        },
+        "counters": {
+          "observed": "0",
+          "captured": "12",
+          "persisted": "12",
+          "ignored": "0",
+          "superseded": "0",
+          "failed": "0",
+          "overloaded": "0",
+          "cancelled": "0"
+        },
+        "queue": {
+          "items": 0,
+          "bytes": 0
+        },
+        "history": {
+          "items": 12,
+          "payload_bytes": 4096
+        },
+        "data_dir": "C:\\Data\\pf",
+        "versions": {
+          "app": "0.1.0",
+          "schema": 1,
+          "worker_protocol": 1
+        },
+        "last_paste": null
+      }
+    },
+    {
+      "id": "st_bad_service_state",
+      "expect": "reject",
+      "value": {
+        "revision": "3",
+        "state": "listening",
+        "services": {
+          "listener": "ready",
+          "worker": "ok",
+          "storage": "ready",
+          "hotkey": "not_started",
+          "target_observer": "starting"
+        },
+        "capture": {
+          "user_enabled": true,
+          "admission_open": true,
+          "policy_epoch": 7
+        },
+        "counters": {
+          "observed": "0",
+          "captured": "12",
+          "persisted": "12",
+          "ignored": "0",
+          "superseded": "0",
+          "failed": "0",
+          "overloaded": "0",
+          "cancelled": "0"
+        },
+        "queue": {
+          "items": 0,
+          "bytes": 0
+        },
+        "history": {
+          "items": 12,
+          "payload_bytes": 4096
+        },
+        "data_dir": "C:\\Data\\pf",
+        "versions": {
+          "app": "0.1.0",
+          "schema": 1,
+          "worker_protocol": 1
+        },
+        "last_paste": null
+      }
+    },
+    {
+      "id": "st_user_enabled_non_bool",
+      "expect": "reject",
+      "value": {
+        "revision": "3",
+        "state": "listening",
+        "services": {
+          "listener": "ready",
+          "worker": "ready",
+          "storage": "ready",
+          "hotkey": "not_started",
+          "target_observer": "starting"
+        },
+        "capture": {
+          "user_enabled": "true",
+          "admission_open": true,
+          "policy_epoch": 7
+        },
+        "counters": {
+          "observed": "0",
+          "captured": "12",
+          "persisted": "12",
+          "ignored": "0",
+          "superseded": "0",
+          "failed": "0",
+          "overloaded": "0",
+          "cancelled": "0"
+        },
+        "queue": {
+          "items": 0,
+          "bytes": 0
+        },
+        "history": {
+          "items": 12,
+          "payload_bytes": 4096
+        },
+        "data_dir": "C:\\Data\\pf",
+        "versions": {
+          "app": "0.1.0",
+          "schema": 1,
+          "worker_protocol": 1
+        },
+        "last_paste": null
+      }
+    },
+    {
+      "id": "st_epoch_over",
+      "expect": "reject",
+      "value": {
+        "revision": "3",
+        "state": "listening",
+        "services": {
+          "listener": "ready",
+          "worker": "ready",
+          "storage": "ready",
+          "hotkey": "not_started",
+          "target_observer": "starting"
+        },
+        "capture": {
+          "user_enabled": true,
+          "admission_open": true,
+          "policy_epoch": 9007199254740992
+        },
+        "counters": {
+          "observed": "0",
+          "captured": "12",
+          "persisted": "12",
+          "ignored": "0",
+          "superseded": "0",
+          "failed": "0",
+          "overloaded": "0",
+          "cancelled": "0"
+        },
+        "queue": {
+          "items": 0,
+          "bytes": 0
+        },
+        "history": {
+          "items": 12,
+          "payload_bytes": 4096
+        },
+        "data_dir": "C:\\Data\\pf",
+        "versions": {
+          "app": "0.1.0",
+          "schema": 1,
+          "worker_protocol": 1
+        },
+        "last_paste": null
+      }
+    },
+    {
+      "id": "st_counter_number",
+      "expect": "reject",
+      "value": {
+        "revision": "3",
+        "state": "listening",
+        "services": {
+          "listener": "ready",
+          "worker": "ready",
+          "storage": "ready",
+          "hotkey": "not_started",
+          "target_observer": "starting"
+        },
+        "capture": {
+          "user_enabled": true,
+          "admission_open": true,
+          "policy_epoch": 7
+        },
+        "counters": {
+          "observed": 1,
+          "captured": "12",
+          "persisted": "12",
+          "ignored": "0",
+          "superseded": "0",
+          "failed": "0",
+          "overloaded": "0",
+          "cancelled": "0"
+        },
+        "queue": {
+          "items": 0,
+          "bytes": 0
+        },
+        "history": {
+          "items": 12,
+          "payload_bytes": 4096
+        },
+        "data_dir": "C:\\Data\\pf",
+        "versions": {
+          "app": "0.1.0",
+          "schema": 1,
+          "worker_protocol": 1
+        },
+        "last_paste": null
+      }
+    },
+    {
+      "id": "st_counter_leading_zero",
+      "expect": "reject",
+      "value": {
+        "revision": "3",
+        "state": "listening",
+        "services": {
+          "listener": "ready",
+          "worker": "ready",
+          "storage": "ready",
+          "hotkey": "not_started",
+          "target_observer": "starting"
+        },
+        "capture": {
+          "user_enabled": true,
+          "admission_open": true,
+          "policy_epoch": 7
+        },
+        "counters": {
+          "observed": "01",
+          "captured": "12",
+          "persisted": "12",
+          "ignored": "0",
+          "superseded": "0",
+          "failed": "0",
+          "overloaded": "0",
+          "cancelled": "0"
+        },
+        "queue": {
+          "items": 0,
+          "bytes": 0
+        },
+        "history": {
+          "items": 12,
+          "payload_bytes": 4096
+        },
+        "data_dir": "C:\\Data\\pf",
+        "versions": {
+          "app": "0.1.0",
+          "schema": 1,
+          "worker_protocol": 1
+        },
+        "last_paste": null
+      }
+    },
+    {
+      "id": "st_queue_items_over",
+      "expect": "reject",
+      "value": {
+        "revision": "3",
+        "state": "listening",
+        "services": {
+          "listener": "ready",
+          "worker": "ready",
+          "storage": "ready",
+          "hotkey": "not_started",
+          "target_observer": "starting"
+        },
+        "capture": {
+          "user_enabled": true,
+          "admission_open": true,
+          "policy_epoch": 7
+        },
+        "counters": {
+          "observed": "0",
+          "captured": "12",
+          "persisted": "12",
+          "ignored": "0",
+          "superseded": "0",
+          "failed": "0",
+          "overloaded": "0",
+          "cancelled": "0"
+        },
+        "queue": {
+          "items": 65,
+          "bytes": 0
+        },
+        "history": {
+          "items": 12,
+          "payload_bytes": 4096
+        },
+        "data_dir": "C:\\Data\\pf",
+        "versions": {
+          "app": "0.1.0",
+          "schema": 1,
+          "worker_protocol": 1
+        },
+        "last_paste": null
+      }
+    },
+    {
+      "id": "st_queue_bytes_over",
+      "expect": "reject",
+      "value": {
+        "revision": "3",
+        "state": "listening",
+        "services": {
+          "listener": "ready",
+          "worker": "ready",
+          "storage": "ready",
+          "hotkey": "not_started",
+          "target_observer": "starting"
+        },
+        "capture": {
+          "user_enabled": true,
+          "admission_open": true,
+          "policy_epoch": 7
+        },
+        "counters": {
+          "observed": "0",
+          "captured": "12",
+          "persisted": "12",
+          "ignored": "0",
+          "superseded": "0",
+          "failed": "0",
+          "overloaded": "0",
+          "cancelled": "0"
+        },
+        "queue": {
+          "items": 0,
+          "bytes": 33554433
+        },
+        "history": {
+          "items": 12,
+          "payload_bytes": 4096
+        },
+        "data_dir": "C:\\Data\\pf",
+        "versions": {
+          "app": "0.1.0",
+          "schema": 1,
+          "worker_protocol": 1
+        },
+        "last_paste": null
+      }
+    },
+    {
+      "id": "st_history_items_over",
+      "expect": "reject",
+      "value": {
+        "revision": "3",
+        "state": "listening",
+        "services": {
+          "listener": "ready",
+          "worker": "ready",
+          "storage": "ready",
+          "hotkey": "not_started",
+          "target_observer": "starting"
+        },
+        "capture": {
+          "user_enabled": true,
+          "admission_open": true,
+          "policy_epoch": 7
+        },
+        "counters": {
+          "observed": "0",
+          "captured": "12",
+          "persisted": "12",
+          "ignored": "0",
+          "superseded": "0",
+          "failed": "0",
+          "overloaded": "0",
+          "cancelled": "0"
+        },
+        "queue": {
+          "items": 0,
+          "bytes": 0
+        },
+        "history": {
+          "items": 10001,
+          "payload_bytes": 4096
+        },
+        "data_dir": "C:\\Data\\pf",
+        "versions": {
+          "app": "0.1.0",
+          "schema": 1,
+          "worker_protocol": 1
+        },
+        "last_paste": null
+      }
+    },
+    {
+      "id": "st_history_bytes_over",
+      "expect": "reject",
+      "value": {
+        "revision": "3",
+        "state": "listening",
+        "services": {
+          "listener": "ready",
+          "worker": "ready",
+          "storage": "ready",
+          "hotkey": "not_started",
+          "target_observer": "starting"
+        },
+        "capture": {
+          "user_enabled": true,
+          "admission_open": true,
+          "policy_epoch": 7
+        },
+        "counters": {
+          "observed": "0",
+          "captured": "12",
+          "persisted": "12",
+          "ignored": "0",
+          "superseded": "0",
+          "failed": "0",
+          "overloaded": "0",
+          "cancelled": "0"
+        },
+        "queue": {
+          "items": 0,
+          "bytes": 0
+        },
+        "history": {
+          "items": 12,
+          "payload_bytes": 268435457
+        },
+        "data_dir": "C:\\Data\\pf",
+        "versions": {
+          "app": "0.1.0",
+          "schema": 1,
+          "worker_protocol": 1
+        },
+        "last_paste": null
+      }
+    },
+    {
+      "id": "st_relative_data_dir",
+      "expect": "reject",
+      "value": {
+        "revision": "3",
+        "state": "listening",
+        "services": {
+          "listener": "ready",
+          "worker": "ready",
+          "storage": "ready",
+          "hotkey": "not_started",
+          "target_observer": "starting"
+        },
+        "capture": {
+          "user_enabled": true,
+          "admission_open": true,
+          "policy_epoch": 7
+        },
+        "counters": {
+          "observed": "0",
+          "captured": "12",
+          "persisted": "12",
+          "ignored": "0",
+          "superseded": "0",
+          "failed": "0",
+          "overloaded": "0",
+          "cancelled": "0"
+        },
+        "queue": {
+          "items": 0,
+          "bytes": 0
+        },
+        "history": {
+          "items": 12,
+          "payload_bytes": 4096
+        },
+        "data_dir": "relative",
+        "versions": {
+          "app": "0.1.0",
+          "schema": 1,
+          "worker_protocol": 1
+        },
+        "last_paste": null
+      }
+    },
+    {
+      "id": "st_versions_app_empty",
+      "expect": "reject",
+      "value": {
+        "revision": "3",
+        "state": "listening",
+        "services": {
+          "listener": "ready",
+          "worker": "ready",
+          "storage": "ready",
+          "hotkey": "not_started",
+          "target_observer": "starting"
+        },
+        "capture": {
+          "user_enabled": true,
+          "admission_open": true,
+          "policy_epoch": 7
+        },
+        "counters": {
+          "observed": "0",
+          "captured": "12",
+          "persisted": "12",
+          "ignored": "0",
+          "superseded": "0",
+          "failed": "0",
+          "overloaded": "0",
+          "cancelled": "0"
+        },
+        "queue": {
+          "items": 0,
+          "bytes": 0
+        },
+        "history": {
+          "items": 12,
+          "payload_bytes": 4096
+        },
+        "data_dir": "C:\\Data\\pf",
+        "versions": {
+          "app": "",
+          "schema": 1,
+          "worker_protocol": 1
+        },
+        "last_paste": null
+      }
+    },
+    {
+      "id": "st_schema_2",
+      "expect": "reject",
+      "value": {
+        "revision": "3",
+        "state": "listening",
+        "services": {
+          "listener": "ready",
+          "worker": "ready",
+          "storage": "ready",
+          "hotkey": "not_started",
+          "target_observer": "starting"
+        },
+        "capture": {
+          "user_enabled": true,
+          "admission_open": true,
+          "policy_epoch": 7
+        },
+        "counters": {
+          "observed": "0",
+          "captured": "12",
+          "persisted": "12",
+          "ignored": "0",
+          "superseded": "0",
+          "failed": "0",
+          "overloaded": "0",
+          "cancelled": "0"
+        },
+        "queue": {
+          "items": 0,
+          "bytes": 0
+        },
+        "history": {
+          "items": 12,
+          "payload_bytes": 4096
+        },
+        "data_dir": "C:\\Data\\pf",
+        "versions": {
+          "app": "0.1.0",
+          "schema": 2,
+          "worker_protocol": 1
+        },
+        "last_paste": null
+      }
+    },
+    {
+      "id": "st_wp_2",
+      "expect": "reject",
+      "value": {
+        "revision": "3",
+        "state": "listening",
+        "services": {
+          "listener": "ready",
+          "worker": "ready",
+          "storage": "ready",
+          "hotkey": "not_started",
+          "target_observer": "starting"
+        },
+        "capture": {
+          "user_enabled": true,
+          "admission_open": true,
+          "policy_epoch": 7
+        },
+        "counters": {
+          "observed": "0",
+          "captured": "12",
+          "persisted": "12",
+          "ignored": "0",
+          "superseded": "0",
+          "failed": "0",
+          "overloaded": "0",
+          "cancelled": "0"
+        },
+        "queue": {
+          "items": 0,
+          "bytes": 0
+        },
+        "history": {
+          "items": 12,
+          "payload_bytes": 4096
+        },
+        "data_dir": "C:\\Data\\pf",
+        "versions": {
+          "app": "0.1.0",
+          "schema": 1,
+          "worker_protocol": 2
+        },
+        "last_paste": null
+      }
+    },
+    {
+      "id": "st_revision_leading_zero",
+      "expect": "reject",
+      "value": {
+        "revision": "01",
+        "state": "listening",
+        "services": {
+          "listener": "ready",
+          "worker": "ready",
+          "storage": "ready",
+          "hotkey": "not_started",
+          "target_observer": "starting"
+        },
+        "capture": {
+          "user_enabled": true,
+          "admission_open": true,
+          "policy_epoch": 7
+        },
+        "counters": {
+          "observed": "0",
+          "captured": "12",
+          "persisted": "12",
+          "ignored": "0",
+          "superseded": "0",
+          "failed": "0",
+          "overloaded": "0",
+          "cancelled": "0"
+        },
+        "queue": {
+          "items": 0,
+          "bytes": 0
+        },
+        "history": {
+          "items": 12,
+          "payload_bytes": 4096
+        },
+        "data_dir": "C:\\Data\\pf",
+        "versions": {
+          "app": "0.1.0",
+          "schema": 1,
+          "worker_protocol": 1
+        },
+        "last_paste": null
+      }
+    }
+  ],
+  "text_cases": [
+    {
+      "id": "txt_ok_progress",
+      "expect": "accept",
+      "request": {
+        "request_id": "r1",
+        "clip_id": "1",
+        "offset": 0
+      },
+      "value": {
+        "request_id": "r1",
+        "clip_id": "1",
+        "text": "abc",
+        "next_offset": 3
+      }
+    },
+    {
+      "id": "txt_end_null",
+      "expect": "accept",
+      "request": {
+        "request_id": "r1",
+        "clip_id": "1",
+        "offset": 3
+      },
+      "value": {
+        "request_id": "r1",
+        "clip_id": "1",
+        "text": "",
+        "next_offset": null
+      }
+    },
+    {
+      "id": "txt_echo_mismatch",
+      "expect": "reject",
+      "request": {
+        "request_id": "r1",
+        "clip_id": "1",
+        "offset": 0
+      },
+      "value": {
+        "request_id": "r2",
+        "clip_id": "1",
+        "text": "abc",
+        "next_offset": 3
+      }
+    },
+    {
+      "id": "txt_clip_mismatch",
+      "expect": "reject",
+      "request": {
+        "request_id": "r1",
+        "clip_id": "1",
+        "offset": 0
+      },
+      "value": {
+        "request_id": "r1",
+        "clip_id": "2",
+        "text": "abc",
+        "next_offset": 3
+      }
+    },
+    {
+      "id": "txt_next_wrong",
+      "expect": "reject",
+      "request": {
+        "request_id": "r1",
+        "clip_id": "1",
+        "offset": 0
+      },
+      "value": {
+        "request_id": "r1",
+        "clip_id": "1",
+        "text": "abc",
+        "next_offset": 4
+      }
+    },
+    {
+      "id": "txt_next_empty_text",
+      "expect": "reject",
+      "request": {
+        "request_id": "r1",
+        "clip_id": "1",
+        "offset": 0
+      },
+      "value": {
+        "request_id": "r1",
+        "clip_id": "1",
+        "text": "",
+        "next_offset": 3
+      }
+    },
+    {
+      "id": "txt_next_negative",
+      "expect": "reject",
+      "request": {
+        "request_id": "r1",
+        "clip_id": "1",
+        "offset": 0
+      },
+      "value": {
+        "request_id": "r1",
+        "clip_id": "1",
+        "text": "abc",
+        "next_offset": -1
+      }
+    },
+    {
+      "id": "txt_utf8_boundary_65536",
+      "expect": "accept",
+      "request": {
+        "request_id": "r1",
+        "clip_id": "1",
+        "offset": 0
+      },
+      "value": {
+        "request_id": "r1",
+        "clip_id": "1",
+        "text_fill": {
+          "char": "a",
+          "count": 65536
+        },
+        "next_offset": 65536
+      }
+    },
+    {
+      "id": "txt_utf8_over_65537",
+      "expect": "reject",
+      "request": {
+        "request_id": "r1",
+        "clip_id": "1",
+        "offset": 0
+      },
+      "value": {
+        "request_id": "r1",
+        "clip_id": "1",
+        "text_fill": {
+          "char": "a",
+          "count": 65537
+        },
+        "next_offset": 65537
+      }
+    },
+    {
+      "id": "txt_utf8_multibyte",
+      "expect": "accept",
+      "request": {
+        "request_id": "r1",
+        "clip_id": "1",
+        "offset": 0
+      },
+      "value": {
+        "request_id": "r1",
+        "clip_id": "1",
+        "text": "中",
+        "next_offset": 3
+      }
+    }
+  ],
+  "list_cases": [
+    {
+      "id": "lst_ok_empty",
+      "expect": "accept",
+      "value": {
+        "request_id": "r1",
+        "normalized_query": "",
+        "summaries": [],
+        "next_cursor": null
+      }
+    },
+    {
+      "id": "lst_ok_with_summaries",
+      "expect": "accept",
+      "value": {
+        "request_id": "r1",
+        "normalized_query": "hi",
+        "summaries": [
+          {
+            "id": "1",
+            "captured_at_ms": 1000,
+            "kind": "text",
+            "preview": "hi",
+            "format_names": [
+              "CF_UNICODETEXT"
+            ],
+            "omitted_format_count": 0,
+            "payload_bytes": 4,
+            "source_process": null,
+            "source_confidence": "unknown"
+          }
+        ],
+        "next_cursor": null
+      }
+    },
+    {
+      "id": "lst_ok_with_cursor",
+      "expect": "accept",
+      "value": {
+        "request_id": "r1",
+        "normalized_query": "hi",
+        "summaries": [
+          {
+            "id": "1",
+            "captured_at_ms": 1000,
+            "kind": "text",
+            "preview": "hi",
+            "format_names": [
+              "CF_UNICODETEXT"
+            ],
+            "omitted_format_count": 0,
+            "payload_bytes": 4,
+            "source_process": null,
+            "source_confidence": "unknown"
+          }
+        ],
+        "next_cursor": {
+          "normalized_query": "hi",
+          "upper_id": "9",
+          "last_captured_at_ms": 1000,
+          "last_id": "1"
+        }
+      }
+    },
+    {
+      "id": "lst_summaries_100_ok",
+      "expect": "accept",
+      "value": {
+        "request_id": "r1",
+        "normalized_query": "",
+        "summaries_count": 100,
+        "next_cursor": null
+      }
+    },
+    {
+      "id": "lst_summaries_101_rejected",
+      "expect": "reject",
+      "value": {
+        "request_id": "r1",
+        "normalized_query": "",
+        "summaries_count": 101,
+        "next_cursor": null
+      }
+    },
+    {
+      "id": "lst_cursor_query_mismatch",
+      "expect": "reject",
+      "value": {
+        "request_id": "r1",
+        "normalized_query": "hi",
+        "summaries": [],
+        "next_cursor": {
+          "normalized_query": "bye",
+          "upper_id": "9",
+          "last_captured_at_ms": 1,
+          "last_id": "1"
+        }
+      }
+    },
+    {
+      "id": "lst_unknown_field",
+      "expect": "reject",
+      "value": {
+        "request_id": "r1",
+        "normalized_query": "",
+        "summaries": [],
+        "next_cursor": null,
+        "extra": 1
+      }
+    },
+    {
+      "id": "lst_bad_summary",
+      "expect": "reject",
+      "value": {
+        "request_id": "r1",
+        "normalized_query": "",
+        "summaries": [
+          {
+            "id": "1",
+            "captured_at_ms": 1000,
+            "kind": "video",
+            "preview": "hi",
+            "format_names": [
+              "CF_UNICODETEXT"
+            ],
+            "omitted_format_count": 0,
+            "payload_bytes": 4,
+            "source_process": null,
+            "source_confidence": "unknown"
+          }
+        ],
+        "next_cursor": null
+      }
+    }
+  ],
+  "list_norm_cases": [
+    {
+      "id": "f7_nq_plain_ok",
+      "value": {
+        "request_id": "r1",
+        "normalized_query": "hi",
+        "summaries": [],
+        "next_cursor": null
+      },
+      "expect": "accept"
+    },
+    {
+      "id": "f7_nq_empty_ok",
+      "value": {
+        "request_id": "r1",
+        "normalized_query": "",
+        "summaries": [],
+        "next_cursor": null
+      },
+      "expect": "accept"
+    },
+    {
+      "id": "f7_nq_lead_space_reject",
+      "value": {
+        "request_id": "r1",
+        "normalized_query": " hi",
+        "summaries": [],
+        "next_cursor": null
+      },
+      "expect": "reject"
+    },
+    {
+      "id": "f7_nq_trail_space_reject",
+      "value": {
+        "request_id": "r1",
+        "normalized_query": "hi ",
+        "summaries": [],
+        "next_cursor": null
+      },
+      "expect": "reject"
+    },
+    {
+      "id": "f7_nq_both_space_reject",
+      "value": {
+        "request_id": "r1",
+        "normalized_query": " hi ",
+        "summaries": [],
+        "next_cursor": null
+      },
+      "expect": "reject"
+    },
+    {
+      "id": "f7_nq_lead_nel_reject",
+      "value": {
+        "request_id": "r1",
+        "normalized_query": "hi",
+        "summaries": [],
+        "next_cursor": null
+      },
+      "expect": "reject"
+    },
+    {
+      "id": "f7_nq_trail_nel_reject",
+      "value": {
+        "request_id": "r1",
+        "normalized_query": "hi",
+        "summaries": [],
+        "next_cursor": null
+      },
+      "expect": "reject"
+    },
+    {
+      "id": "f7_nq_bom_kept_ok",
+      "value": {
+        "request_id": "r1",
+        "normalized_query": "﻿hi﻿",
+        "summaries": [],
+        "next_cursor": null
+      },
+      "expect": "accept"
+    },
+    {
+      "id": "f7_nq_inner_space_ok",
+      "value": {
+        "request_id": "r1",
+        "normalized_query": "a  b",
+        "summaries": [],
+        "next_cursor": null
+      },
+      "expect": "accept"
+    },
+    {
+      "id": "f7_nq_cursor_present_ok",
+      "value": {
+        "request_id": "r1",
+        "normalized_query": "hi",
+        "summaries": [],
+        "next_cursor": {
+          "normalized_query": "hi",
+          "upper_id": "9",
+          "last_captured_at_ms": 100,
+          "last_id": "1"
+        }
+      },
+      "expect": "accept"
+    },
+    {
+      "id": "f7_nq_missing_cursor_reject",
+      "expect": "reject",
+      "value": {
+        "request_id": "r1",
+        "normalized_query": "hi",
+        "summaries": []
+      }
+    },
+    {
+      "id": "f7_nq_missing_query_reject",
+      "expect": "reject",
+      "value": {
+        "request_id": "r1",
+        "summaries": [],
+        "next_cursor": null
+      }
+    }
+  ]
+}

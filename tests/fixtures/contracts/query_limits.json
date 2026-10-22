@@ -1,0 +1,31 @@
+{
+  "description": "E02 query/limit/timestamp boundary cases. Shared by Rust and TS.",
+  "fixture_version": 1,
+  "cases": [
+    { "id": "query_empty", "group": "query", "expect": "accept", "value": "", "normalized": "" },
+    { "id": "query_simple", "group": "query", "expect": "accept", "value": "hello", "normalized": "hello" },
+    { "id": "query_trim_both", "group": "query", "expect": "accept", "value": "  hello  ", "normalized": "hello" },
+    { "id": "query_internal_space_kept", "group": "query", "expect": "accept", "value": "a  b", "normalized": "a  b" },
+    { "id": "query_256_ascii", "group": "query", "expect": "accept", "value_fill": { "char": "x", "count": 256 }, "normalized_fill": { "char": "x", "count": 256 } },
+    { "id": "query_257_ascii", "group": "query", "expect": "reject", "reject_code": "invalid_input", "value_fill": { "char": "x", "count": 257 } },
+    { "id": "query_256_cjk", "group": "query", "expect": "accept", "value_fill": { "char": "查", "count": 256 }, "normalized_fill": { "char": "查", "count": 256 } },
+    { "id": "query_257_cjk", "group": "query", "expect": "reject", "reject_code": "invalid_input", "value_fill": { "char": "查", "count": 257 } },
+    { "id": "query_256_emoji_scalar", "group": "query", "expect": "accept", "value_fill": { "char": "😀", "count": 256 }, "normalized_fill": { "char": "😀", "count": 256 } },
+    { "id": "query_257_emoji_scalar", "group": "query", "expect": "reject", "reject_code": "invalid_input", "value_fill": { "char": "😀", "count": 257 } },
+    { "id": "query_trim_to_256", "group": "query", "expect": "accept", "value_fill": { "char": "x", "count": 256, "prefix": " ", "suffix": " " }, "normalized_fill": { "char": "x", "count": 256 } },
+    { "id": "query_trim_to_257", "group": "query", "expect": "reject", "reject_code": "invalid_input", "value_fill": { "char": "x", "count": 257, "prefix": " ", "suffix": " " } },
+    { "id": "limit_1", "group": "limit", "expect": "accept", "value": 1 },
+    { "id": "limit_default_50", "group": "limit", "expect": "accept", "value": 50 },
+    { "id": "limit_100", "group": "limit", "expect": "accept", "value": 100 },
+    { "id": "limit_0", "group": "limit", "expect": "reject", "reject_code": "invalid_input", "value": 0 },
+    { "id": "limit_101", "group": "limit", "expect": "reject", "reject_code": "invalid_input", "value": 101 },
+    { "id": "limit_negative", "group": "limit", "expect": "reject", "reject_code": "invalid_input", "value": -1 },
+    { "id": "limit_float", "group": "limit", "expect": "reject", "reject_code": "invalid_input", "value": 1.5 },
+    { "id": "limit_string", "group": "limit", "expect": "reject", "reject_code": "invalid_input", "value": "50" },
+    { "id": "timestamp_js_safe_max", "group": "timestamp_ms", "expect": "accept", "value": 9007199254740991 },
+    { "id": "timestamp_zero", "group": "timestamp_ms", "expect": "accept", "value": 0 },
+    { "id": "timestamp_above_js_safe", "group": "timestamp_ms", "expect": "reject", "reject_code": "invalid_input", "value": 9007199254740992 },
+    { "id": "timestamp_negative", "group": "timestamp_ms", "expect": "reject", "reject_code": "invalid_input", "value": -1 },
+    { "id": "timestamp_float", "group": "timestamp_ms", "expect": "reject", "reject_code": "invalid_input", "value": 1.5 }
+  ]
+}

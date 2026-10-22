@@ -1,0 +1,18 @@
+[package]
+name = "pinfeather"
+version = "0.1.0"
+description = "片羽"
+edition = "2021"
+license = "MIT"
+
+[lib]
+name = "pinfeather_lib"
+crate-type = ["staticlib", "cdylib", "rlib"]
+
+[build-dependencies]
+tauri-build = { version = "2.7.4", features = [] }
+
+[dependencies]
+tauri = { version = "2.12.5", features = [] }
+serde = { version = "1.0.229", features = ["derive"] }
+serde_json = "1.0.154"

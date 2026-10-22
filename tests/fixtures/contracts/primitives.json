@@ -1,0 +1,32 @@
+{
+  "description": "E02 synthetic primitive validation cases. Shared by Rust contracts.rs and TS ipc.ts.",
+  "fixture_version": 1,
+  "sensitive_sentinel": "SEN$ITIVE-PAYLOAD-7f3a9c2e",
+  "cases": [
+    { "id": "request_id_min", "group": "request_id", "expect": "accept", "value": "a" },
+    { "id": "request_id_typical", "group": "request_id", "expect": "accept", "value": "req-01_abc" },
+    { "id": "request_id_64_bytes", "group": "request_id", "expect": "accept", "value": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa" },
+    { "id": "request_id_empty", "group": "request_id", "expect": "reject", "reject_code": "invalid_input", "value": "" },
+    { "id": "request_id_65_bytes", "group": "request_id", "expect": "reject", "reject_code": "invalid_input", "value": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa" },
+    { "id": "request_id_non_ascii", "group": "request_id", "expect": "reject", "reject_code": "invalid_input", "value": "请求id" },
+    { "id": "request_id_control_char", "group": "request_id", "expect": "reject", "reject_code": "invalid_input", "value": "a b" },
+    { "id": "request_id_null", "group": "request_id", "expect": "reject", "reject_code": "invalid_input", "value": null },
+    { "id": "positive_id_one", "group": "positive_id", "expect": "accept", "value": "1" },
+    { "id": "positive_id_typical", "group": "positive_id", "expect": "accept", "value": "42" },
+    { "id": "positive_id_js_safe_max", "group": "positive_id", "expect": "accept", "value": "9007199254740991" },
+    { "id": "positive_id_i64_max", "group": "positive_id", "expect": "accept", "value": "9223372036854775807" },
+    { "id": "positive_id_zero", "group": "positive_id", "expect": "reject", "reject_code": "invalid_input", "value": "0" },
+    { "id": "positive_id_negative", "group": "positive_id", "expect": "reject", "reject_code": "invalid_input", "value": "-1" },
+    { "id": "positive_id_leading_zero", "group": "positive_id", "expect": "reject", "reject_code": "invalid_input", "value": "01" },
+    { "id": "positive_id_plus_sign", "group": "positive_id", "expect": "reject", "reject_code": "invalid_input", "value": "+1" },
+    { "id": "positive_id_decimal", "group": "positive_id", "expect": "reject", "reject_code": "invalid_input", "value": "1.0" },
+    { "id": "positive_id_exponent", "group": "positive_id", "expect": "reject", "reject_code": "invalid_input", "value": "1e3" },
+    { "id": "positive_id_space_pad", "group": "positive_id", "expect": "reject", "reject_code": "invalid_input", "value": " 1" },
+    { "id": "positive_id_trailing_space", "group": "positive_id", "expect": "reject", "reject_code": "invalid_input", "value": "1 " },
+    { "id": "positive_id_empty", "group": "positive_id", "expect": "reject", "reject_code": "invalid_input", "value": "" },
+    { "id": "positive_id_alpha", "group": "positive_id", "expect": "reject", "reject_code": "invalid_input", "value": "abc" },
+    { "id": "positive_id_overflow_i64", "group": "positive_id", "expect": "reject", "reject_code": "invalid_input", "value": "9223372036854775808" },
+    { "id": "positive_id_huge", "group": "positive_id", "expect": "reject", "reject_code": "invalid_input", "value": "99999999999999999999999999" },
+    { "id": "positive_id_unicode_digits", "group": "positive_id", "expect": "reject", "reject_code": "invalid_input", "value": "１２３" }
+  ]
+}
