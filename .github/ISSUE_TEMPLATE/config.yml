@@ -1,0 +1,8 @@
+blank_issues_enabled: false
+contact_links:
+  - name: 项目交接文档 / Project handoff
+    url: https://github.com/paralcor/pinfeather/blob/main/rumo_clipboard_handoff/docs/pinfeather_project_handoff.md
+    about: 产品方向、版本路线和已知技术问题，提建议前可以先看一遍。
+  - name: 报告安全漏洞 / Report a security vulnerability
+    url: https://github.com/paralcor/pinfeather/security/advisories/new
+    about: 安全问题请私下报告，不要开公开 issue。见 SECURITY.md。
