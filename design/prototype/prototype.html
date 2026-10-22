@@ -1,0 +1,1197 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>片羽 界面原型</title>
+<style>
+/* 主题变量按 shadcn/ui 的命名，实现时直接对应 globals.css */
+:root {
+  --background: #ffffff; --foreground: #09090b; --card: #ffffff; --popover: #ffffff;
+  --muted: #f4f4f5; --muted-foreground: #6b6b74; --accent: #f4f4f5; --accent-foreground: #18181b;
+  --border: #e4e4e7; --input: #d9d9de; --ring: #e0587d;
+  --primary: #b8325a; --primary-foreground: #ffffff;
+  --selected: #fdecf1; --selected-border: #f3b6c7;
+  --destructive: #c42727; --warning: #a15c00; --warning-bg: #fff6e5; --success: #18794e;
+  --brand: #f26a8d; --brand-deep: #b8325a;
+  --code-bg: #f8f8f9; --kw: #a3215a; --str: #1f6f43; --cm: #7a7a85; --num: #8a4b00;
+  --desk: #dfe3ea; --taskbar: rgba(243 244 247 / .92); --shadow: 0 10px 30px rgb(0 0 0 / .12), 0 2px 6px rgb(0 0 0 / .06);
+  --radius: 8px; --radius-sm: 6px;
+  --fs: 13px; --row: 34px; --pad: 8px; --gap: 8px;
+  color-scheme: light;
+}
+:root[data-theme="dark"] {
+  --background: #0c0c0e; --foreground: #f4f4f5; --card: #111114; --popover: #16161a;
+  --muted: #1f1f23; --muted-foreground: #a1a1aa; --accent: #232328; --accent-foreground: #f4f4f5;
+  --border: #2a2a30; --input: #34343b; --ring: #f47a99;
+  --primary: #f47a99; --primary-foreground: #2a0a14;
+  --selected: #3a1622; --selected-border: #7a2c45;
+  --destructive: #f26b6b; --warning: #f0b45b; --warning-bg: #2d2210; --success: #4cc38a;
+  --code-bg: #141418; --kw: #f59ab5; --str: #8fd6a9; --cm: #85858f; --num: #f0b45b;
+  --desk: #1b1e24; --taskbar: rgba(28 28 32 / .92); --shadow: 0 10px 30px rgb(0 0 0 / .5), 0 2px 6px rgb(0 0 0 / .3);
+  color-scheme: dark;
+}
+:root[data-accent="neutral"] { --primary: #18181b; --primary-foreground: #fafafa; --selected: #f0f0f2; --selected-border: #d4d4d8; --ring: #71717a; }
+:root[data-theme="dark"][data-accent="neutral"] { --primary: #f4f4f5; --primary-foreground: #18181b; --selected: #26262b; --selected-border: #3f3f46; --ring: #a1a1aa; }
+:root[data-density="comfortable"] { --fs: 14px; --row: 40px; --pad: 10px; --gap: 10px; }
+
+* { box-sizing: border-box; }
+html, body { height: 100%; }
+body { margin: 0; background: var(--desk); color: var(--foreground); font: var(--fs)/1.5 "Segoe UI Variable Text", "Segoe UI", "Microsoft YaHei UI", "PingFang SC", system-ui, sans-serif; -webkit-font-smoothing: antialiased; }
+button, input, select, textarea { font: inherit; color: inherit; }
+.mono { font-family: "Cascadia Code", "Cascadia Mono", Consolas, "Microsoft YaHei UI", monospace; }
+.sr { position: absolute; width: 1px; height: 1px; overflow: hidden; clip: rect(0 0 0 0); white-space: nowrap; }
+svg.i { width: 16px; height: 16px; flex: none; stroke: currentColor; fill: none; stroke-width: 2; stroke-linecap: round; stroke-linejoin: round; }
+svg.i.sm { width: 14px; height: 14px; } svg.i.lg { width: 20px; height: 20px; }
+:focus-visible { outline: 2px solid var(--ring); outline-offset: 1px; }
+@media (prefers-reduced-motion: reduce) { *, *::before, *::after { animation-duration: 1ms !important; transition-duration: 1ms !important; } }
+
+/* ---------- 原型控制栏（不属于产品） ---------- */
+.proto { position: sticky; top: 0; z-index: 50; display: flex; flex-wrap: wrap; gap: 6px 14px; align-items: center; padding: 8px 14px; background: #fffbe8; color: #3d3a2a; border-bottom: 1px dashed #c9bd7a; font-size: 12px; }
+:root[data-theme="dark"] .proto { background: #24210f; color: #e6dfb8; border-color: #6b6230; }
+.proto .tag { font-weight: 600; padding: 1px 8px; border-radius: 99px; background: rgb(0 0 0 / .08); }
+.proto label { display: inline-flex; align-items: center; gap: 6px; }
+.proto .seg { display: inline-flex; padding: 2px; gap: 2px; border-radius: 7px; background: rgb(0 0 0 / .07); }
+:root[data-theme="dark"] .proto .seg, :root[data-theme="dark"] .proto .tag { background: rgb(255 255 255 / .08); }
+.proto .seg button { border: 0; background: transparent; padding: 2px 8px; border-radius: 5px; cursor: pointer; font-size: 12px; }
+.proto .seg button[aria-pressed="true"] { background: #fff; box-shadow: 0 0 0 1px rgb(0 0 0 / .12); }
+:root[data-theme="dark"] .proto .seg button[aria-pressed="true"] { background: #3a3519; }
+.proto .pbtn { border: 1px solid rgb(0 0 0 / .18); background: transparent; border-radius: 6px; padding: 2px 10px; cursor: pointer; font-size: 12px; }
+:root[data-theme="dark"] .proto .pbtn { border-color: rgb(255 255 255 / .2); }
+
+/* ---------- 通用组件（对应 shadcn Nova） ---------- */
+.btn { display: inline-flex; align-items: center; justify-content: center; gap: 6px; height: calc(var(--row) - 4px); padding: 0 calc(var(--pad) + 2px); border-radius: var(--radius-sm); border: 1px solid transparent; background: transparent; cursor: pointer; white-space: nowrap; font-weight: 500; transition: background .15s, border-color .15s, color .15s; }
+.btn:disabled { opacity: .5; cursor: not-allowed; }
+.btn-primary { background: var(--primary); color: var(--primary-foreground); }
+.btn-primary:hover:not(:disabled) { filter: brightness(1.08); }
+.btn-outline { border-color: var(--input); background: var(--background); }
+.btn-outline:hover:not(:disabled), .btn-ghost:hover:not(:disabled) { background: var(--accent); }
+.btn-ghost { color: var(--foreground); }
+.btn-danger { color: var(--destructive); }
+.btn-danger:hover:not(:disabled) { background: color-mix(in srgb, var(--destructive) 10%, transparent); }
+.btn-icon { width: calc(var(--row) - 4px); padding: 0; }
+.btn-sm { height: calc(var(--row) - 8px); padding: 0 8px; font-size: 12px; }
+.btn-icon.btn-sm { width: calc(var(--row) - 8px); padding: 0; }
+.btn[aria-pressed="true"] { background: var(--selected); color: var(--foreground); border-color: var(--selected-border); }
+.input { height: calc(var(--row) - 4px); width: 100%; padding: 0 10px; border-radius: var(--radius-sm); border: 1px solid var(--input); background: var(--background); outline: none; transition: border-color .15s, box-shadow .15s; }
+.input:focus { border-color: var(--ring); box-shadow: 0 0 0 3px color-mix(in srgb, var(--ring) 22%, transparent); }
+.input[aria-invalid="true"] { border-color: var(--destructive); }
+textarea.input { height: auto; padding: 8px 10px; resize: vertical; line-height: 1.55; }
+select.input { padding-right: 6px; }
+.field { display: grid; gap: 4px; }
+.field > label, .label { font-size: 12px; font-weight: 500; color: var(--foreground); }
+.hint { font-size: 12px; color: var(--muted-foreground); }
+.err { font-size: 12px; color: var(--destructive); }
+.search { position: relative; }
+.search svg { position: absolute; left: 9px; top: 50%; transform: translateY(-50%); color: var(--muted-foreground); pointer-events: none; }
+.search .input { padding-left: 30px; }
+.badge { display: inline-flex; align-items: center; gap: 4px; height: 20px; padding: 0 7px; border-radius: 99px; font-size: 11px; font-weight: 500; border: 1px solid var(--border); color: var(--muted-foreground); white-space: nowrap; }
+.badge.brand { border-color: var(--selected-border); background: var(--selected); color: var(--foreground); }
+.badge.warn { border-color: transparent; background: var(--warning-bg); color: var(--warning); }
+.chips { display: flex; gap: 4px; flex-wrap: wrap; }
+.chip { height: 26px; padding: 0 10px; border-radius: 99px; border: 1px solid var(--border); background: transparent; cursor: pointer; font-size: 12px; color: var(--muted-foreground); display: inline-flex; align-items: center; gap: 5px; }
+.chip:hover { color: var(--foreground); }
+.chip[aria-pressed="true"] { background: var(--foreground); color: var(--background); border-color: var(--foreground); }
+.switch { position: relative; width: 34px; height: 20px; flex: none; border-radius: 99px; border: 0; background: var(--input); cursor: pointer; transition: background .15s; padding: 0; }
+.switch::after { content: ""; position: absolute; top: 2px; left: 2px; width: 16px; height: 16px; border-radius: 50%; background: #fff; box-shadow: 0 1px 2px rgb(0 0 0 / .25); transition: transform .18s; }
+.switch[aria-checked="true"] { background: var(--primary); }
+.switch[aria-checked="true"]::after { transform: translateX(14px); }
+:root[data-theme="dark"] .switch[aria-checked="true"]::after { background: var(--primary-foreground); }
+.switch:disabled { opacity: .45; cursor: not-allowed; }
+.kbd { display: inline-flex; align-items: center; height: 18px; min-width: 18px; padding: 0 5px; border-radius: 4px; border: 1px solid var(--border); border-bottom-width: 2px; font-size: 11px; color: var(--muted-foreground); background: var(--background); font-family: inherit; }
+.sep { height: 1px; background: var(--border); margin: 6px 0; }
+.app-tile { width: 18px; height: 18px; border-radius: 5px; display: inline-grid; place-items: center; font-size: 10px; font-weight: 700; color: #fff; flex: none; }
+.empty { display: grid; justify-items: center; gap: 8px; padding: 40px 16px; text-align: center; color: var(--muted-foreground); }
+.empty svg.i { width: 28px; height: 28px; stroke-width: 1.5; }
+.empty b { color: var(--foreground); font-weight: 600; }
+.menu { position: absolute; z-index: 30; min-width: 180px; padding: 4px; border-radius: var(--radius); border: 1px solid var(--border); background: var(--popover); box-shadow: var(--shadow); animation: pop .14s ease-out; }
+.menu button { display: flex; width: 100%; align-items: center; gap: 8px; height: calc(var(--row) - 4px); padding: 0 8px; border: 0; border-radius: 5px; background: transparent; cursor: pointer; text-align: left; }
+.menu button:hover, .menu button:focus-visible { background: var(--accent); outline: none; }
+.menu .mh { padding: 4px 8px; font-size: 11px; color: var(--muted-foreground); }
+@keyframes pop { from { opacity: 0; transform: translateY(4px) scale(.98); } }
+@keyframes rowin { from { opacity: 0; transform: translateY(-6px); background: var(--selected); } }
+
+/* ---------- 场景 ---------- */
+#stage { position: relative; height: calc(100vh - var(--proto-h, 42px)); min-height: 560px; overflow: auto; }
+.desk { position: relative; height: 100%; min-width: 900px; background: var(--desk); overflow: hidden; }
+.taskbar { position: absolute; left: 0; right: 0; bottom: 0; height: 48px; display: flex; align-items: center; padding: 0 12px; background: var(--taskbar); border-top: 1px solid var(--border); backdrop-filter: blur(12px); }
+.taskbar .mid { flex: 1; display: flex; justify-content: center; gap: 4px; }
+.taskbar .tb { width: 40px; height: 40px; border-radius: 6px; display: grid; place-items: center; border: 0; background: transparent; }
+.taskbar .tb.on { background: rgb(128 128 128 / .14); }
+.taskbar .ph { width: 22px; height: 22px; border-radius: 5px; background: rgb(128 128 128 / .3); }
+.tray { display: flex; align-items: center; gap: 4px; font-size: 12px; }
+.tray .ti { width: 30px; height: 30px; border-radius: 5px; border: 0; background: transparent; display: grid; place-items: center; cursor: pointer; }
+.tray .ti:hover, .tray .ti[aria-expanded="true"] { background: rgb(128 128 128 / .18); }
+.tray .ti img { width: 16px; height: 16px; }
+.tray .ti.paused img { opacity: .45; }
+.tray .clock { padding: 0 8px; text-align: right; line-height: 1.25; }
+.editor { position: absolute; left: 6%; top: 7%; width: min(640px, 56%); height: min(440px, 64%); display: flex; flex-direction: column; border-radius: 10px; background: var(--card); border: 1px solid var(--border); box-shadow: var(--shadow); overflow: hidden; }
+.editor .tt { height: 36px; display: flex; align-items: center; gap: 8px; padding: 0 12px; border-bottom: 1px solid var(--border); font-size: 12px; color: var(--muted-foreground); }
+.editor textarea { flex: 1; border: 0; outline: none; resize: none; padding: 14px 16px; background: transparent; line-height: 1.7; }
+.editor .hintbar { padding: 8px 14px; border-top: 1px solid var(--border); font-size: 12px; color: var(--muted-foreground); display: flex; gap: 8px; align-items: center; flex-wrap: wrap; }
+
+/* 快捷面板 */
+.qp { position: absolute; right: 24px; bottom: 60px; width: 420px; height: 540px; display: flex; flex-direction: column; border-radius: 12px; background: var(--popover); border: 1px solid var(--border); box-shadow: var(--shadow); overflow: hidden; transform-origin: 85% 100%; animation: qpin .17s cubic-bezier(.2,.9,.3,1); }
+.qp.split { width: 760px; }
+.qp.closing { animation: qpout .12s ease-in forwards; }
+@keyframes qpin { from { opacity: 0; transform: translateY(8px) scale(.98); } }
+@keyframes qpout { to { opacity: 0; transform: translateY(6px) scale(.985); } }
+.qp .qhead { padding: 10px 10px 8px; display: grid; gap: 8px; border-bottom: 1px solid var(--border); }
+.qp .qhead .search .input { height: 36px; font-size: 14px; border-color: transparent; background: var(--muted); }
+.qp .qhead .search .input:focus { background: var(--background); }
+.qp .qbody { flex: 1; min-height: 0; display: flex; }
+.qp .qlist { flex: 1; min-width: 0; overflow: auto; padding: 4px; }
+.qp.split .qlist { flex: 0 0 340px; border-right: 1px solid var(--border); }
+.qp .qprev { flex: 1; min-width: 0; overflow: auto; padding: 12px; display: flex; flex-direction: column; gap: 10px; }
+.qp .drawer { border-top: 1px solid var(--border); max-height: 210px; overflow: auto; padding: 10px 12px; background: var(--card); animation: pop .15s ease-out; }
+.qp .qfoot { display: flex; align-items: center; gap: 4px 9px; padding: 7px 10px; border-top: 1px solid var(--border); font-size: 11.5px; color: var(--muted-foreground); flex-wrap: wrap; }
+.qp .qfoot span { display: inline-flex; align-items: center; gap: 4px; }
+.qp .paused-bar { display: flex; align-items: center; gap: 8px; padding: 6px 10px; background: var(--warning-bg); color: var(--warning); font-size: 12px; }
+.qp .paused-bar .btn { margin-left: auto; color: inherit; }
+.grp { padding: 8px 8px 4px; font-size: 11px; font-weight: 600; color: var(--muted-foreground); letter-spacing: .02em; }
+.row { position: relative; display: flex; align-items: center; gap: 10px; min-height: var(--row); padding: 5px 8px; border-radius: var(--radius-sm); cursor: pointer; border: 1px solid transparent; }
+.row:hover { background: var(--accent); }
+.row[aria-selected="true"] { background: var(--selected); border-color: var(--selected-border); }
+.row .ico { width: 26px; height: 26px; border-radius: 6px; display: grid; place-items: center; flex: none; background: var(--muted); color: var(--muted-foreground); overflow: hidden; }
+.row .ico img { width: 100%; height: 100%; object-fit: cover; }
+.row .txt { flex: 1; min-width: 0; }
+.row .t1 { white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.row .t2 { font-size: 11.5px; color: var(--muted-foreground); display: flex; gap: 6px; align-items: center; white-space: nowrap; overflow: hidden; }
+.row .num { font-size: 11px; color: var(--muted-foreground); width: 14px; text-align: center; }
+.row .star { color: #d99a00; }
+.row.enter { animation: rowin .35s ease-out; }
+.row .chk { width: 16px; height: 16px; border-radius: 4px; border: 1px solid var(--input); display: grid; place-items: center; flex: none; background: var(--background); }
+.row .chk svg { width: 12px; height: 12px; stroke-width: 3; }
+.row[data-multi="true"] .chk { background: var(--primary); border-color: var(--primary); color: var(--primary-foreground); }
+
+/* 管理窗口 */
+.winwrap { height: 100%; min-width: 980px; display: grid; place-items: center; padding: 16px; background: var(--desk); }
+.win { width: min(1240px, 100%); height: min(780px, 100%); display: flex; flex-direction: column; border-radius: 10px; background: var(--background); border: 1px solid var(--border); box-shadow: var(--shadow); overflow: hidden; position: relative; }
+.titlebar { height: 38px; display: flex; align-items: center; gap: 8px; padding-left: 12px; border-bottom: 1px solid var(--border); background: var(--card); font-size: 12px; flex: none; }
+.titlebar img { width: 16px; height: 16px; }
+.titlebar .wc { margin-left: auto; display: flex; height: 100%; }
+.titlebar .wc span { width: 46px; display: grid; place-items: center; color: var(--muted-foreground); }
+.wbody { flex: 1; min-height: 0; display: flex; }
+.pane { min-width: 0; min-height: 0; display: flex; flex-direction: column; }
+.pane.fill { flex: 1; min-width: 300px; }
+.side { flex-shrink: 0; }
+.resizer { flex: 0 0 1px; position: relative; background: var(--border); cursor: col-resize; outline: none; }
+.resizer::after { content: ""; position: absolute; inset: 0 -4px; }
+.resizer:hover, .resizer:focus-visible, .resizer.drag { background: var(--ring); }
+.side { background: var(--card); padding: 8px; gap: 2px; overflow: hidden; }
+.side .nav { display: flex; align-items: center; gap: 10px; height: var(--row); padding: 0 10px; border-radius: var(--radius-sm); border: 0; background: transparent; cursor: pointer; color: var(--muted-foreground); width: 100%; text-align: left; white-space: nowrap; }
+.side .nav:hover { background: var(--accent); color: var(--foreground); }
+.side .nav[aria-current="page"] { background: var(--selected); color: var(--foreground); font-weight: 600; }
+.side .nav .cnt { margin-left: auto; font-size: 11px; font-weight: 400; color: var(--muted-foreground); }
+.side .brand { display: flex; align-items: center; gap: 8px; padding: 6px 8px 12px; font-weight: 600; white-space: nowrap; }
+.side .brand img { width: 22px; height: 22px; }
+.side .grow { flex: 1; }
+.side .status { display: grid; gap: 8px; padding: 10px; border-radius: var(--radius); border: 1px solid var(--border); background: var(--background); font-size: 12px; }
+.side .status .l { display: flex; align-items: center; gap: 8px; }
+.side .status .l .switch { margin-left: auto; }
+.dot { width: 7px; height: 7px; border-radius: 50%; background: var(--success); flex: none; }
+.dot.off { background: var(--warning); } .dot.idle { background: var(--muted-foreground); }
+.side.collapsed .lbl, .side.collapsed .cnt, .side.collapsed .status, .side.collapsed .brand span { display: none; }
+.side.collapsed .nav { justify-content: center; padding: 0; }
+.side.collapsed .brand { justify-content: center; padding: 6px 0 12px; }
+.phead { display: flex; align-items: center; gap: 8px; padding: 10px 12px; border-bottom: 1px solid var(--border); min-height: 52px; flex-wrap: wrap; }
+.phead h1, .phead h2 { margin: 0; font-size: 14px; font-weight: 600; }
+.phead .sp { flex: 1; }
+.scroll { flex: 1; min-height: 0; overflow: auto; }
+.toolbar { display: flex; gap: 6px; align-items: center; padding: 8px 12px; border-bottom: 1px solid var(--border); flex-wrap: wrap; }
+.bulk { display: flex; gap: 6px; align-items: center; padding: 6px 12px; background: var(--selected); border-bottom: 1px solid var(--selected-border); animation: pop .14s ease-out; }
+.cards { display: grid; grid-template-columns: repeat(auto-fill, minmax(200px, 1fr)); gap: 8px; padding: 8px 12px; }
+.card { border: 1px solid var(--border); border-radius: var(--radius); padding: 10px; display: grid; gap: 8px; cursor: pointer; background: var(--card); min-width: 0; align-content: start; }
+.card:hover { border-color: var(--input); }
+.card[aria-selected="true"] { border-color: var(--selected-border); background: var(--selected); }
+.card .body { font-size: 12px; color: var(--muted-foreground); max-height: 72px; overflow: hidden; white-space: pre-wrap; word-break: break-word; }
+.card img { width: 100%; height: 86px; object-fit: cover; border-radius: 4px; }
+.prev { padding: 14px 16px; display: grid; gap: 14px; align-content: start; }
+.prev .content { border: 1px solid var(--border); border-radius: var(--radius); overflow: hidden; }
+.prev pre, .qprev pre, .drawer pre { margin: 0; padding: 12px; background: var(--code-bg); overflow: auto; font-size: 12.5px; line-height: 1.6; white-space: pre-wrap; word-break: break-word; }
+.prev .text, .qprev .text, .drawer .text { padding: 12px; white-space: pre-wrap; word-break: break-word; line-height: 1.65; }
+.prev img, .qprev img, .drawer img { display: block; max-width: 100%; }
+.linkcard { display: flex; gap: 10px; padding: 12px; align-items: flex-start; }
+.linkcard .fav { width: 32px; height: 32px; border-radius: 8px; background: var(--muted); display: grid; place-items: center; flex: none; }
+.linkcard a { color: var(--primary); word-break: break-all; }
+:root[data-accent="neutral"] .linkcard a { text-decoration: underline; }
+.meta { display: grid; grid-template-columns: 76px 1fr; gap: 6px 10px; font-size: 12px; }
+.meta dt { color: var(--muted-foreground); } .meta dd { margin: 0; min-width: 0; overflow-wrap: anywhere; }
+.actions { display: flex; gap: 6px; flex-wrap: wrap; align-items: center; }
+mark { background: color-mix(in srgb, var(--brand) 32%, transparent); color: inherit; border-radius: 2px; }
+.tok-kw { color: var(--kw); } .tok-str { color: var(--str); } .tok-cm { color: var(--cm); font-style: italic; } .tok-num { color: var(--num); }
+
+/* 集合 */
+.colitem { display: flex; align-items: center; gap: 8px; width: 100%; height: var(--row); padding: 0 8px; border: 0; border-radius: var(--radius-sm); background: transparent; cursor: pointer; text-align: left; }
+.colitem:hover { background: var(--accent); }
+.colitem[aria-current="true"] { background: var(--selected); font-weight: 600; }
+.colitem .n { flex: 1; min-width: 0; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.sortlist { display: grid; gap: 8px; padding: 12px; }
+.mat { position: relative; display: grid; grid-template-columns: auto 1fr auto; gap: 8px; padding: 8px 8px 8px 4px; border: 1px solid var(--border); border-radius: var(--radius); background: var(--card); transition: transform .18s cubic-bezier(.2,.8,.2,1), box-shadow .18s; }
+.mat.dragging { z-index: 5; box-shadow: var(--shadow); transition: box-shadow .18s; border-color: var(--selected-border); }
+.mat.lifting { transition: none; }
+.mat .handle { width: 22px; border: 0; background: transparent; border-radius: 5px; color: var(--muted-foreground); cursor: grab; display: grid; place-items: center; touch-action: none; }
+.mat .handle:hover { background: var(--accent); color: var(--foreground); }
+.mat.dragging .handle { cursor: grabbing; }
+.mat .head { display: flex; align-items: center; gap: 6px; font-size: 11.5px; color: var(--muted-foreground); margin-bottom: 4px; }
+.mat .head b { color: var(--foreground); font-weight: 600; }
+.mat textarea { width: 100%; min-height: 54px; }
+.mat .snippet { font-size: 12.5px; white-space: pre-wrap; word-break: break-word; max-height: 92px; overflow: hidden; }
+.mat .snippet.code { font-family: "Cascadia Code", Consolas, monospace; font-size: 12px; background: var(--code-bg); padding: 6px 8px; border-radius: 5px; }
+.mat .ops { display: flex; flex-direction: column; gap: 2px; }
+.compose { padding: 12px; display: grid; gap: 12px; align-content: start; border-bottom: 1px solid var(--border); }
+.compose .grid2 { display: grid; grid-template-columns: repeat(auto-fill, minmax(150px, 1fr)); gap: 8px; }
+.md { margin: 0; padding: 14px; font-family: inherit; font-size: 12.5px; line-height: 1.65; white-space: pre-wrap; word-break: break-word; }
+.md .pill, .tpl-view .pill { display: inline; padding: 1px 6px; border-radius: 5px; background: var(--selected); border: 1px solid var(--selected-border); font-family: inherit; }
+.md .pill.miss, .tpl-view .pill.miss { background: color-mix(in srgb, var(--destructive) 10%, transparent); border-color: color-mix(in srgb, var(--destructive) 40%, transparent); color: var(--destructive); }
+.md .mat-block { color: var(--muted-foreground); }
+.ai-note { display: flex; gap: 8px; padding: 10px 12px; border-radius: var(--radius); border: 1px solid var(--border); font-size: 12px; color: var(--muted-foreground); background: var(--card); }
+.ai-note b { color: var(--foreground); }
+.tpl-view { padding: 10px 12px; border: 1px dashed var(--border); border-radius: var(--radius); line-height: 1.9; white-space: pre-wrap; word-break: break-word; font-size: 12.5px; }
+
+/* 设置 */
+.settings { max-width: 760px; padding: 8px 20px 40px; }
+.settings section { padding: 18px 0; border-bottom: 1px solid var(--border); display: grid; gap: 12px; }
+.settings h2 { margin: 0; font-size: 14px; font-weight: 600; display: flex; align-items: center; gap: 8px; }
+.settings .srow { display: flex; align-items: center; gap: 16px; justify-content: space-between; }
+.settings .srow > div:first-child { min-width: 0; }
+.settings .srow .d { font-size: 12px; color: var(--muted-foreground); }
+.settings .list { border: 1px solid var(--border); border-radius: var(--radius); overflow: hidden; }
+.settings .list > div { display: flex; align-items: center; gap: 10px; padding: 8px 10px; border-bottom: 1px solid var(--border); }
+.settings .list > div:last-child { border-bottom: 0; }
+.settings .codeblk { margin: 0; padding: 10px 12px; border-radius: var(--radius); background: var(--code-bg); border: 1px solid var(--border); font-size: 12px; line-height: 1.7; }
+.settings .disabled { opacity: .55; }
+.rec { min-width: 170px; justify-content: center; font-family: inherit; }
+.rec.on { border-color: var(--ring); box-shadow: 0 0 0 3px color-mix(in srgb, var(--ring) 22%, transparent); }
+
+/* toast（对应 sonner） */
+.toasts { position: absolute; right: 16px; bottom: 16px; z-index: 40; display: grid; gap: 8px; width: 340px; pointer-events: none; }
+.desk .toasts { bottom: 64px; right: auto; left: 50%; transform: translateX(-50%); }
+.toast { pointer-events: auto; display: flex; gap: 10px; align-items: flex-start; padding: 10px 12px; border-radius: var(--radius); border: 1px solid var(--border); background: var(--popover); box-shadow: var(--shadow); font-size: 12.5px; animation: toastin .2s cubic-bezier(.2,.9,.3,1); }
+.toast.warn { border-color: color-mix(in srgb, var(--warning) 45%, transparent); }
+.toast.warn > svg { color: var(--warning); }
+.toast.ok > svg { color: var(--success); }
+.toast .tb { flex: 1; min-width: 0; } .toast .tb b { display: block; font-weight: 600; }
+.toast .btn { margin-left: auto; }
+@keyframes toastin { from { opacity: 0; transform: translateY(8px); } }
+
+/* 对话框 */
+.overlay { position: absolute; inset: 0; z-index: 35; background: rgb(0 0 0 / .32); display: grid; place-items: center; animation: fade .15s; }
+@keyframes fade { from { opacity: 0; } }
+.dialog { width: min(560px, 92%); max-height: 80%; display: flex; flex-direction: column; border-radius: 12px; background: var(--popover); border: 1px solid var(--border); box-shadow: var(--shadow); animation: pop .16s ease-out; }
+.dialog header { padding: 14px 16px 8px; } .dialog header h2 { margin: 0 0 2px; font-size: 15px; }
+.dialog footer { padding: 10px 16px; display: flex; justify-content: flex-end; gap: 8px; border-top: 1px solid var(--border); }
+.dialog .dbody { padding: 0 16px 10px; overflow: auto; display: grid; grid-template-columns: minmax(0, 1fr); gap: 8px; }
+.dialog { overflow: hidden; }
+</style>
+</head>
+<body>
+<div class="proto" id="proto" role="region" aria-label="原型控制"></div>
+<div id="stage"></div>
+<script>
+/* =====================================================================
+   片羽 / Pinfeather 界面原型。单文件、无依赖，所有数据都是假的。
+   实现栈（给接手的人）：shadcn/ui Nova · Lucide · Motion · react-resizable-panels · dnd-kit · Zustand。
+   这里用原生代码模拟它们的观感和交互，每块在 README 里有对应。
+   ===================================================================== */
+
+const ASSET = { app: "data:image/svg+xml;base64,PHN2ZyByb2xlPSJpbWciIGFyaWEtbGFiZWw9IueJh+e+vSIgeG1sbnM9Imh0dHA6Ly93d3cudzMub3JnLzIwMDAvc3ZnIiB2aWV3Qm94PSIwIDAgMzIgMzIiIHdpZHRoPSI1MTIiIGhlaWdodD0iNTEyIj48ZGVmcz48bGluZWFyR3JhZGllbnQgaWQ9Imc0ODkiIHgxPSIwIiB5MT0iMCIgeDI9IjEiIHkyPSIxIj48c3RvcCBvZmZzZXQ9IjAiIHN0b3AtY29sb3I9IiNmZmI3OWEiLz48c3RvcCBvZmZzZXQ9IjEiIHN0b3AtY29sb3I9IiNmMjZhOGQiLz48L2xpbmVhckdyYWRpZW50PjwvZGVmcz48cmVjdCB3aWR0aD0iMzIiIGhlaWdodD0iMzIiIHJ4PSI3LjM2IiBmaWxsPSJ1cmwoI2c0ODkpIi8+PGcgdHJhbnNmb3JtPSJ0cmFuc2xhdGUoMTYgMTYpIHNjYWxlKDAuNzkpIHRyYW5zbGF0ZSgtMC45NyAzLjk1KSI+PGRlZnM+PG1hc2sgaWQ9Im00OTMiIG1hc2tVbml0cz0idXNlclNwYWNlT25Vc2UiIHg9Ii02MCIgeT0iLTYwIiB3aWR0aD0iMTIwIiBoZWlnaHQ9IjEyMCI+PHJlY3QgeD0iLTYwIiB5PSItNjAiIHdpZHRoPSIxMjAiIGhlaWdodD0iMTIwIiBmaWxsPSIjZmZmIi8+PHBhdGggZD0iTS01LjE5IDguMzJMLTMuOTIgNi43MUwtMi43MSA1LjA3TC0xLjU2IDMuNEwtMC40NyAxLjY5TDAuNTYgLTAuMDVMMS41NCAtMS44M0wyLjQ1IC0zLjY0TDMuMzEgLTUuNDgiIGZpbGw9Im5vbmUiIHN0cm9rZT0iIzAwMCIgc3Ryb2tlLXdpZHRoPSIuNiIgc3Ryb2tlLWxpbmVjYXA9InJvdW5kIi8+PHBhdGggZD0iTTEuNDIgMC40N0w1LjI0IDcuNDEiIGZpbGw9Im5vbmUiIHN0cm9rZT0iIzAwMCIgc3Ryb2tlLXdpZHRoPSIwLjgiIHN0cm9rZS1saW5lY2FwPSJyb3VuZCIvPjxwYXRoIGQ9Ik0tMi4wOCAyLjM4TC04LjY0IDMuMzMiIGZpbGw9Im5vbmUiIHN0cm9rZT0iIzAwMCIgc3Ryb2tlLXdpZHRoPSIwLjgiIHN0cm9rZS1saW5lY2FwPSJyb3VuZCIvPjxwYXRoIGQ9Ik0tMS41OSA1LjJMMS45MSAxMS45NiIgZmlsbD0ibm9uZSIgc3Ryb2tlPSIjMDAwIiBzdHJva2Utd2lkdGg9IjAuOCIgc3Ryb2tlLWxpbmVjYXA9InJvdW5kIi8+PGNsaXBQYXRoIGlkPSJjNDkwIj48cmVjdCB4PSItNjAiIHk9Ii0xMi43NCIgd2lkdGg9IjEyMCIgaGVpZ2h0PSI2MCIvPjwvY2xpcFBhdGg+PGcgY2xpcC1wYXRoPSJ1cmwoI2M0OTApIj48ZyB0cmFuc2Zvcm09InRyYW5zbGF0ZSg1LjUgLTExLjE0KSI+PHBhdGggdHJhbnNmb3JtPSJyb3RhdGUoLTIwKSBzY2FsZSgxLjMpIiBkPSJNLS45IDEuNFYtMi42QS45IC45IDAgMCAxIC45IC0yLjZWMy40QTEuMzUgMS4zNSAwIDAgMSAtMS44IDMuNFYtMy42QTEuOCAxLjggMCAwIDEgMS44IC0zLjZWMS42IiBmaWxsPSJub25lIiBzdHJva2U9IiMwMDAiIHN0cm9rZS13aWR0aD0iMS44MzA3NjkyMzA3NjkyMzA3IiBzdHJva2UtbGluZWNhcD0icm91bmQiLz48L2c+PC9nPjwvbWFzaz48L2RlZnM+PGcgbWFzaz0idXJsKCNtNDkzKSI+PHBhdGggZD0iTS03LjE4IDEwLjY0Qy00IDEwLjYzIDEuNTIgOC4zOSA0LjMxIDQuMjJDNS45NSAxLjM2IDQuOTUgLTEuOTkgMy4xNCAtNS4xMUMxLjEgLTQuNjggLTEuNDMgLTMuMzcgLTMuNzkgMC43Qy02LjM1IDQuNDIgLTcuNDYgOC45NyAtNy4xOCAxMC42NFoiIGZpbGw9IiNmZmZmZmYiLz48cGF0aCBkPSJNMi44MSAtNC4zOEwzLjU0IC02TDQuMjIgLTcuNjVMNC44NiAtOS4zMkw1LjQ1IC0xMS4wMkw2IC0xMi43NEw2LjUxIC0xNC40OSIgZmlsbD0ibm9uZSIgc3Ryb2tlPSIjZmZmZmZmIiBzdHJva2Utd2lkdGg9IjEuNCIgc3Ryb2tlLWxpbmVjYXA9InJvdW5kIi8+PC9nPjxkZWZzPjxjbGlwUGF0aCBpZD0iYzQ5MSI+PHJlY3QgeD0iLTYwIiB5PSItNjAiIHdpZHRoPSIxMjAiIGhlaWdodD0iNDcuMjYiLz48L2NsaXBQYXRoPjxtYXNrIGlkPSJtNDkyIiBtYXNrVW5pdHM9InVzZXJTcGFjZU9uVXNlIiB4PSItNjAiIHk9Ii02MCIgd2lkdGg9IjEyMCIgaGVpZ2h0PSIxMjAiPjxyZWN0IHg9Ii02MCIgeT0iLTYwIiB3aWR0aD0iMTIwIiBoZWlnaHQ9IjEyMCIgZmlsbD0iI2ZmZiIvPjxnIGNsaXAtcGF0aD0idXJsKCNjNDkxKSI+PHBhdGggZD0iTTIuODEgLTQuMzhMMy41NCAtNkw0LjIyIC03LjY1TDQuODYgLTkuMzJMNS40NSAtMTEuMDJMNiAtMTIuNzRMNi41MSAtMTQuNDkiIGZpbGw9Im5vbmUiIHN0cm9rZT0iIzAwMCIgc3Ryb2tlLXdpZHRoPSIzIiBzdHJva2UtbGluZWNhcD0icm91bmQiLz48L2c+PC9tYXNrPjwvZGVmcz48ZyBtYXNrPSJ1cmwoI200OTIpIj48ZyB0cmFuc2Zvcm09InRyYW5zbGF0ZSg1LjUgLTExLjE0KSI+PHBhdGggdHJhbnNmb3JtPSJyb3RhdGUoLTIwKSBzY2FsZSgxLjMpIiBkPSJNLS45IDEuNFYtMi42QS45IC45IDAgMCAxIC45IC0yLjZWMy40QTEuMzUgMS4zNSAwIDAgMSAtMS44IDMuNFYtMy42QTEuOCAxLjggMCAwIDEgMS44IC0zLjZWMS42IiBmaWxsPSJub25lIiBzdHJva2U9IiNiODMyNWEiIHN0cm9rZS13aWR0aD0iMC42IiBzdHJva2UtbGluZWNhcD0icm91bmQiLz48L2c+PC9nPjwvZz48L3N2Zz4K", trayLight: "data:image/svg+xml;base64,PHN2ZyByb2xlPSJpbWciIGFyaWEtbGFiZWw9IueJh+e+vSIgeG1sbnM9Imh0dHA6Ly93d3cudzMub3JnLzIwMDAvc3ZnIiB2aWV3Qm94PSIwIDAgMzIgMzIiIHdpZHRoPSIxNiIgaGVpZ2h0PSIxNiI+PGcgdHJhbnNmb3JtPSJ0cmFuc2xhdGUoMTYgMTYpIHNjYWxlKDEuMDMpIHRyYW5zbGF0ZSgtMC45NyAzLjk1KSI+PGRlZnM+PG1hc2sgaWQ9Im01MjMiIG1hc2tVbml0cz0idXNlclNwYWNlT25Vc2UiIHg9Ii02MCIgeT0iLTYwIiB3aWR0aD0iMTIwIiBoZWlnaHQ9IjEyMCI+PHJlY3QgeD0iLTYwIiB5PSItNjAiIHdpZHRoPSIxMjAiIGhlaWdodD0iMTIwIiBmaWxsPSIjZmZmIi8+PHBhdGggZD0iTTEuNDIgMC40N0w1LjI0IDcuNDEiIGZpbGw9Im5vbmUiIHN0cm9rZT0iIzAwMCIgc3Ryb2tlLXdpZHRoPSIxLjEiIHN0cm9rZS1saW5lY2FwPSJyb3VuZCIvPjxwYXRoIGQ9Ik0tMi4wOCAyLjM4TC04LjY0IDMuMzMiIGZpbGw9Im5vbmUiIHN0cm9rZT0iIzAwMCIgc3Ryb2tlLXdpZHRoPSIxLjEiIHN0cm9rZS1saW5lY2FwPSJyb3VuZCIvPjxjbGlwUGF0aCBpZD0iYzUyMCI+PHJlY3QgeD0iLTYwIiB5PSItMTIuNzQiIHdpZHRoPSIxMjAiIGhlaWdodD0iNjAiLz48L2NsaXBQYXRoPjxnIGNsaXAtcGF0aD0idXJsKCNjNTIwKSI+PGcgdHJhbnNmb3JtPSJ0cmFuc2xhdGUoNS41IC0xMS4xNCkiPjxwYXRoIHRyYW5zZm9ybT0icm90YXRlKC0yMCkgc2NhbGUoMS4zKSIgZD0iTS0uOSAxLjRWLTIuNkEuOSAuOSAwIDAgMSAuOSAtMi42VjMuNEExLjM1IDEuMzUgMCAwIDEgLTEuOCAzLjRWLTMuNkExLjggMS44IDAgMCAxIDEuOCAtMy42VjEuNiIgZmlsbD0ibm9uZSIgc3Ryb2tlPSIjMDAwIiBzdHJva2Utd2lkdGg9IjIuMzQ2MTUzODQ2MTUzODQ2IiBzdHJva2UtbGluZWNhcD0icm91bmQiLz48L2c+PC9nPjwvbWFzaz48L2RlZnM+PGcgbWFzaz0idXJsKCNtNTIzKSI+PHBhdGggZD0iTS03LjE4IDEwLjY0Qy00IDEwLjYzIDEuNTIgOC4zOSA0LjMxIDQuMjJDNS45NSAxLjM2IDQuOTUgLTEuOTkgMy4xNCAtNS4xMUMxLjEgLTQuNjggLTEuNDMgLTMuMzcgLTMuNzkgMC43Qy02LjM1IDQuNDIgLTcuNDYgOC45NyAtNy4xOCAxMC42NFoiIGZpbGw9IiNlZTVmODQiLz48cGF0aCBkPSJNMi44MSAtNC4zOEwzLjU0IC02TDQuMjIgLTcuNjVMNC44NiAtOS4zMkw1LjQ1IC0xMS4wMkw2IC0xMi43NEw2LjUxIC0xNC40OSIgZmlsbD0ibm9uZSIgc3Ryb2tlPSIjZWU1Zjg0IiBzdHJva2Utd2lkdGg9IjEuOSIgc3Ryb2tlLWxpbmVjYXA9InJvdW5kIi8+PC9nPjxkZWZzPjxjbGlwUGF0aCBpZD0iYzUyMSI+PHJlY3QgeD0iLTYwIiB5PSItNjAiIHdpZHRoPSIxMjAiIGhlaWdodD0iNDcuMjYiLz48L2NsaXBQYXRoPjxtYXNrIGlkPSJtNTIyIiBtYXNrVW5pdHM9InVzZXJTcGFjZU9uVXNlIiB4PSItNjAiIHk9Ii02MCIgd2lkdGg9IjEyMCIgaGVpZ2h0PSIxMjAiPjxyZWN0IHg9Ii02MCIgeT0iLTYwIiB3aWR0aD0iMTIwIiBoZWlnaHQ9IjEyMCIgZmlsbD0iI2ZmZiIvPjxnIGNsaXAtcGF0aD0idXJsKCNjNTIxKSI+PHBhdGggZD0iTTIuODEgLTQuMzhMMy41NCAtNkw0LjIyIC03LjY1TDQuODYgLTkuMzJMNS40NSAtMTEuMDJMNiAtMTIuNzRMNi41MSAtMTQuNDkiIGZpbGw9Im5vbmUiIHN0cm9rZT0iIzAwMCIgc3Ryb2tlLXdpZHRoPSIzLjkiIHN0cm9rZS1saW5lY2FwPSJyb3VuZCIvPjwvZz48L21hc2s+PC9kZWZzPjxnIG1hc2s9InVybCgjbTUyMikiPjxnIHRyYW5zZm9ybT0idHJhbnNsYXRlKDUuNSAtMTEuMTQpIj48cGF0aCB0cmFuc2Zvcm09InJvdGF0ZSgtMjApIHNjYWxlKDEuMykiIGQ9Ik0tLjkgMS40Vi0yLjZBLjkgLjkgMCAwIDEgLjkgLTIuNlYzLjRBMS4zNSAxLjM1IDAgMCAxIC0xLjggMy40Vi0zLjZBMS44IDEuOCAwIDAgMSAxLjggLTMuNlYxLjYiIGZpbGw9Im5vbmUiIHN0cm9rZT0iI2I4MzI1YSIgc3Ryb2tlLXdpZHRoPSIwLjgwNzY5MjMwNzY5MjMwNzciIHN0cm9rZS1saW5lY2FwPSJyb3VuZCIvPjwvZz48L2c+PC9nPjwvc3ZnPgo=", trayDark: "data:image/svg+xml;base64,PHN2ZyByb2xlPSJpbWciIGFyaWEtbGFiZWw9IueJh+e+vSIgeG1sbnM9Imh0dHA6Ly93d3cudzMub3JnLzIwMDAvc3ZnIiB2aWV3Qm94PSIwIDAgMzIgMzIiIHdpZHRoPSIxNiIgaGVpZ2h0PSIxNiI+PGcgdHJhbnNmb3JtPSJ0cmFuc2xhdGUoMTYgMTYpIHNjYWxlKDEuMDMpIHRyYW5zbGF0ZSgtMC45NyAzLjk1KSI+PGRlZnM+PG1hc2sgaWQ9Im01MjciIG1hc2tVbml0cz0idXNlclNwYWNlT25Vc2UiIHg9Ii02MCIgeT0iLTYwIiB3aWR0aD0iMTIwIiBoZWlnaHQ9IjEyMCI+PHJlY3QgeD0iLTYwIiB5PSItNjAiIHdpZHRoPSIxMjAiIGhlaWdodD0iMTIwIiBmaWxsPSIjZmZmIi8+PHBhdGggZD0iTTEuNDIgMC40N0w1LjI0IDcuNDEiIGZpbGw9Im5vbmUiIHN0cm9rZT0iIzAwMCIgc3Ryb2tlLXdpZHRoPSIxLjEiIHN0cm9rZS1saW5lY2FwPSJyb3VuZCIvPjxwYXRoIGQ9Ik0tMi4wOCAyLjM4TC04LjY0IDMuMzMiIGZpbGw9Im5vbmUiIHN0cm9rZT0iIzAwMCIgc3Ryb2tlLXdpZHRoPSIxLjEiIHN0cm9rZS1saW5lY2FwPSJyb3VuZCIvPjxjbGlwUGF0aCBpZD0iYzUyNCI+PHJlY3QgeD0iLTYwIiB5PSItMTIuNzQiIHdpZHRoPSIxMjAiIGhlaWdodD0iNjAiLz48L2NsaXBQYXRoPjxnIGNsaXAtcGF0aD0idXJsKCNjNTI0KSI+PGcgdHJhbnNmb3JtPSJ0cmFuc2xhdGUoNS41IC0xMS4xNCkiPjxwYXRoIHRyYW5zZm9ybT0icm90YXRlKC0yMCkgc2NhbGUoMS4zKSIgZD0iTS0uOSAxLjRWLTIuNkEuOSAuOSAwIDAgMSAuOSAtMi42VjMuNEExLjM1IDEuMzUgMCAwIDEgLTEuOCAzLjRWLTMuNkExLjggMS44IDAgMCAxIDEuOCAtMy42VjEuNiIgZmlsbD0ibm9uZSIgc3Ryb2tlPSIjMDAwIiBzdHJva2Utd2lkdGg9IjIuMzQ2MTUzODQ2MTUzODQ2IiBzdHJva2UtbGluZWNhcD0icm91bmQiLz48L2c+PC9nPjwvbWFzaz48L2RlZnM+PGcgbWFzaz0idXJsKCNtNTI3KSI+PHBhdGggZD0iTS03LjE4IDEwLjY0Qy00IDEwLjYzIDEuNTIgOC4zOSA0LjMxIDQuMjJDNS45NSAxLjM2IDQuOTUgLTEuOTkgMy4xNCAtNS4xMUMxLjEgLTQuNjggLTEuNDMgLTMuMzcgLTMuNzkgMC43Qy02LjM1IDQuNDIgLTcuNDYgOC45NyAtNy4xOCAxMC42NFoiIGZpbGw9IiNmZmZmZmYiLz48cGF0aCBkPSJNMi44MSAtNC4zOEwzLjU0IC02TDQuMjIgLTcuNjVMNC44NiAtOS4zMkw1LjQ1IC0xMS4wMkw2IC0xMi43NEw2LjUxIC0xNC40OSIgZmlsbD0ibm9uZSIgc3Ryb2tlPSIjZmZmZmZmIiBzdHJva2Utd2lkdGg9IjEuOSIgc3Ryb2tlLWxpbmVjYXA9InJvdW5kIi8+PC9nPjxkZWZzPjxjbGlwUGF0aCBpZD0iYzUyNSI+PHJlY3QgeD0iLTYwIiB5PSItNjAiIHdpZHRoPSIxMjAiIGhlaWdodD0iNDcuMjYiLz48L2NsaXBQYXRoPjxtYXNrIGlkPSJtNTI2IiBtYXNrVW5pdHM9InVzZXJTcGFjZU9uVXNlIiB4PSItNjAiIHk9Ii02MCIgd2lkdGg9IjEyMCIgaGVpZ2h0PSIxMjAiPjxyZWN0IHg9Ii02MCIgeT0iLTYwIiB3aWR0aD0iMTIwIiBoZWlnaHQ9IjEyMCIgZmlsbD0iI2ZmZiIvPjxnIGNsaXAtcGF0aD0idXJsKCNjNTI1KSI+PHBhdGggZD0iTTIuODEgLTQuMzhMMy41NCAtNkw0LjIyIC03LjY1TDQuODYgLTkuMzJMNS40NSAtMTEuMDJMNiAtMTIuNzRMNi41MSAtMTQuNDkiIGZpbGw9Im5vbmUiIHN0cm9rZT0iIzAwMCIgc3Ryb2tlLXdpZHRoPSIzLjkiIHN0cm9rZS1saW5lY2FwPSJyb3VuZCIvPjwvZz48L21hc2s+PC9kZWZzPjxnIG1hc2s9InVybCgjbTUyNikiPjxnIHRyYW5zZm9ybT0idHJhbnNsYXRlKDUuNSAtMTEuMTQpIj48cGF0aCB0cmFuc2Zvcm09InJvdGF0ZSgtMjApIHNjYWxlKDEuMykiIGQ9Ik0tLjkgMS40Vi0yLjZBLjkgLjkgMCAwIDEgLjkgLTIuNlYzLjRBMS4zNSAxLjM1IDAgMCAxIC0xLjggMy40Vi0zLjZBMS44IDEuOCAwIDAgMSAxLjggLTMuNlYxLjYiIGZpbGw9Im5vbmUiIHN0cm9rZT0iI2ZmYjJjNCIgc3Ryb2tlLXdpZHRoPSIwLjgwNzY5MjMwNzY5MjMwNzciIHN0cm9rZS1saW5lY2FwPSJyb3VuZCIvPjwvZz48L2c+PC9nPjwvc3ZnPgo=", markLight: "data:image/svg+xml;base64,PHN2ZyByb2xlPSJpbWciIGFyaWEtbGFiZWw9IueJh+e+vSIgeG1sbnM9Imh0dHA6Ly93d3cudzMub3JnLzIwMDAvc3ZnIiB2aWV3Qm94PSIwIDAgMzIgMzIiIHdpZHRoPSIyNTYiIGhlaWdodD0iMjU2Ij48ZyB0cmFuc2Zvcm09InRyYW5zbGF0ZSgxNiAxNikgc2NhbGUoMC45NikgdHJhbnNsYXRlKC0wLjk3IDMuOTUpIj48ZGVmcz48bWFzayBpZD0ibTUwNyIgbWFza1VuaXRzPSJ1c2VyU3BhY2VPblVzZSIgeD0iLTYwIiB5PSItNjAiIHdpZHRoPSIxMjAiIGhlaWdodD0iMTIwIj48cmVjdCB4PSItNjAiIHk9Ii02MCIgd2lkdGg9IjEyMCIgaGVpZ2h0PSIxMjAiIGZpbGw9IiNmZmYiLz48cGF0aCBkPSJNLTUuMTkgOC4zMkwtMy45MiA2LjcxTC0yLjcxIDUuMDdMLTEuNTYgMy40TC0wLjQ3IDEuNjlMMC41NiAtMC4wNUwxLjU0IC0xLjgzTDIuNDUgLTMuNjRMMy4zMSAtNS40OCIgZmlsbD0ibm9uZSIgc3Ryb2tlPSIjMDAwIiBzdHJva2Utd2lkdGg9Ii42IiBzdHJva2UtbGluZWNhcD0icm91bmQiLz48cGF0aCBkPSJNMS40MiAwLjQ3TDUuMjQgNy40MSIgZmlsbD0ibm9uZSIgc3Ryb2tlPSIjMDAwIiBzdHJva2Utd2lkdGg9IjAuOCIgc3Ryb2tlLWxpbmVjYXA9InJvdW5kIi8+PHBhdGggZD0iTS0yLjA4IDIuMzhMLTguNjQgMy4zMyIgZmlsbD0ibm9uZSIgc3Ryb2tlPSIjMDAwIiBzdHJva2Utd2lkdGg9IjAuOCIgc3Ryb2tlLWxpbmVjYXA9InJvdW5kIi8+PHBhdGggZD0iTS0xLjU5IDUuMkwxLjkxIDExLjk2IiBmaWxsPSJub25lIiBzdHJva2U9IiMwMDAiIHN0cm9rZS13aWR0aD0iMC44IiBzdHJva2UtbGluZWNhcD0icm91bmQiLz48Y2xpcFBhdGggaWQ9ImM1MDQiPjxyZWN0IHg9Ii02MCIgeT0iLTEyLjc0IiB3aWR0aD0iMTIwIiBoZWlnaHQ9IjYwIi8+PC9jbGlwUGF0aD48ZyBjbGlwLXBhdGg9InVybCgjYzUwNCkiPjxnIHRyYW5zZm9ybT0idHJhbnNsYXRlKDUuNSAtMTEuMTQpIj48cGF0aCB0cmFuc2Zvcm09InJvdGF0ZSgtMjApIHNjYWxlKDEuMykiIGQ9Ik0tLjkgMS40Vi0yLjZBLjkgLjkgMCAwIDEgLjkgLTIuNlYzLjRBMS4zNSAxLjM1IDAgMCAxIC0xLjggMy40Vi0zLjZBMS44IDEuOCAwIDAgMSAxLjggLTMuNlYxLjYiIGZpbGw9Im5vbmUiIHN0cm9rZT0iIzAwMCIgc3Ryb2tlLXdpZHRoPSIxLjgzMDc2OTIzMDc2OTIzMDciIHN0cm9rZS1saW5lY2FwPSJyb3VuZCIvPjwvZz48L2c+PC9tYXNrPjwvZGVmcz48ZyBtYXNrPSJ1cmwoI201MDcpIj48cGF0aCBkPSJNLTcuMTggMTAuNjRDLTQgMTAuNjMgMS41MiA4LjM5IDQuMzEgNC4yMkM1Ljk1IDEuMzYgNC45NSAtMS45OSAzLjE0IC01LjExQzEuMSAtNC42OCAtMS40MyAtMy4zNyAtMy43OSAwLjdDLTYuMzUgNC40MiAtNy40NiA4Ljk3IC03LjE4IDEwLjY0WiIgZmlsbD0iI2VlNWY4NCIvPjxwYXRoIGQ9Ik0yLjgxIC00LjM4TDMuNTQgLTZMNC4yMiAtNy42NUw0Ljg2IC05LjMyTDUuNDUgLTExLjAyTDYgLTEyLjc0TDYuNTEgLTE0LjQ5IiBmaWxsPSJub25lIiBzdHJva2U9IiNlZTVmODQiIHN0cm9rZS13aWR0aD0iMS40IiBzdHJva2UtbGluZWNhcD0icm91bmQiLz48L2c+PGRlZnM+PGNsaXBQYXRoIGlkPSJjNTA1Ij48cmVjdCB4PSItNjAiIHk9Ii02MCIgd2lkdGg9IjEyMCIgaGVpZ2h0PSI0Ny4yNiIvPjwvY2xpcFBhdGg+PG1hc2sgaWQ9Im01MDYiIG1hc2tVbml0cz0idXNlclNwYWNlT25Vc2UiIHg9Ii02MCIgeT0iLTYwIiB3aWR0aD0iMTIwIiBoZWlnaHQ9IjEyMCI+PHJlY3QgeD0iLTYwIiB5PSItNjAiIHdpZHRoPSIxMjAiIGhlaWdodD0iMTIwIiBmaWxsPSIjZmZmIi8+PGcgY2xpcC1wYXRoPSJ1cmwoI2M1MDUpIj48cGF0aCBkPSJNMi44MSAtNC4zOEwzLjU0IC02TDQuMjIgLTcuNjVMNC44NiAtOS4zMkw1LjQ1IC0xMS4wMkw2IC0xMi43NEw2LjUxIC0xNC40OSIgZmlsbD0ibm9uZSIgc3Ryb2tlPSIjMDAwIiBzdHJva2Utd2lkdGg9IjMiIHN0cm9rZS1saW5lY2FwPSJyb3VuZCIvPjwvZz48L21hc2s+PC9kZWZzPjxnIG1hc2s9InVybCgjbTUwNikiPjxnIHRyYW5zZm9ybT0idHJhbnNsYXRlKDUuNSAtMTEuMTQpIj48cGF0aCB0cmFuc2Zvcm09InJvdGF0ZSgtMjApIHNjYWxlKDEuMykiIGQ9Ik0tLjkgMS40Vi0yLjZBLjkgLjkgMCAwIDEgLjkgLTIuNlYzLjRBMS4zNSAxLjM1IDAgMCAxIC0xLjggMy40Vi0zLjZBMS44IDEuOCAwIDAgMSAxLjggLTMuNlYxLjYiIGZpbGw9Im5vbmUiIHN0cm9rZT0iI2I4MzI1YSIgc3Ryb2tlLXdpZHRoPSIwLjYiIHN0cm9rZS1saW5lY2FwPSJyb3VuZCIvPjwvZz48L2c+PC9nPjwvc3ZnPgo=", markDark: "data:image/svg+xml;base64,PHN2ZyByb2xlPSJpbWciIGFyaWEtbGFiZWw9IueJh+e+vSIgeG1sbnM9Imh0dHA6Ly93d3cudzMub3JnLzIwMDAvc3ZnIiB2aWV3Qm94PSIwIDAgMzIgMzIiIHdpZHRoPSIyNTYiIGhlaWdodD0iMjU2Ij48ZyB0cmFuc2Zvcm09InRyYW5zbGF0ZSgxNiAxNikgc2NhbGUoMC45NikgdHJhbnNsYXRlKC0wLjk3IDMuOTUpIj48ZGVmcz48bWFzayBpZD0ibTUxMSIgbWFza1VuaXRzPSJ1c2VyU3BhY2VPblVzZSIgeD0iLTYwIiB5PSItNjAiIHdpZHRoPSIxMjAiIGhlaWdodD0iMTIwIj48cmVjdCB4PSItNjAiIHk9Ii02MCIgd2lkdGg9IjEyMCIgaGVpZ2h0PSIxMjAiIGZpbGw9IiNmZmYiLz48cGF0aCBkPSJNLTUuMTkgOC4zMkwtMy45MiA2LjcxTC0yLjcxIDUuMDdMLTEuNTYgMy40TC0wLjQ3IDEuNjlMMC41NiAtMC4wNUwxLjU0IC0xLjgzTDIuNDUgLTMuNjRMMy4zMSAtNS40OCIgZmlsbD0ibm9uZSIgc3Ryb2tlPSIjMDAwIiBzdHJva2Utd2lkdGg9Ii42IiBzdHJva2UtbGluZWNhcD0icm91bmQiLz48cGF0aCBkPSJNMS40MiAwLjQ3TDUuMjQgNy40MSIgZmlsbD0ibm9uZSIgc3Ryb2tlPSIjMDAwIiBzdHJva2Utd2lkdGg9IjAuOCIgc3Ryb2tlLWxpbmVjYXA9InJvdW5kIi8+PHBhdGggZD0iTS0yLjA4IDIuMzhMLTguNjQgMy4zMyIgZmlsbD0ibm9uZSIgc3Ryb2tlPSIjMDAwIiBzdHJva2Utd2lkdGg9IjAuOCIgc3Ryb2tlLWxpbmVjYXA9InJvdW5kIi8+PHBhdGggZD0iTS0xLjU5IDUuMkwxLjkxIDExLjk2IiBmaWxsPSJub25lIiBzdHJva2U9IiMwMDAiIHN0cm9rZS13aWR0aD0iMC44IiBzdHJva2UtbGluZWNhcD0icm91bmQiLz48Y2xpcFBhdGggaWQ9ImM1MDgiPjxyZWN0IHg9Ii02MCIgeT0iLTEyLjc0IiB3aWR0aD0iMTIwIiBoZWlnaHQ9IjYwIi8+PC9jbGlwUGF0aD48ZyBjbGlwLXBhdGg9InVybCgjYzUwOCkiPjxnIHRyYW5zZm9ybT0idHJhbnNsYXRlKDUuNSAtMTEuMTQpIj48cGF0aCB0cmFuc2Zvcm09InJvdGF0ZSgtMjApIHNjYWxlKDEuMykiIGQ9Ik0tLjkgMS40Vi0yLjZBLjkgLjkgMCAwIDEgLjkgLTIuNlYzLjRBMS4zNSAxLjM1IDAgMCAxIC0xLjggMy40Vi0zLjZBMS44IDEuOCAwIDAgMSAxLjggLTMuNlYxLjYiIGZpbGw9Im5vbmUiIHN0cm9rZT0iIzAwMCIgc3Ryb2tlLXdpZHRoPSIxLjgzMDc2OTIzMDc2OTIzMDciIHN0cm9rZS1saW5lY2FwPSJyb3VuZCIvPjwvZz48L2c+PC9tYXNrPjwvZGVmcz48ZyBtYXNrPSJ1cmwoI201MTEpIj48cGF0aCBkPSJNLTcuMTggMTAuNjRDLTQgMTAuNjMgMS41MiA4LjM5IDQuMzEgNC4yMkM1Ljk1IDEuMzYgNC45NSAtMS45OSAzLjE0IC01LjExQzEuMSAtNC42OCAtMS40MyAtMy4zNyAtMy43OSAwLjdDLTYuMzUgNC40MiAtNy40NiA4Ljk3IC03LjE4IDEwLjY0WiIgZmlsbD0iI2ZmZmZmZiIvPjxwYXRoIGQ9Ik0yLjgxIC00LjM4TDMuNTQgLTZMNC4yMiAtNy42NUw0Ljg2IC05LjMyTDUuNDUgLTExLjAyTDYgLTEyLjc0TDYuNTEgLTE0LjQ5IiBmaWxsPSJub25lIiBzdHJva2U9IiNmZmZmZmYiIHN0cm9rZS13aWR0aD0iMS40IiBzdHJva2UtbGluZWNhcD0icm91bmQiLz48L2c+PGRlZnM+PGNsaXBQYXRoIGlkPSJjNTA5Ij48cmVjdCB4PSItNjAiIHk9Ii02MCIgd2lkdGg9IjEyMCIgaGVpZ2h0PSI0Ny4yNiIvPjwvY2xpcFBhdGg+PG1hc2sgaWQ9Im01MTAiIG1hc2tVbml0cz0idXNlclNwYWNlT25Vc2UiIHg9Ii02MCIgeT0iLTYwIiB3aWR0aD0iMTIwIiBoZWlnaHQ9IjEyMCI+PHJlY3QgeD0iLTYwIiB5PSItNjAiIHdpZHRoPSIxMjAiIGhlaWdodD0iMTIwIiBmaWxsPSIjZmZmIi8+PGcgY2xpcC1wYXRoPSJ1cmwoI2M1MDkpIj48cGF0aCBkPSJNMi44MSAtNC4zOEwzLjU0IC02TDQuMjIgLTcuNjVMNC44NiAtOS4zMkw1LjQ1IC0xMS4wMkw2IC0xMi43NEw2LjUxIC0xNC40OSIgZmlsbD0ibm9uZSIgc3Ryb2tlPSIjMDAwIiBzdHJva2Utd2lkdGg9IjMiIHN0cm9rZS1saW5lY2FwPSJyb3VuZCIvPjwvZz48L21hc2s+PC9kZWZzPjxnIG1hc2s9InVybCgjbTUxMCkiPjxnIHRyYW5zZm9ybT0idHJhbnNsYXRlKDUuNSAtMTEuMTQpIj48cGF0aCB0cmFuc2Zvcm09InJvdGF0ZSgtMjApIHNjYWxlKDEuMykiIGQ9Ik0tLjkgMS40Vi0yLjZBLjkgLjkgMCAwIDEgLjkgLTIuNlYzLjRBMS4zNSAxLjM1IDAgMCAxIC0xLjggMy40Vi0zLjZBMS44IDEuOCAwIDAgMSAxLjggLTMuNlYxLjYiIGZpbGw9Im5vbmUiIHN0cm9rZT0iI2ZmYjJjNCIgc3Ryb2tlLXdpZHRoPSIwLjYiIHN0cm9rZS1saW5lY2FwPSJyb3VuZCIvPjwvZz48L2c+PC9nPjwvc3ZnPgo=" };
+
+/* ---------- Lucide 图标（ISC），名字与 lucide-react 一致 ---------- */
+const L = {
+  search: '<circle cx="11" cy="11" r="8"/><path d="m21 21-4.3-4.3"/>',
+  history: '<path d="M3 12a9 9 0 1 0 9-9 9.75 9.75 0 0 0-6.74 2.74L3 8"/><path d="M3 3v5h5"/><path d="M12 7v5l4 2"/>',
+  layers: '<path d="M12.83 2.18a2 2 0 0 0-1.66 0L2.6 6.08a1 1 0 0 0 0 1.83l8.58 3.91a2 2 0 0 0 1.66 0l8.58-3.9a1 1 0 0 0 0-1.83Z"/><path d="m22 17.65-9.17 4.16a2 2 0 0 1-1.66 0L2 17.65"/><path d="m22 12.65-9.17 4.16a2 2 0 0 1-1.66 0L2 12.65"/>',
+  braces: '<path d="M8 3H7a2 2 0 0 0-2 2v5a2 2 0 0 1-2 2 2 2 0 0 1 2 2v5c0 1.1.9 2 2 2h1"/><path d="M16 21h1a2 2 0 0 0 2-2v-5c0-1.1.9-2 2-2a2 2 0 0 1-2-2V5a2 2 0 0 0-2-2h-1"/>',
+  settings2: '<path d="M20 7h-9"/><path d="M14 17H5"/><circle cx="17" cy="17" r="3"/><circle cx="7" cy="7" r="3"/>',
+  type: '<polyline points="4 7 4 4 20 4 20 7"/><line x1="9" x2="15" y1="20" y2="20"/><line x1="12" x2="12" y1="4" y2="20"/>',
+  link: '<path d="M10 13a5 5 0 0 0 7.54.54l3-3a5 5 0 0 0-7.07-7.07l-1.72 1.71"/><path d="M14 11a5 5 0 0 0-7.54-.54l-3 3a5 5 0 0 0 7.07 7.07l1.71-1.71"/>',
+  code: '<polyline points="16 18 22 12 16 6"/><polyline points="8 6 2 12 8 18"/>',
+  terminal: '<polyline points="4 17 10 11 4 5"/><line x1="12" x2="20" y1="19" y2="19"/>',
+  image: '<rect width="18" height="18" x="3" y="3" rx="2"/><circle cx="9" cy="9" r="2"/><path d="m21 15-3.09-3.09a2 2 0 0 0-2.82 0L6 21"/>',
+  star: '<polygon points="12 2 15.09 8.26 22 9.27 17 14.14 18.18 21.02 12 17.77 5.82 21.02 7 14.14 2 9.27 8.91 8.26 12 2"/>',
+  copy: '<rect width="14" height="14" x="8" y="8" rx="2"/><path d="M4 16c-1.1 0-2-.9-2-2V4c0-1.1.9-2 2-2h10c1.1 0 2 .9 2 2"/>',
+  trash2: '<path d="M3 6h18"/><path d="M19 6v14c0 1-1 2-2 2H7c-1 0-2-1-2-2V6"/><path d="M8 6V4c0-1 1-2 2-2h4c1 0 2 1 2 2v2"/><line x1="10" x2="10" y1="11" y2="17"/><line x1="14" x2="14" y1="11" y2="17"/>',
+  plus: '<path d="M5 12h14"/><path d="M12 5v14"/>',
+  x: '<path d="M18 6 6 18"/><path d="m6 6 12 12"/>',
+  check: '<path d="M20 6 9 17l-5-5"/>',
+  pause: '<rect x="14" y="4" width="4" height="16" rx="1"/><rect x="6" y="4" width="4" height="16" rx="1"/>',
+  play: '<polygon points="6 3 20 12 6 21 6 3"/>',
+  gripVertical: '<circle cx="9" cy="12" r="1"/><circle cx="9" cy="5" r="1"/><circle cx="9" cy="19" r="1"/><circle cx="15" cy="12" r="1"/><circle cx="15" cy="5" r="1"/><circle cx="15" cy="19" r="1"/>',
+  download: '<path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"/><polyline points="7 10 12 15 17 10"/><line x1="12" x2="12" y1="15" y2="3"/>',
+  cornerDownLeft: '<polyline points="9 10 4 15 9 20"/><path d="M20 4v7a4 4 0 0 1-4 4H4"/>',
+  bot: '<path d="M12 8V4H8"/><rect width="16" height="12" x="4" y="8" rx="2"/><path d="M2 14h2"/><path d="M20 14h2"/><path d="M15 13v2"/><path d="M9 13v2"/>',
+  monitor: '<rect width="20" height="14" x="2" y="3" rx="2"/><line x1="8" x2="16" y1="21" y2="21"/><line x1="12" x2="12" y1="17" y2="21"/>',
+  keyboard: '<path d="M10 8h.01"/><path d="M12 12h.01"/><path d="M14 8h.01"/><path d="M16 12h.01"/><path d="M18 8h.01"/><path d="M6 8h.01"/><path d="M7 16h10"/><path d="M8 12h.01"/><rect width="20" height="16" x="2" y="4" rx="2"/>',
+  shield: '<path d="M20 13c0 5-3.5 7.5-7.66 8.95a1 1 0 0 1-.67-.01C7.5 20.5 4 18 4 13V6a1 1 0 0 1 1-1c2 0 4.5-1.2 6.24-2.72a1.17 1.17 0 0 1 1.52 0C14.51 3.81 17 5 19 5a1 1 0 0 1 1 1z"/>',
+  info: '<circle cx="12" cy="12" r="10"/><path d="M12 16v-4"/><path d="M12 8h.01"/>',
+  alert: '<path d="m21.73 18-8-14a2 2 0 0 0-3.48 0l-8 14A2 2 0 0 0 4 21h16a2 2 0 0 0 1.73-3"/><path d="M12 9v4"/><path d="M12 17h.01"/>',
+  circleCheck: '<circle cx="12" cy="12" r="10"/><path d="m9 12 2 2 4-4"/>',
+  pencil: '<path d="M21.17 6.81a1 1 0 0 0-3.99-3.99L3.84 16.17a2 2 0 0 0-.5.83l-1.32 4.35a.5.5 0 0 0 .62.62l4.35-1.32a2 2 0 0 0 .83-.5z"/>',
+  externalLink: '<path d="M15 3h6v6"/><path d="M10 14 21 3"/><path d="M18 13v6a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2V8a2 2 0 0 1 2-2h6"/>',
+  chevronDown: '<path d="m6 9 6 6 6-6"/>',
+  undo2: '<path d="M9 14 4 9l5-5"/><path d="M4 9h10.5a5.5 5.5 0 0 1 5.5 5.5a5.5 5.5 0 0 1-5.5 5.5H11"/>',
+  eyeOff: '<path d="M10.73 5.08a10.74 10.74 0 0 1 11.2 6.57 1 1 0 0 1 0 .7 10.75 10.75 0 0 1-1.44 2.49"/><path d="M14.08 14.16a3 3 0 0 1-4.24-4.24"/><path d="M17.48 17.5a10.75 10.75 0 0 1-15.42-5.15 1 1 0 0 1 0-.7 10.75 10.75 0 0 1 4.45-5.14"/><path d="m2 2 20 20"/>',
+  layoutList: '<rect width="7" height="7" x="3" y="3" rx="1"/><rect width="7" height="7" x="3" y="14" rx="1"/><path d="M14 4h7"/><path d="M14 9h7"/><path d="M14 15h7"/><path d="M14 20h7"/>',
+  layoutGrid: '<rect width="7" height="7" x="3" y="3" rx="1"/><rect width="7" height="7" x="14" y="3" rx="1"/><rect width="7" height="7" x="14" y="14" rx="1"/><rect width="7" height="7" x="3" y="14" rx="1"/>',
+  power: '<path d="M12 2v10"/><path d="M18.4 6.6a9 9 0 1 1-12.77.04"/>',
+  fileText: '<path d="M15 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V7Z"/><path d="M14 2v4a2 2 0 0 0 2 2h4"/><path d="M10 9H8"/><path d="M16 13H8"/><path d="M16 17H8"/>',
+  inbox: '<polyline points="22 12 16 12 14 15 10 15 8 12 2 12"/><path d="M5.45 5.11 2 12v6a2 2 0 0 0 2 2h16a2 2 0 0 0 2-2v-6l-3.45-6.89A2 2 0 0 0 16.76 4H7.24a2 2 0 0 0-1.79 1.11z"/>',
+  minus: '<path d="M5 12h14"/>',
+  square: '<rect width="16" height="16" x="4" y="4" rx="1"/>'
+};
+const ic = (n, cls = "") => `<svg class="i ${cls}" viewBox="0 0 24 24" aria-hidden="true">${L[n]}</svg>`;
+const esc = (s) => String(s).replace(/[&<>"']/g, (c) => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" }[c]));
+
+/* ---------- 假数据 ---------- */
+const NOW = new Date(2026, 9, 22, 15, 40).getTime();
+const APPS = {
+  chrome: { name: "Chrome", exe: "chrome.exe", c: "#4a7fd6" },
+  code: { name: "VS Code", exe: "Code.exe", c: "#2f80c9" },
+  term: { name: "Windows Terminal", exe: "WindowsTerminal.exe", c: "#3a3a42" },
+  word: { name: "Word", exe: "WINWORD.EXE", c: "#2e5aa8" },
+  feishu: { name: "飞书", exe: "Feishu.exe", c: "#3370ff" },
+  wechat: { name: "微信", exe: "WeChat.exe", c: "#1aa260" },
+  snip: { name: "截图工具", exe: "SnippingTool.exe", c: "#8d4fc4" },
+  notepad: { name: "记事本", exe: "notepad.exe", c: "#5f6b7a" },
+  pass: { name: "1Password", exe: "1Password.exe", c: "#1a6dd6" },
+  keepass: { name: "KeePassXC", exe: "KeePassXC.exe", c: "#4a9a3c" }
+};
+const appTile = (k) => { const a = APPS[k] || { name: k, c: "#777" }; return `<span class="app-tile" style="background:${a.c}" aria-hidden="true">${esc(a.name[0])}</span>`; };
+
+// 占位截图：几何块拼的界面，不用外部图片
+function shot(kind) {
+  const S = {
+    chart: `<rect width="320" height="200" fill="#f7f7f8"/><rect x="16" y="14" width="120" height="10" rx="3" fill="#c9c9d1"/>${[52, 90, 70, 120, 104, 150, 132].map((h, i) => `<rect x="${24 + i * 40}" y="${180 - h}" width="24" height="${h}" rx="3" fill="${i === 5 ? "#f26a8d" : "#b9c3d6"}"/>`).join("")}<line x1="16" y1="180" x2="304" y2="180" stroke="#c9c9d1"/>`,
+    ui: `<rect width="320" height="200" fill="#eef0f4"/><rect x="12" y="12" width="296" height="176" rx="8" fill="#fff" stroke="#d6d9e0"/><rect x="12" y="12" width="70" height="176" rx="8" fill="#f3f4f7"/><rect x="96" y="28" width="150" height="10" rx="3" fill="#c3c8d3"/>${[0, 1, 2, 3, 4].map((i) => `<rect x="96" y="${54 + i * 24}" width="${190 - i * 18}" height="8" rx="3" fill="#dde1e8"/>`).join("")}<rect x="236" y="150" width="58" height="22" rx="5" fill="#b8325a"/>`,
+    error: `<rect width="320" height="200" fill="#2b2d33"/><rect x="40" y="40" width="240" height="120" rx="8" fill="#3a3d45"/><circle cx="70" cy="74" r="12" fill="#e5484d"/><rect x="92" y="66" width="150" height="10" rx="3" fill="#8b8f99"/>${[0, 1, 2].map((i) => `<rect x="62" y="${98 + i * 14}" width="${190 - i * 30}" height="6" rx="3" fill="#5e626c"/>`).join("")}`,
+    photo: `<rect width="320" height="200" fill="#c9d6e3"/><circle cx="250" cy="52" r="22" fill="#f6d27a"/><path d="M0 160 L80 96 L150 150 L210 110 L320 170 L320 200 L0 200Z" fill="#7d93a8"/><path d="M0 180 L120 130 L230 186 L320 150 L320 200 L0 200Z" fill="#5b7186"/>`
+  };
+  return "data:image/svg+xml;charset=utf-8," + encodeURIComponent(`<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 320 200">${S[kind]}</svg>`);
+}
+
+let nid = 100;
+const C = (type, app, ago, text, extra = {}) => ({ id: "c" + nid++, type, app, ago, text, fav: false, ...extra });
+const seed = {
+  clips: [
+    C("text", "feishu", 2, "下周一前把片羽的 MVP 规格改完，R1 回贴和 R4 AI 访问边界先给出修订方案。", { title: "飞书 - 产品群" }),
+    C("link", "chrome", 5, "https://learn.microsoft.com/en-us/windows/win32/api/winuser/nf-winuser-sendinput", { title: "SendInput function (winuser.h) - Win32 apps | Microsoft Learn", fav: true }),
+    C("code", "code", 9, "fn read_clipboard_text() -> Result<String> {\n    // 读取失败时有界重试，不吞掉错误\n    let mut tries = 0;\n    loop {\n        match try_open_clipboard() {\n            Ok(guard) => return guard.text(),\n            Err(e) if tries < 3 => { tries += 1; sleep(Duration::from_millis(20)); }\n            Err(e) => return Err(e.into()),\n        }\n    }\n}", { lang: "rust", title: "clipboard.rs - pinfeather - Visual Studio Code" }),
+    C("image", "snip", 14, "截图 · 1280×800", { img: "ui", title: "截图工具" }),
+    C("log", "term", 18, "error[E0502]: cannot borrow `history` as mutable because it is also borrowed as immutable\n  --> src/store.rs:88:9\n   |\n86 |     let latest = history.last();\n   |                  ------- immutable borrow occurs here\n88 |     history.push(item);\n   |     ^^^^^^^^^^^^^^^^^^ mutable borrow occurs here", { title: "cargo build" }),
+    C("text", "word", 26, "片羽是一款 Windows 优先的剪贴板工具，帮助用户找回、复用和流转复制过的内容，并方便地把材料交给 AI 工具。", { title: "片羽定位.docx - Word", fav: true }),
+    C("link", "chrome", 33, "https://www.sqlite.org/fts5.html", { title: "SQLite FTS5 Extension" }),
+    C("text", "wechat", 41, "周六下午三点，老地方见，记得带上那本《禹迹图》的复印件。", { title: "微信" }),
+    C("code", "code", 55, "SELECT id, kind, created_at\nFROM clips\nWHERE text MATCH 'trigram:剪贴板'\nORDER BY created_at DESC\nLIMIT 50;", { lang: "sql", title: "search.sql - pinfeather" }),
+    C("image", "chrome", 63, "图表 · 周活跃", { img: "chart", title: "Dashboard - Chrome" }),
+    C("text", "feishu", 75, "验收标准：浏览器、编辑器、终端和办公软件中完成复制、找回、回贴；重启后数据正确，无内部写入循环收录。", { title: "飞书文档 - 内部试用" }),
+    C("link", "chrome", 92, "https://modelcontextprotocol.io/specification/2026-07-28/server/tools", { title: "Tools - Model Context Protocol" }),
+    C("log", "term", 110, "PS D:\\Workspace\\Github\\Pinfeather> git rev-parse --show-toplevel\nfatal: not a git repository (or any of the parent directories): .git", { title: "PowerShell" }),
+    C("text", "notepad", 130, "待办：\n1. 托盘菜单加“暂停收录”\n2. 排除 1Password、KeePassXC\n3. 快捷面板 Ctrl+1~9 快选", { title: "todo.txt - 记事本" }),
+    C("code", "code", 150, "const templateFieldRegex = /\\{\\{\\s*(.*?)\\s*\\}\\}/g;\n\nexport function slots(body: string) {\n  return [...new Set([...body.matchAll(templateFieldRegex)].map((m) => m[1]))];\n}", { lang: "ts", title: "template.ts - pinfeather" }),
+    C("text", "chrome", 180, "Pinfeather: a new feather just coming in on a young bird, still wrapped in its sheath.", { title: "Merriam-Webster - Chrome" }),
+    C("image", "snip", 210, "截图 · 报错对话框", { img: "error", title: "截图工具" }),
+    C("link", "feishu", 240, "https://v2.tauri.app/concept/process-model/", { title: "Process Model | Tauri" }),
+    C("text", "word", 1440 + 30, "首个公开预览：材料集合；多段合并复制与 Markdown 导出；参数化指令模板；最小 CLI 与 MCP 读取能力。", { title: "路线.docx - Word" }),
+    C("code", "code", 1440 + 60, "#[tauri::command]\nasync fn list_clips(page: u32, state: State<'_, Store>) -> Result<Vec<ClipSummary>, String> {\n    state.page(page, 50).await.map_err(|e| e.to_string())\n}", { lang: "rust", title: "commands.rs - pinfeather" }),
+    C("text", "wechat", 1440 + 95, "图标定了，回形针别着一片羽毛，晨曦粉的底。", { title: "微信" }),
+    C("log", "term", 1440 + 130, "> pnpm tauri dev\n  VITE v6.0.7  ready in 412 ms\n  ➜  Local:   http://localhost:1420/\n  Running DevCommand (`cargo  run --no-default-features --color always --`)", { title: "Windows Terminal" }),
+    C("link", "chrome", 1440 + 170, "https://github.com/paralcor", { title: "PARALCOR · GitHub" }),
+    C("text", "feishu", 1440 + 220, "同步先传新增条目和主动发送的集合；初期不传播删除操作。远端材料先进入历史，由用户决定是否复制到当前系统剪贴板。", { title: "飞书文档 - 同步" }),
+    C("image", "chrome", 1440 + 300, "照片 · 山景", { img: "photo", title: "相册 - Chrome" }),
+    C("code", "code", 1440 + 400, "{\n  \"mcpServers\": {\n    \"pinfeather\": { \"command\": \"pinfeather\", \"args\": [\"mcp\"] }\n  }\n}", { lang: "json", title: "settings.json" }),
+    C("text", "word", 2880 + 60, "不必征服宇宙，也可以理解宇宙。不必抵达群星，也可以丈量群星。", { title: "PARALCOR 品牌档案.docx - Word", fav: true }),
+    C("text", "chrome", 2880 + 200, "Clipboard sequence numbers track changes but do not prove which process wrote the data.", { title: "GetClipboardSequenceNumber - Chrome" }),
+    C("link", "chrome", 4320 + 100, "https://learn.microsoft.com/en-us/windows/win32/dataxchg/clipboard-formats", { title: "Clipboard Formats - Win32 apps" }),
+    C("log", "term", 4320 + 300, "warning: unused variable: `tries`\n --> src/clipboard.rs:4:13\n  |\n4 |     let mut tries = 0;\n  |             ^^^^^ help: if this is intentional, prefix it with an underscore: `_tries`", { title: "cargo check" }),
+    C("text", "feishu", 7200, "目标人群建议从经常处理文字、链接、代码、日志和截图的电脑用户切入。", { title: "飞书文档" }),
+    C("code", "code", 8640, "Get-ItemProperty HKCU:\\Software\\Microsoft\\Windows\\CurrentVersion\\Run | Select-Object Pinfeather", { lang: "ps", title: "autostart.ps1" })
+  ],
+  collections: [
+    { id: "k1", name: "MVP 规格修订材料", open: true, template: "t1", params: { 目标: "修订 R1 和 R4", 读者: "接手的工程师" }, items: [] },
+    { id: "k2", name: "周报 10/20–10/24", open: false, template: "t2", params: {}, items: [] },
+    { id: "k3", name: "报错排查", open: true, template: "t3", params: { 语言: "Rust" }, items: [] }
+  ],
+  templates: [
+    { id: "t1", name: "整理成需求说明", body: "请根据下面的材料，{{目标}}。读者是{{读者}}，请先列结论，再列依据，最后列待确认的问题。\n\n{{材料}}" },
+    { id: "t2", name: "写周报", body: "根据以下材料写一份周报，分「本周完成」「下周计划」「风险」三部分，语气简洁。时间范围：{{时间范围}}。\n\n{{材料}}" },
+    { id: "t3", name: "解释报错", body: "下面是 {{语言}} 项目的报错和相关代码。请说明原因，给出最小修改；不要改动无关代码。\n\n{{材料}}\n\n输出格式：先一句话原因，再给 diff。" },
+    { id: "t4", name: "翻译成英文", body: "把下面的内容翻译成{{语气}}的英文，保留专有名词「片羽」，代码与 \\{{占位符}} 原样保留：\n\n{{材料}}" }
+  ]
+};
+// 集合里的片段保存一份自己的文本（历史清理不影响集合）
+const byText = (s) => seed.clips.find((c) => c.text.startsWith(s));
+const mat = (c) => ({ id: "m" + nid++, src: c.id, type: c.type, app: c.app, lang: c.lang, text: c.text });
+seed.collections[0].items = [byText("下周一前"), byText("片羽是一款"), byText("https://learn.microsoft.com/en-us/windows/win32/api/winuser/nf-winuser-sendinput"), byText("验收标准")].map(mat);
+seed.collections[1].items = [byText("首个公开预览"), byText("图标定了"), byText("同步先传")].map(mat);
+seed.collections[2].items = [byText("error[E0502]"), byText("fn read_clipboard_text")].map(mat);
+
+// 「模拟复制」时轮流产生的新内容；KeePassXC 在排除列表里，用来演示排除
+const POOL = [
+  C("text", "chrome", 0, "Windows 11 的剪贴板历史默认快捷键是 Win+V。", { title: "Windows 支持 - Chrome" }),
+  C("text", "keepass", 0, "correct-horse-battery-staple", { title: "KeePassXC" }),
+  C("code", "code", 0, "pnpm add zustand motion lucide-react @dnd-kit/core @dnd-kit/sortable react-resizable-panels", { lang: "sh", title: "README.md - pinfeather" }),
+  C("link", "chrome", 0, "https://ui.shadcn.com/docs", { title: "Introduction - shadcn/ui" })
+];
+
+/* ---------- store（接口照 Zustand：getState / setState / subscribe） ---------- */
+function createStore(init) {
+  let state = init; const subs = new Set();
+  return {
+    getState: () => state,
+    setState: (p) => { state = { ...state, ...(typeof p === "function" ? p(state) : p) }; subs.forEach((f) => f(state)); },
+    subscribe: (f) => (subs.add(f), () => subs.delete(f))
+  };
+}
+const q = new URLSearchParams(location.search);
+const pick = (k, opts, d) => (opts.includes(q.get(k)) ? q.get(k) : d);
+const store = createStore({
+  // 原型控制
+  scene: pick("scene", ["quick", "manager"], "quick"),
+  theme: pick("theme", ["light", "dark"], "light"),
+  accent: pick("accent", ["brand", "neutral"], "brand"),
+  density: pick("density", ["compact", "comfortable"], "compact"),
+  listMode: pick("list", ["rows", "cards"], "rows"),
+  qLayout: pick("qlayout", ["single", "split"], "single"),
+  pasteMode: pick("paste", ["ok", "fail"], "ok"),
+  // 数据
+  clips: seed.clips, collections: seed.collections, templates: seed.templates,
+  // 收录
+  paused: q.get("paused") === "1",
+  excluded: ["pass", "keepass"], ignoreSensitive: true, retention: "90", maxItems: 5000,
+  hotkey: ["Ctrl", "Shift", "V"], autostart: true,
+  mcpOn: true,
+  // 快捷面板
+  qOpen: q.get("open") === "1", qQuery: "", qType: "all", qSel: 0, qPreview: false,
+  editorText: "周报草稿（10/20–10/24）\n\n本周完成：\n- ",
+  pendingPaste: null,
+  trayMenu: false,
+  // 管理窗口
+  page: pick("page", ["history", "collections", "templates", "settings"], "history"),
+  hQuery: "", hType: "all", hApp: "all", hFav: false, hSel: null, hMulti: [],
+  sizes: { side: 200, hlist: 400, clist: 200, cmid: 420, tlist: 200, tmid: 420 },
+  activeCol: "k1", activeTpl: "t1", editMat: null,
+  menu: null, dialog: null, recHotkey: false, maxErr: "",
+  toasts: []
+});
+const S = () => store.getState();
+const set = store.setState;
+
+/* ---------- 工具 ---------- */
+const TYPES = { text: ["文本", "type"], link: ["链接", "link"], code: ["代码", "code"], log: ["日志", "terminal"], image: ["图片", "image"] };
+const ago = (m) => (m < 1 ? "刚刚" : m < 60 ? `${m} 分钟前` : m < 1440 ? `${Math.floor(m / 60)} 小时前` : m < 2880 ? "昨天 " + clock(m) : `${Math.floor(m / 1440)} 天前`);
+const clock = (m) => { const d = new Date(NOW - m * 60000); return `${String(d.getHours()).padStart(2, "0")}:${String(d.getMinutes()).padStart(2, "0")}`; };
+const dayOf = (m) => (m < 15 * 60 + 40 ? "今天" : m < 15 * 60 + 40 + 1440 ? "昨天" : "更早");
+const firstLine = (c) => (c.type === "image" ? c.text : c.text.split("\n").find((l) => l.trim()) || c.text);
+const sizeOf = (c) => (c.type === "image" ? "212 KB" : `${new Blob([c.text]).size} 字节`);
+const formatsOf = (c) => ({ text: ["纯文本", "HTML"], link: ["纯文本", "链接"], code: ["纯文本"], log: ["纯文本"], image: ["图片 (PNG)", "DIB"] }[c.type]);
+function matches(c, query, type, fav) {
+  if (type === "fav" && !c.fav) return false;
+  if (type !== "all" && type !== "fav" && c.type !== type) return false;
+  if (fav && !c.fav) return false;
+  if (!query) return true;
+  const hay = (c.text + " " + (c.title || "") + " " + (APPS[c.app]?.name || "")).toLowerCase();
+  return query.toLowerCase().split(/\s+/).filter(Boolean).every((w) => hay.includes(w));
+}
+function hl(text, query) {
+  const t = esc(text);
+  if (!query) return t;
+  const ws = query.split(/\s+/).filter(Boolean).map((w) => esc(w).replace(/[.*+?^${}()|[\]\\]/g, "\\$&"));
+  return ws.length ? t.replace(new RegExp(`(${ws.join("|")})`, "gi"), "<mark>$1</mark>") : t;
+}
+// 极简代码着色：注释、字符串、关键字、数字
+const KW = /\b(fn|let|mut|match|return|loop|async|await|const|export|function|SELECT|FROM|WHERE|ORDER|BY|LIMIT|DESC|if|else|Ok|Err|Result|String|pub|struct|impl|use|map|new|Set)\b/g;
+function codeHtml(src) {
+  return src.split(/(\/\/[^\n]*|#[^\n[]*$|"(?:[^"\\]|\\.)*"|'(?:[^'\\]|\\.)*')/m).map((p, i) => {
+    if (i % 2) return `<span class="${p.startsWith("//") || p.startsWith("#") ? "tok-cm" : "tok-str"}">${esc(p)}</span>`;
+    return esc(p).replace(KW, '<span class="tok-kw">$1</span>').replace(/\b(\d+)\b/g, '<span class="tok-num">$1</span>');
+  }).join("");
+}
+function contentHtml(c, q = "") {
+  if (c.type === "image") return `<img src="${shot(c.img)}" alt="${esc(c.text)}">`;
+  if (c.type === "code" || c.type === "log") return `<pre class="mono">${q ? hl(c.text, q) : codeHtml(c.text)}</pre>`;
+  if (c.type === "link") return `<div class="linkcard"><span class="fav">${ic("link")}</span><div style="min-width:0"><div style="font-weight:600;margin-bottom:2px">${esc(c.title || "")}</div><a href="${esc(c.text)}" target="_blank" rel="noopener">${hl(c.text, q)}</a></div></div>`;
+  return `<div class="text">${hl(c.text, q)}</div>`;
+}
+function rowIcon(c) { return c.type === "image" ? `<span class="ico"><img src="${shot(c.img)}" alt=""></span>` : `<span class="ico">${ic(TYPES[c.type][1], "sm")}</span>`; }
+
+/* ---------- toast（对应 sonner） ---------- */
+let tid = 0;
+function toast(kind, title, body = "", action = null, ms = 4200) {
+  const t = { id: ++tid, kind, title, body, action };
+  set((s) => ({ toasts: [...s.toasts, t].slice(-3) }));
+  setTimeout(() => set((s) => ({ toasts: s.toasts.filter((x) => x.id !== t.id) })), ms);
+}
+const TOAST_ACTIONS = {};
+function toastsHtml() {
+  return `<div class="toasts" role="status" aria-live="polite">${S().toasts.map((t) => `<div class="toast ${t.kind}">${ic(t.kind === "warn" ? "alert" : t.kind === "ok" ? "circleCheck" : "info")}<div class="tb"><b>${esc(t.title)}</b>${t.body ? esc(t.body) : ""}</div>${t.action ? `<button class="btn btn-outline btn-sm" data-act="toast-action" data-id="${t.id}">${esc(t.action.label)}</button>` : ""}</div>`).join("")}</div>`;
+}
+
+/* =====================================================================
+   原型控制栏
+   ===================================================================== */
+function protoBar() {
+  const s = S();
+  const seg = (label, key, opts) => `<label>${label}<span class="seg" role="group" aria-label="${label}">${opts.map(([v, t]) => `<button type="button" data-proto="${key}" data-v="${v}" aria-pressed="${s[key] === v}">${t}</button>`).join("")}</span></label>`;
+  return `<span class="tag">原型控制 · 不属于产品</span>` +
+    seg("场景", "scene", [["quick", "快捷面板"], ["manager", "管理窗口"]]) +
+    seg("主题", "theme", [["light", "浅色"], ["dark", "深色"]]) +
+    seg("强调色", "accent", [["brand", "晨曦粉"], ["neutral", "中性"]]) +
+    seg("密度", "density", [["compact", "Nova 紧凑"], ["comfortable", "标准"]]) +
+    (s.scene === "quick" ? seg("面板布局", "qLayout", [["single", "单列"], ["split", "列表+预览"]]) + seg("回贴结果", "pasteMode", [["ok", "成功"], ["fail", "目标窗口已变化"]])
+      : seg("历史列表", "listMode", [["rows", "行"], ["cards", "卡片"]])) +
+    `<button type="button" class="pbtn" data-act="sim-copy">模拟一次复制</button>`;
+}
+
+/* =====================================================================
+   场景一：快捷面板
+   ===================================================================== */
+function qItems() { const s = S(); return s.clips.filter((c) => matches(c, s.qQuery, s.qType)); }
+function sceneQuick() {
+  const s = S();
+  const tray = s.theme === "dark" ? ASSET.trayDark : ASSET.trayLight;
+  return `<div class="desk" id="desk">
+    <section class="editor" aria-label="模拟的目标应用：记事本">
+      <div class="tt">${appTile("notepad")}<span>周报.txt - 记事本</span><span style="margin-left:auto">模拟的目标窗口</span></div>
+      <label class="sr" for="ed">记事本内容</label>
+      <textarea id="ed" spellcheck="false">${esc(s.editorText)}</textarea>
+      <div class="hintbar">把光标放在这里，按 <span class="kbd">${s.hotkey.join(" + ")}</span> 或点托盘里的片羽图标唤出快捷面板。${s.pendingPaste ? `<span class="badge warn">${ic("alert", "sm")}剪贴板里有待粘贴的内容，按 Ctrl+V</span>` : ""}</div>
+    </section>
+    ${s.qOpen ? quickPanel() : ""}
+    ${s.trayMenu ? trayMenu() : ""}
+    <div class="taskbar" role="presentation">
+      <div style="width:120px"></div>
+      <div class="mid"><span class="tb"><i class="ph"></i></span><span class="tb"><i class="ph"></i></span><span class="tb on">${appTile("notepad")}</span><span class="tb"><i class="ph"></i></span></div>
+      <div class="tray">
+        <button type="button" class="ti ${s.paused ? "paused" : ""}" id="trayBtn" data-act="tray" aria-label="片羽${s.paused ? "（收录已暂停）" : ""}，单击打开快捷面板，右键打开菜单" aria-haspopup="menu" aria-expanded="${s.trayMenu}"><img src="${tray}" alt=""></button>
+        <span class="clock">15:40<br>2026/10/22</span>
+      </div>
+    </div>
+    ${toastsHtml()}
+  </div>`;
+}
+function quickPanel() {
+  const s = S(), items = qItems(), sel = items[Math.min(s.qSel, items.length - 1)];
+  const types = [["all", "全部"], ["text", "文本"], ["link", "链接"], ["code", "代码"], ["image", "图片"], ["fav", "收藏"]];
+  let last = "", n = 0;
+  const list = items.length ? items.map((c, i) => {
+    const g = dayOf(c.ago), head = g !== last ? `<div class="grp" role="presentation">${g}</div>` : ""; last = g;
+    n++;
+    return head + `<div class="row ${c.enter ? "enter" : ""}" role="option" id="qo-${c.id}" aria-selected="${i === s.qSel}" data-act="q-pick" data-i="${i}">
+      ${rowIcon(c)}<div class="txt"><div class="t1">${hl(firstLine(c), s.qQuery)}</div><div class="t2">${appTile(c.app)}${esc(APPS[c.app].name)} · ${ago(c.ago)}</div></div>
+      ${c.fav ? `<span class="star" title="已收藏">${ic("star", "sm")}</span>` : ""}<span class="num" aria-hidden="true">${n <= 9 ? n : ""}</span></div>`;
+  }).join("") : `<div class="empty">${ic("search")}<b>没有匹配「${esc(s.qQuery)}」的内容</b><span>换个词试试，或按 Esc 关闭。被排除应用里复制的内容不会出现在这里。</span></div>`;
+  const preview = sel ? `<div class="actions" style="justify-content:space-between"><span class="badge">${ic(TYPES[sel.type][1], "sm")}${TYPES[sel.type][0]}</span><span class="hint">${esc(APPS[sel.app].name)} · ${ago(sel.ago)}</span></div><div class="content" style="border:1px solid var(--border);border-radius:var(--radius);overflow:hidden">${contentHtml(sel, s.qQuery)}</div><div class="hint">${esc(sel.title || "")}</div>` : "";
+  return `<section class="qp ${s.qLayout === "split" ? "split" : ""}" id="qp" role="dialog" aria-modal="false" aria-label="片羽快捷面板">
+    <div class="qhead">
+      <div class="search">${ic("search")}<label class="sr" for="qq">搜索复制过的内容</label><input id="qq" class="input" placeholder="搜索复制过的内容…" value="${esc(s.qQuery)}" autocomplete="off" role="combobox" aria-expanded="true" aria-controls="ql" aria-activedescendant="${sel ? "qo-" + sel.id : ""}"></div>
+      <div class="chips" role="group" aria-label="按类型筛选">${types.map(([v, t]) => `<button type="button" class="chip" data-act="q-type" data-v="${v}" aria-pressed="${s.qType === v}">${t}</button>`).join("")}</div>
+    </div>
+    ${s.paused ? `<div class="paused-bar">${ic("pause", "sm")}收录已暂停，新复制的内容不会保存<button class="btn btn-ghost btn-sm" data-act="toggle-pause">恢复</button></div>` : ""}
+    <div class="qbody"><div class="qlist" id="ql" role="listbox" aria-label="剪贴历史">${list}</div>${s.qLayout === "split" ? `<div class="qprev" aria-label="预览">${preview || `<div class="empty">${ic("inbox")}<span>没有可预览的内容</span></div>`}</div>` : ""}</div>
+    ${s.qLayout === "single" && s.qPreview && sel ? `<div class="drawer" aria-label="预览">${contentHtml(sel, s.qQuery)}</div>` : ""}
+    <div class="qfoot">
+      <span><span class="kbd">↑↓</span>选择</span><span><span class="kbd">Enter</span>粘贴</span><span><span class="kbd">Shift+Enter</span>纯文本</span><span><span class="kbd">Ctrl+1–9</span>快选</span>${s.qLayout === "single" ? `<span><span class="kbd">Tab</span>预览</span>` : `<span><span class="kbd">Ctrl+D</span>收藏</span>`}<span><span class="kbd">Esc</span>关闭</span>
+    </div>
+  </section>`;
+}
+function trayMenu() {
+  const s = S();
+  return `<div class="menu" id="trayMenu" role="menu" aria-label="片羽" style="right:70px;bottom:54px">
+    <button role="menuitem" data-act="tray-open">${ic("search", "sm")}打开快捷面板<span class="kbd" style="margin-left:auto">${s.hotkey.join("+")}</span></button>
+    <button role="menuitem" data-act="tray-manager">${ic("layoutList", "sm")}打开片羽</button>
+    <button role="menuitemcheckbox" aria-checked="${s.paused}" data-act="toggle-pause">${ic(s.paused ? "play" : "pause", "sm")}${s.paused ? "恢复收录" : "暂停收录"}</button>
+    <div class="sep"></div>
+    <button role="menuitem" data-act="tray-settings">${ic("settings2", "sm")}设置</button>
+    <button role="menuitem" data-act="tray-quit">${ic("power", "sm")}退出</button>
+  </div>`;
+}
+function openQuick() {
+  const ed = document.getElementById("ed");
+  if (ed) caret = ed.selectionStart;
+  set({ qOpen: true, qQuery: "", qSel: 0, qPreview: false, trayMenu: false });
+  setTimeout(() => document.getElementById("qq")?.focus());
+}
+function closeQuick(then) {
+  const el = document.getElementById("qp");
+  if (!el) { set({ qOpen: false }); then && then(); return; }
+  el.classList.add("closing");
+  setTimeout(() => { set({ qOpen: false }); then && then(); }, 120);
+}
+let caret = null;
+function pasteSelected(plain) {
+  const s = S(), items = qItems(), c = items[s.qSel];
+  if (!c) return;
+  const text = c.type === "image" ? `[图片：${c.text}]` : c.text;
+  bump(c.id);
+  closeQuick(() => {
+    if (s.pasteMode === "fail") {
+      // 交接文档 R1：目标窗口变化时不发送 Ctrl+V，也不报告成功；内容留在剪贴板
+      set({ pendingPaste: text });
+      toast("warn", "没有自动粘贴", "目标窗口在唤出后发生了变化。内容已放进剪贴板，回到目标位置按 Ctrl+V。", null, 6500);
+      return;
+    }
+    insertText(text);
+    toast("ok", plain ? "已按纯文本粘贴到 记事本" : "已粘贴到 记事本", "", null, 2600);
+  });
+}
+function insertText(text) {
+  const s = S(), at = caret ?? s.editorText.length;
+  set({ editorText: s.editorText.slice(0, at) + text + s.editorText.slice(at), pendingPaste: null });
+  caret = at + text.length;
+  requestAnimationFrame(() => { const ed = document.getElementById("ed"); if (ed) { ed.focus(); ed.setSelectionRange(caret, caret); ed.scrollTop = ed.scrollHeight; } });
+}
+// 使用过的条目排到最前（与 Windows 剪贴板历史一致）
+function bump(id) { set((s) => ({ clips: [s.clips.find((c) => c.id === id), ...s.clips.filter((c) => c.id !== id)].map((c) => (c.id === id ? { ...c, ago: 0 } : c)) })); }
+
+/* =====================================================================
+   场景二：管理窗口
+   ===================================================================== */
+function sceneManager() {
+  const s = S(), collapsed = s.sizes.side < 120;
+  const nav = [["history", "历史", "history", s.clips.length], ["collections", "集合", "layers", s.collections.length], ["templates", "指令模板", "braces", s.templates.length], ["settings", "设置", "settings2", ""]];
+  const openCount = s.collections.filter((c) => c.open).length;
+  const page = { history: pageHistory, collections: pageCollections, templates: pageTemplates, settings: pageSettings }[s.page]();
+  return `<div class="winwrap"><div class="win" id="win" role="application" aria-label="片羽">
+    <div class="titlebar"><img src="${ASSET.app}" alt=""><span>片羽 Pinfeather</span><div class="wc" aria-hidden="true"><span>${ic("minus", "sm")}</span><span>${ic("square", "sm")}</span><span>${ic("x", "sm")}</span></div></div>
+    <div class="wbody">
+      <nav class="pane side ${collapsed ? "collapsed" : ""}" style="width:${s.sizes.side}px" aria-label="主导航">
+        <div class="brand"><img src="${ASSET.app}" alt=""><span>片羽</span></div>
+        ${nav.map(([k, t, i, n]) => `<button class="nav" data-act="nav" data-v="${k}" aria-current="${s.page === k ? "page" : "false"}" title="${t}">${ic(i)}<span class="lbl">${t}</span><span class="cnt">${n}</span></button>`).join("")}
+        <div class="grow"></div>
+        <div class="status">
+          <div class="l"><span class="dot ${s.paused ? "off" : ""}"></span><span>${s.paused ? "收录已暂停" : "正在收录"}</span><button class="switch" role="switch" aria-checked="${!s.paused}" aria-label="收录剪贴内容" data-act="toggle-pause"></button></div>
+          <div class="l"><span class="dot ${s.mcpOn ? "" : "idle"}"></span><span>${s.mcpOn ? `AI 接入：${openCount} 个集合开放` : "AI 接入已关闭"}</span></div>
+        </div>
+      </nav>
+      ${resizer("side", "调整导航宽度")}
+      ${page}
+    </div>
+    ${s.dialog ? dialogHtml() : ""}
+    ${s.menu ? menuHtml() : ""}
+    ${toastsHtml()}
+  </div></div>`;
+}
+function resizer(key, label) {
+  const v = S().sizes[key];
+  return `<div class="resizer" role="separator" aria-orientation="vertical" aria-label="${label}" aria-valuenow="${v}" tabindex="0" data-split="${key}"></div>`;
+}
+
+/* ---------- 历史 ---------- */
+function hItems() { const s = S(); return s.clips.filter((c) => matches(c, s.hQuery, s.hType, s.hFav) && (s.hApp === "all" || c.app === s.hApp)); }
+function pageHistory() {
+  const s = S(), items = hItems();
+  const sel = items.find((c) => c.id === s.hSel) || items[0];
+  const multi = s.hMulti.length > 1;
+  const types = [["all", "全部"], ["text", "文本"], ["link", "链接"], ["code", "代码"], ["log", "日志"], ["image", "图片"]];
+  const apps = [...new Set(s.clips.map((c) => c.app))];
+  let last = "";
+  const rows = items.map((c) => {
+    const g = dayOf(c.ago), head = g !== last ? `<div class="grp" ${s.listMode === "cards" ? 'style="grid-column:1/-1"' : ""}>${g}</div>` : ""; last = g;
+    const on = sel && c.id === sel.id, m = s.hMulti.includes(c.id);
+    if (s.listMode === "cards") return head + `<div class="card" role="option" aria-selected="${on || m}" data-act="h-pick" data-id="${c.id}">
+      <div class="actions" style="justify-content:space-between"><span class="badge">${ic(TYPES[c.type][1], "sm")}${TYPES[c.type][0]}</span>${c.fav ? `<span class="star" style="color:#d99a00">${ic("star", "sm")}</span>` : ""}</div>
+      ${c.type === "image" ? `<img src="${shot(c.img)}" alt="${esc(c.text)}">` : `<div class="body ${c.type === "code" || c.type === "log" ? "mono" : ""}">${hl(c.text.slice(0, 220), s.hQuery)}</div>`}
+      <div class="row" style="padding:0;min-height:0;pointer-events:none"><div class="t2" style="font-size:11.5px;color:var(--muted-foreground);display:flex;gap:6px;align-items:center">${appTile(c.app)}${esc(APPS[c.app].name)} · ${ago(c.ago)}</div></div></div>`;
+    return head + `<div class="row ${c.enter ? "enter" : ""}" role="option" aria-selected="${on && !multi}" data-multi="${m && multi}" data-act="h-pick" data-id="${c.id}">
+      ${multi ? `<span class="chk">${m ? ic("check") : ""}</span>` : ""}${rowIcon(c)}<div class="txt"><div class="t1">${hl(firstLine(c), s.hQuery)}</div><div class="t2">${appTile(c.app)}${esc(APPS[c.app].name)} · ${ago(c.ago)}</div></div>
+      ${c.fav ? `<span class="star">${ic("star", "sm")}</span>` : ""}</div>`;
+  }).join("");
+  const empty = s.clips.length === 0
+    ? `<div class="empty">${ic("inbox")}<b>还没有剪贴内容</b><span>复制任意文字、链接或图片，片羽会自动收进这里。</span></div>`
+    : `<div class="empty">${ic("search")}<b>没有符合条件的内容</b><span>试试清除筛选，或换个关键词。</span><button class="btn btn-outline btn-sm" data-act="h-clear">清除筛选</button></div>`;
+  return `<div class="pane" style="width:${s.sizes.hlist}px">
+      <div class="phead"><h1>历史</h1><span class="hint">${items.length} / ${s.clips.length} 条</span><span class="sp"></span>
+        <div class="seg" role="group" aria-label="列表样式" style="display:flex;gap:2px"><button class="btn btn-ghost btn-icon btn-sm" aria-label="行" aria-pressed="${s.listMode === "rows"}" data-act="list-mode" data-v="rows">${ic("layoutList", "sm")}</button><button class="btn btn-ghost btn-icon btn-sm" aria-label="卡片" aria-pressed="${s.listMode === "cards"}" data-act="list-mode" data-v="cards">${ic("layoutGrid", "sm")}</button></div></div>
+      <div class="toolbar" style="display:grid;gap:8px">
+        <div class="search">${ic("search")}<label class="sr" for="hq">搜索历史</label><input id="hq" class="input" placeholder="搜索文字、链接、代码、来源应用…" value="${esc(s.hQuery)}" autocomplete="off"></div>
+        <div class="actions"><div class="chips" role="group" aria-label="类型">${types.map(([v, t]) => `<button class="chip" data-act="h-type" data-v="${v}" aria-pressed="${s.hType === v}">${t}</button>`).join("")}</div></div>
+        <div class="actions"><label class="sr" for="happ">来源应用</label><select id="happ" class="input" style="width:auto;flex:1">${[["all", "全部应用"], ...apps.map((a) => [a, APPS[a].name])].map(([v, t]) => `<option value="${v}" ${s.hApp === v ? "selected" : ""}>${esc(t)}</option>`).join("")}</select>
+        <button class="btn btn-outline btn-sm" aria-pressed="${s.hFav}" data-act="h-fav">${ic("star", "sm")}只看收藏</button></div>
+      </div>
+      ${multi ? `<div class="bulk"><b>已选 ${s.hMulti.length} 项</b><span class="sp" style="flex:1"></span><button class="btn btn-outline btn-sm" data-act="menu-addto" data-ids="${s.hMulti.join(",")}">${ic("layers", "sm")}加入集合${ic("chevronDown", "sm")}</button><button class="btn btn-ghost btn-sm btn-danger" data-act="h-del-multi">${ic("trash2", "sm")}删除</button><button class="btn btn-ghost btn-sm" data-act="h-unmulti">取消选择</button></div>` : ""}
+      <div class="scroll" id="hlist" role="listbox" aria-label="剪贴历史" aria-multiselectable="true" tabindex="0">${items.length ? (s.listMode === "cards" ? `<div class="cards">${rows}</div>` : `<div style="padding:4px 6px">${rows}</div>`) : empty}</div>
+      <div class="hint" style="padding:6px 12px;border-top:1px solid var(--border)">Ctrl / Shift 点选可多选；↑↓ 在列表里移动</div>
+    </div>
+    ${resizer("hlist", "调整列表宽度")}
+    <div class="pane fill" aria-label="预览">${sel && !multi ? previewHtml(sel) : multi ? `<div class="empty">${ic("layers")}<b>已选 ${s.hMulti.length} 项</b><span>可以一起加入集合或删除。</span></div>` : `<div class="empty">${ic("inbox")}<span>选一条查看详情</span></div>`}</div>`;
+}
+function previewHtml(c) {
+  const s = S();
+  return `<div class="phead"><span class="badge">${ic(TYPES[c.type][1], "sm")}${TYPES[c.type][0]}</span><h2 style="min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;flex:1">${esc(firstLine(c)).slice(0, 80)}</h2></div>
+    <div class="scroll"><div class="prev">
+      <div class="actions">
+        <button class="btn btn-primary" data-act="copy" data-id="${c.id}">${ic("copy", "sm")}复制</button>
+        ${c.type !== "image" ? `<button class="btn btn-outline" data-act="copy-plain" data-id="${c.id}">纯文本复制</button>` : ""}
+        <button class="btn btn-outline" data-act="menu-addto" data-ids="${c.id}">${ic("layers", "sm")}加入集合${ic("chevronDown", "sm")}</button>
+        <button class="btn btn-ghost btn-icon" aria-pressed="${c.fav}" aria-label="${c.fav ? "取消收藏" : "收藏"}" data-act="fav" data-id="${c.id}">${ic("star", "sm")}</button>
+        <span style="flex:1"></span>
+        <button class="btn btn-ghost btn-danger" data-act="del" data-id="${c.id}">${ic("trash2", "sm")}删除</button>
+      </div>
+      <div class="content">${contentHtml(c, s.hQuery)}</div>
+      <dl class="meta">
+        <dt>来源应用</dt><dd style="display:flex;gap:6px;align-items:center">${appTile(c.app)}${esc(APPS[c.app].name)} <span class="hint mono">${esc(APPS[c.app].exe)}</span></dd>
+        <dt>窗口标题</dt><dd>${esc(c.title || "—")}</dd>
+        <dt>时间</dt><dd>${ago(c.ago)}（${clock(c.ago)}）</dd>
+        <dt>大小</dt><dd>${sizeOf(c)}</dd>
+        <dt>保存的格式</dt><dd class="actions">${formatsOf(c).map((f) => `<span class="badge">${f}</span>`).join("")}</dd>
+        <dt>所在集合</dt><dd>${(() => { const cs = s.collections.filter((k) => k.items.some((m) => m.src === c.id)); return cs.length ? cs.map((k) => `<button class="btn btn-ghost btn-sm" data-act="goto-col" data-id="${k.id}">${esc(k.name)}</button>`).join("") : '<span class="hint">不在任何集合里</span>'; })()}</dd>
+      </dl>
+      <p class="hint" style="margin:0">来源应用取自复制时的前台窗口，可能不是真正写入剪贴板的程序。</p>
+    </div></div>`;
+}
+
+/* ---------- 集合 ---------- */
+function parseTpl(body) {
+  // 返回 [{t:"text",v}|{t:"slot",name}]；\{{ 表示字面花括号
+  const out = []; const re = /\\\{\{|\{\{\s*([^{}]*?)\s*\}\}/g; let i = 0, m;
+  while ((m = re.exec(body))) {
+    if (m.index > i) out.push({ t: "text", v: body.slice(i, m.index) });
+    out.push(m[0] === "\\{{" ? { t: "text", v: "{{" } : { t: "slot", name: m[1] });
+    i = re.lastIndex;
+  }
+  if (i < body.length) out.push({ t: "text", v: body.slice(i) });
+  return out;
+}
+const slotNames = (body) => [...new Set(parseTpl(body).filter((x) => x.t === "slot" && x.name !== "材料").map((x) => x.name))];
+function materialsMd(items) {
+  return items.map((m, i) => {
+    const head = `### 片段 ${i + 1}（${APPS[m.app].name}）`;
+    if (m.type === "code" || m.type === "log") return `${head}\n\`\`\`${m.lang || ""}\n${m.text}\n\`\`\``;
+    if (m.type === "image") return `${head}\n[图片：${m.text}]`;
+    return `${head}\n${m.text}`;
+  }).join("\n\n");
+}
+// 生成合并文本；html=true 时给参数加胶囊，缺参数标红
+function compose(col, tpl, html) {
+  const mats = materialsMd(col.items);
+  const e = html ? esc : (x) => x;
+  if (!tpl) return html ? `<span class="mat-block">${esc(mats)}</span>` : mats;
+  let usedMat = false;
+  const body = parseTpl(tpl.body).map((x) => {
+    if (x.t === "text") return e(x.v);
+    if (x.name === "材料") { usedMat = true; return html ? `<span class="mat-block">${esc(mats)}</span>` : mats; }
+    const v = (col.params || {})[x.name];
+    if (!html) return v || `{{${x.name}}}`;
+    return v ? `<span class="pill">${esc(v)}</span>` : `<span class="pill miss">缺少：${esc(x.name)}</span>`;
+  }).join("");
+  return usedMat ? body : body + (html ? `\n\n<span class="mat-block">${esc(mats)}</span>` : "\n\n" + mats);
+}
+function pageCollections() {
+  const s = S(), col = s.collections.find((c) => c.id === s.activeCol) || s.collections[0];
+  const tpl = col && s.templates.find((t) => t.id === col.template);
+  const missing = tpl ? slotNames(tpl.body).filter((n) => !(col.params || {})[n]) : [];
+  const left = `<div class="pane" style="width:${s.sizes.clist}px;background:var(--card)">
+      <div class="phead"><h1>集合</h1><span class="sp"></span><button class="btn btn-ghost btn-icon btn-sm" aria-label="新建集合" data-act="col-new">${ic("plus", "sm")}</button></div>
+      <div class="scroll" style="padding:6px">${s.collections.map((k) => `<button class="colitem" aria-current="${k.id === col?.id}" data-act="col-pick" data-id="${k.id}">${ic("layers", "sm")}<span class="n">${esc(k.name)}</span>${k.open && s.mcpOn ? `<span title="对 AI 工具开放">${ic("bot", "sm")}</span>` : ""}<span class="hint">${k.items.length}</span></button>`).join("")}</div>
+      <p class="hint" style="margin:0;padding:10px 12px;border-top:1px solid var(--border)">集合里的片段单独保存，历史自动清理不会删掉它们。</p>
+    </div>`;
+  if (!col) return left + resizer("clist", "调整集合列表宽度") + `<div class="pane fill"><div class="empty">${ic("layers")}<b>还没有集合</b><span>为一项任务建一个集合，把需要的片段放进来。</span><button class="btn btn-primary" data-act="col-new">${ic("plus", "sm")}新建集合</button></div></div>`;
+  const mid = `<div class="pane" style="width:${s.sizes.cmid}px">
+      <div class="phead">
+        ${s.editName ? `<label class="sr" for="colname">集合名称</label><input id="colname" class="input" style="flex:1" value="${esc(col.name)}">` : `<h2 style="flex:1;min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap">${esc(col.name)}</h2><button class="btn btn-ghost btn-icon btn-sm" aria-label="重命名" data-act="col-rename">${ic("pencil", "sm")}</button>`}
+        <button class="btn btn-outline btn-sm" data-act="add-from-history">${ic("plus", "sm")}从历史添加</button>
+      </div>
+      <div class="scroll">
+        <div class="compose">
+          <div class="field"><label for="coltpl">指令模板</label><select id="coltpl" class="input"><option value="">不用模板，只合并片段</option>${s.templates.map((t) => `<option value="${t.id}" ${t.id === col.template ? "selected" : ""}>${esc(t.name)}</option>`).join("")}</select></div>
+          ${tpl && slotNames(tpl.body).length ? `<div class="grid2">${slotNames(tpl.body).map((n) => `<div class="field"><label for="p-${esc(n)}">${esc(n)}</label><input id="p-${esc(n)}" class="input" data-param="${esc(n)}" value="${esc((col.params || {})[n] || "")}" aria-invalid="${!(col.params || {})[n]}"></div>`).join("")}</div>` : ""}
+          ${missing.length ? `<div class="err" role="alert">还有 ${missing.length} 个参数没填：${missing.map(esc).join("、")}。没填的参数会原样保留成 {{参数}}。</div>` : ""}
+        </div>
+        <div class="sortlist" id="sortlist" role="list" aria-label="集合里的片段，可拖动排序">
+          ${col.items.length ? col.items.map((m, i) => `<div class="mat" role="listitem" data-mid="${m.id}">
+            <button class="handle" aria-label="拖动排序：片段 ${i + 1}。按 Alt+↑/↓ 移动" data-handle="${m.id}">${ic("gripVertical", "sm")}</button>
+            <div style="min-width:0"><div class="head"><b>片段 ${i + 1}</b>${appTile(m.app)}${esc(APPS[m.app].name)} · ${TYPES[m.type][0]}</div>
+              ${s.editMat === m.id ? `<label class="sr" for="me-${m.id}">编辑片段</label><textarea class="input ${m.type === "code" || m.type === "log" ? "mono" : ""}" id="me-${m.id}" data-edit="${m.id}" rows="4">${esc(m.text)}</textarea><div class="actions" style="margin-top:6px"><button class="btn btn-primary btn-sm" data-act="mat-done">完成</button><span class="hint">只改集合里的这一份，不影响历史原文</span></div>`
+                : m.type === "image" ? `<img src="${shot(s.clips.find((c) => c.id === m.src)?.img || "ui")}" alt="${esc(m.text)}" style="height:70px;border-radius:5px">` : `<div class="snippet ${m.type === "code" || m.type === "log" ? "code" : ""}">${esc(m.text)}</div>`}
+            </div>
+            <div class="ops">${m.type !== "image" ? `<button class="btn btn-ghost btn-icon btn-sm" aria-label="编辑片段 ${i + 1}" data-act="mat-edit" data-id="${m.id}">${ic("pencil", "sm")}</button>` : ""}<button class="btn btn-ghost btn-icon btn-sm" aria-label="移除片段 ${i + 1}" data-act="mat-del" data-id="${m.id}">${ic("x", "sm")}</button></div>
+          </div>`).join("") : `<div class="empty">${ic("inbox")}<b>集合是空的</b><span>从历史里挑片段放进来，或在快捷面板按 Ctrl+Shift+S。</span><button class="btn btn-outline btn-sm" data-act="add-from-history">${ic("plus", "sm")}从历史添加</button></div>`}
+        </div>
+      </div>
+    </div>`;
+  const right = `<div class="pane fill">
+      <div class="phead"><h2>合并结果</h2><span class="hint">Markdown</span><span class="sp"></span>
+        <button class="btn btn-outline btn-sm" data-act="export-md">${ic("download", "sm")}导出 .md</button>
+        <button class="btn btn-primary btn-sm" data-act="copy-compose" ${col.items.length ? "" : "disabled"}>${ic("copy", "sm")}复制全部</button></div>
+      <div style="padding:10px 12px;border-bottom:1px solid var(--border)">
+        <div class="srow" style="display:flex;align-items:center;gap:10px">${ic("bot")}<div style="flex:1"><b>对 AI 工具开放</b><div class="hint">${!s.mcpOn ? "AI 接入在设置里已关闭，开放暂不生效" : col.open ? "本机的 AI 工具可通过 MCP / CLI 只读这个集合" : "未开放。普通历史默认也不开放"}</div></div><button class="switch" role="switch" aria-checked="${col.open}" aria-label="对 AI 工具开放这个集合" data-act="col-open" ${s.mcpOn ? "" : "disabled"}></button></div>
+      </div>
+      <div class="scroll"><pre class="md" id="composed">${col.items.length || tpl ? compose(col, tpl, true) : '<span class="hint">集合是空的，合并结果会显示在这里。</span>'}</pre></div>
+    </div>`;
+  return left + resizer("clist", "调整集合列表宽度") + mid + resizer("cmid", "调整片段区宽度") + right;
+}
+
+/* ---------- 指令模板 ---------- */
+function pageTemplates() {
+  const s = S(), tpl = s.templates.find((t) => t.id === s.activeTpl) || s.templates[0];
+  const names = tpl ? slotNames(tpl.body) : [];
+  const toks = tpl ? parseTpl(tpl.body) : [];
+  const dup = tpl ? toks.filter((x) => x.t === "slot").length - new Set(toks.filter((x) => x.t === "slot").map((x) => x.name)).size : 0;
+  const literal = tpl && tpl.body.includes("\\{{");
+  const vals = s.tplVals || {};
+  const view = toks.map((x) => x.t === "text" ? esc(x.v) : x.name === "材料" ? `<span class="pill">材料：集合里的片段</span>` : `<span class="pill">${esc(x.name)}</span>`).join("");
+  return `<div class="pane" style="width:${s.sizes.tlist}px;background:var(--card)">
+      <div class="phead"><h1>指令模板</h1><span class="sp"></span><button class="btn btn-ghost btn-icon btn-sm" aria-label="新建模板" data-act="tpl-new">${ic("plus", "sm")}</button></div>
+      <div class="scroll" style="padding:6px">${s.templates.map((t) => `<button class="colitem" aria-current="${t.id === tpl?.id}" data-act="tpl-pick" data-id="${t.id}">${ic("braces", "sm")}<span class="n">${esc(t.name)}</span><span class="hint">${slotNames(t.body).length}</span></button>`).join("")}</div>
+    </div>
+    ${resizer("tlist", "调整模板列表宽度")}
+    <div class="pane" style="width:${s.sizes.tmid}px">
+      <div class="phead"><h2>编辑</h2></div>
+      <div class="scroll"><div class="prev">
+        <div class="field"><label for="tname">名称</label><input id="tname" class="input" value="${esc(tpl.name)}"></div>
+        <div class="field"><label for="tbody">内容</label><textarea id="tbody" class="input" rows="9">${esc(tpl.body)}</textarea>
+          <span class="hint">用 <code class="mono">{{参数名}}</code> 留出要填的地方；<code class="mono">{{材料}}</code> 放集合里的片段，不写就附在最后；写成 <code class="mono">\\{{</code> 表示字面花括号。</span></div>
+        <div class="field"><span class="label">识别到的参数</span><div class="chips">${names.length ? names.map((n) => `<span class="badge brand">${esc(n)}</span>`).join("") : '<span class="hint">没有参数</span>'}</div>
+          ${dup > 0 ? `<span class="hint">${ic("info", "sm")} 有 ${dup} 处重名参数，只需要填一次。</span>` : ""}
+          ${literal ? `<span class="hint">${ic("info", "sm")} 含字面花括号，会原样输出。</span>` : ""}</div>
+        <div class="field"><span class="label">渲染</span><div class="tpl-view">${view}</div></div>
+      </div></div>
+    </div>
+    ${resizer("tmid", "调整编辑区宽度")}
+    <div class="pane fill">
+      <div class="phead"><h2>试填</h2><span class="sp"></span><button class="btn btn-primary btn-sm" data-act="tpl-copy">${ic("copy", "sm")}复制结果</button></div>
+      <div class="scroll"><div class="prev">
+        ${names.map((n) => `<div class="field"><label for="tv-${esc(n)}">${esc(n)}</label><input id="tv-${esc(n)}" class="input" data-tval="${esc(n)}" value="${esc(vals[n] || "")}"></div>`).join("") || '<p class="hint">这个模板没有需要填的参数。</p>'}
+        ${names.some((n) => !vals[n]) ? `<p class="err" style="margin:0">没填的参数在结果里标红；复制时原样保留成 {{参数}}。</p>` : ""}
+        <div class="content" style="border:1px solid var(--border);border-radius:var(--radius)"><pre class="md">${compose({ items: [], params: vals }, tpl, true).replace(/<span class="mat-block"><\/span>/, '<span class="mat-block">（这里放集合里的片段）</span>')}</pre></div>
+      </div></div>
+    </div>`;
+}
+
+/* ---------- 设置 ---------- */
+function pageSettings() {
+  const s = S(), openCols = s.collections.filter((c) => c.open);
+  const sw = (on, act, label, dis = false) => `<button class="switch" role="switch" aria-checked="${on}" aria-label="${label}" data-act="${act}" ${dis ? "disabled" : ""}></button>`;
+  const conflict = s.hotkey.join("+") === "Win+V";
+  return `<div class="pane fill"><div class="phead"><h1>设置</h1></div><div class="scroll"><div class="settings">
+    <section aria-labelledby="s1"><h2 id="s1">${ic("keyboard")}通用</h2>
+      <div class="srow"><div><div>唤出快捷面板</div><div class="d">点按钮后直接按下新的组合键，Esc 取消</div>${conflict ? `<div class="err">Win+V 是 Windows 自带剪贴板历史的快捷键，会冲突</div>` : ""}</div>
+        <button class="btn btn-outline rec ${s.recHotkey ? "on" : ""}" data-act="rec-hotkey" aria-live="polite">${s.recHotkey ? "请按下组合键…" : s.hotkey.map((k) => `<span class="kbd">${k}</span>`).join(" + ")}</button></div>
+      <div class="srow"><div><div>开机启动</div><div class="d">登录 Windows 后在托盘待命</div></div>${sw(s.autostart, "toggle-autostart", "开机启动")}</div>
+      <div class="srow"><div><div>外观</div><div class="d">跟随原型控制栏的主题切换</div></div><span class="badge">${s.theme === "dark" ? "深色" : "浅色"}</span></div>
+    </section>
+    <section aria-labelledby="s2"><h2 id="s2">${ic("shield")}收录</h2>
+      <div class="srow"><div><div>收录剪贴内容</div><div class="d">暂停后新复制的内容不会保存；已有历史不受影响</div></div>${sw(!s.paused, "toggle-pause", "收录剪贴内容")}</div>
+      <div class="srow"><div><div>忽略标记为敏感的内容</div><div class="d">密码管理器等会给内容加上“不进入剪贴板历史”的标记，片羽遵守这个标记</div></div>${sw(s.ignoreSensitive, "toggle-sensitive", "忽略标记为敏感的内容")}</div>
+      <div class="field"><span class="label">不收录这些应用里复制的内容</span>
+        <div class="list">${s.excluded.map((a) => `<div>${appTile(a)}<span style="flex:1">${esc(APPS[a]?.name || a)} <span class="hint mono">${esc(APPS[a]?.exe || a)}</span></span><button class="btn btn-ghost btn-sm" data-act="ex-del" data-v="${a}" aria-label="不再排除 ${esc(APPS[a]?.name || a)}">${ic("x", "sm")}</button></div>`).join("") || '<div class="hint">没有排除的应用</div>'}
+          <div><label class="sr" for="exadd">添加要排除的应用</label><select id="exadd" class="input" style="flex:1"><option value="">选择正在运行的应用…</option>${Object.keys(APPS).filter((a) => !s.excluded.includes(a)).map((a) => `<option value="${a}">${esc(APPS[a].name)}（${esc(APPS[a].exe)}）</option>`).join("")}</select><button class="btn btn-outline btn-sm" data-act="ex-add">${ic("plus", "sm")}添加</button></div></div></div>
+      <div class="srow"><div><div>历史保留时长</div><div class="d">超过时长的历史自动清理；收藏和集合里的片段不清理</div></div><label class="sr" for="ret">历史保留时长</label><select id="ret" class="input" style="width:140px">${[["7", "7 天"], ["30", "30 天"], ["90", "90 天"], ["0", "一直保留"]].map(([v, t]) => `<option value="${v}" ${s.retention === v ? "selected" : ""}>${t}</option>`).join("")}</select></div>
+      <div class="srow"><div><div>最多保留条数</div><div class="d">100 到 100000；超出时先清理最旧的未收藏条目</div>${s.maxErr ? `<div class="err" id="maxerr">${esc(s.maxErr)}</div>` : ""}</div><label class="sr" for="maxn">最多保留条数</label><input id="maxn" class="input" style="width:140px" inputmode="numeric" value="${s.maxItems}" aria-invalid="${!!s.maxErr}" ${s.maxErr ? 'aria-describedby="maxerr"' : ""}></div>
+    </section>
+    <section aria-labelledby="s3"><h2 id="s3">${ic("bot")}AI 接入</h2>
+      <div class="srow"><div><div>允许本机 AI 工具读取开放的集合</div><div class="d">通过 MCP（stdio）和命令行，只读；普通历史不开放</div></div>${sw(s.mcpOn, "toggle-mcp", "允许本机 AI 工具读取开放的集合")}</div>
+      <div class="ai-note">${ic("alert")}<span><b>开放前请注意：</b>集合交给 AI 工具后，工具可能再把内容发给它的模型服务。只开放你愿意发出去的材料。</span></div>
+      <div class="field ${s.mcpOn ? "" : "disabled"}"><span class="label">已开放的集合</span>
+        <div class="list">${openCols.length ? openCols.map((c) => `<div>${ic("layers", "sm")}<span style="flex:1">${esc(c.name)} <span class="hint">${c.items.length} 个片段</span></span><button class="btn btn-ghost btn-sm" data-act="goto-col" data-id="${c.id}">查看</button><button class="btn btn-outline btn-sm" data-act="col-revoke" data-id="${c.id}" ${s.mcpOn ? "" : "disabled"}>撤销开放</button></div>`).join("") : '<div class="hint">还没有开放任何集合。在集合页打开“对 AI 工具开放”。</div>'}</div></div>
+      <div class="field"><span class="label">接入方式（命令为暂定示例）</span>
+<pre class="codeblk mono">pinfeather collections list
+pinfeather collections export "MVP 规格修订材料" --format md
+
+# MCP 客户端配置
+{ "mcpServers": { "pinfeather": { "command": "pinfeather", "args": ["mcp"] } } }</pre></div>
+    </section>
+    <section aria-labelledby="s4" class="disabled"><h2 id="s4">${ic("monitor")}设备 <span class="badge">后续版本</span></h2>
+      <div class="srow"><div><div>局域网互通</div><div class="d">两台 Windows 配对后加密传输文字、链接和图片；远端内容先进入历史，不会自动覆盖当前剪贴板</div></div>${sw(false, "noop", "局域网互通", true)}</div>
+      <button class="btn btn-outline" disabled style="justify-self:start">${ic("plus", "sm")}配对新设备</button>
+    </section>
+    <section aria-labelledby="s5" style="border-bottom:0"><h2 id="s5">${ic("info")}关于</h2>
+      <div class="srow" style="justify-content:flex-start"><img src="${ASSET.app}" alt="" width="48" height="48"><div><div style="font-weight:600">片羽 Pinfeather</div><div class="d">版本 0.0.0 · 界面原型 · PARALCOR 出品</div></div></div>
+    </section>
+  </div></div></div>`;
+}
+
+/* ---------- 菜单与对话框 ---------- */
+function menuHtml() {
+  const s = S(), m = s.menu;
+  if (m.kind === "addto") return `<div class="menu" id="menu" role="menu" style="left:${m.x}px;top:${m.y}px"><div class="mh">加入集合</div>${s.collections.map((k) => `<button role="menuitem" data-act="addto" data-col="${k.id}">${ic("layers", "sm")}${esc(k.name)}</button>`).join("")}<div class="sep"></div><button role="menuitem" data-act="addto-new">${ic("plus", "sm")}新建集合并加入</button></div>`;
+  return "";
+}
+function dialogHtml() {
+  const s = S(), d = s.dialog;
+  if (d.kind === "pick") {
+    const col = s.collections.find((c) => c.id === s.activeCol);
+    const have = new Set(col.items.map((m) => m.src));
+    const items = s.clips.filter((c) => matches(c, d.q || "", "all"));
+    return `<div class="overlay" data-act="dlg-bg"><div class="dialog" role="dialog" aria-modal="true" aria-labelledby="dlgt" id="dlg">
+      <header><h2 id="dlgt">从历史添加到「${esc(col.name)}」</h2><p class="hint" style="margin:0">勾选要加入的片段，已在集合里的不能重复添加。</p></header>
+      <div class="dbody"><div class="search">${ic("search")}<label class="sr" for="dq">搜索</label><input id="dq" class="input" placeholder="搜索历史…" value="${esc(d.q || "")}"></div>
+        <div role="listbox" aria-multiselectable="true">${items.map((c) => { const on = d.sel.includes(c.id), dis = have.has(c.id); return `<div class="row" role="option" aria-selected="${on}" aria-disabled="${dis}" data-multi="${on}" data-act="${dis ? "noop" : "dlg-toggle"}" data-id="${c.id}" style="${dis ? "opacity:.5" : ""}"><span class="chk">${on || dis ? ic("check") : ""}</span>${rowIcon(c)}<div class="txt"><div class="t1">${esc(firstLine(c))}</div><div class="t2">${appTile(c.app)}${esc(APPS[c.app].name)} · ${ago(c.ago)}${dis ? " · 已在集合里" : ""}</div></div></div>`; }).join("")}</div></div>
+      <footer><button class="btn btn-ghost" data-act="dlg-close">取消</button><button class="btn btn-primary" data-act="dlg-add" ${d.sel.length ? "" : "disabled"}>${d.sel.length ? `加入 ${d.sel.length} 项` : "加入"}</button></footer>
+    </div></div>`;
+  }
+  if (d.kind === "confirm") return `<div class="overlay" data-act="dlg-bg"><div class="dialog" role="alertdialog" aria-modal="true" aria-labelledby="dlgt" id="dlg" style="width:min(420px,92%)">
+      <header><h2 id="dlgt">${esc(d.title)}</h2></header><div class="dbody"><p style="margin:0">${esc(d.body)}</p></div>
+      <footer><button class="btn btn-ghost" data-act="dlg-close">取消</button><button class="btn btn-primary" style="background:var(--destructive);color:#fff" data-act="dlg-confirm">${esc(d.ok)}</button></footer></div></div>`;
+  return "";
+}
+
+/* =====================================================================
+   渲染：整页重绘，保留焦点、光标和滚动位置
+   ===================================================================== */
+const root = document.documentElement, proto = document.getElementById("proto"), stage = document.getElementById("stage");
+let lastFocus = null;
+function render() {
+  const s = S();
+  root.dataset.theme = s.theme; root.dataset.accent = s.accent; root.dataset.density = s.density;
+  const a = document.activeElement;
+  const keep = a && a.id ? { id: a.id, ss: a.selectionStart, se: a.selectionEnd } : a && a.dataset && a.dataset.act ? { sel: `[data-act="${a.dataset.act}"]${a.dataset.v ? `[data-v="${a.dataset.v}"]` : ""}${a.dataset.id ? `[data-id="${a.dataset.id}"]` : ""}` } : null;
+  const scrolls = [...stage.querySelectorAll(".scroll, .qlist, textarea")].map((el) => [el.id || el.closest("[class]")?.className, el.scrollTop]);
+  proto.innerHTML = protoBar();
+  stage.innerHTML = s.scene === "quick" ? sceneQuick() : sceneManager();
+  [...stage.querySelectorAll(".scroll, .qlist, textarea")].forEach((el, i) => { if (scrolls[i] && scrolls[i][0] === (el.id || el.closest("[class]")?.className)) el.scrollTop = scrolls[i][1]; });
+  if (keep) {
+    const el = keep.id ? document.getElementById(keep.id) : stage.querySelector(keep.sel) || proto.querySelector(keep.sel);
+    if (el) { el.focus({ preventScroll: true }); if (keep.ss != null && el.setSelectionRange) try { el.setSelectionRange(keep.ss, keep.se); } catch {} }
+  }
+  document.documentElement.style.setProperty("--proto-h", proto.offsetHeight + "px");
+  // 新出现的条目只播一次进入动画
+  if (s.clips.some((c) => c.enter)) setTimeout(() => set((st) => ({ clips: st.clips.map((c) => (c.enter ? { ...c, enter: false } : c)) })), 400);
+  syncUrl();
+}
+function syncUrl() {
+  const s = S();
+  const p = new URLSearchParams({ scene: s.scene, theme: s.theme, accent: s.accent, density: s.density, list: s.listMode, qlayout: s.qLayout, paste: s.pasteMode, page: s.page });
+  history.replaceState(null, "", "?" + p);
+}
+store.subscribe(render);
+
+/* ---------- 点击 ---------- */
+document.addEventListener("click", (e) => {
+  const s = S();
+  const p = e.target.closest("[data-proto]");
+  if (p) { set({ [p.dataset.proto]: p.dataset.v, menu: null, trayMenu: false }); return; }
+  const t = e.target.closest("[data-act]");
+  // 点菜单外关闭菜单
+  if (s.menu && !e.target.closest("#menu") && !(t && t.dataset.act === "menu-addto")) set({ menu: null });
+  if (s.trayMenu && !e.target.closest("#trayMenu") && !(t && t.dataset.act === "tray")) set({ trayMenu: false });
+  if (!t) return;
+  const act = t.dataset.act, id = t.dataset.id, v = t.dataset.v;
+  const A = {
+    "sim-copy": simCopy,
+    "toggle-pause": () => { set({ paused: !s.paused, trayMenu: false }); toast(s.paused ? "ok" : "info", s.paused ? "已恢复收录" : "收录已暂停", s.paused ? "" : "新复制的内容不会保存，托盘图标变淡。"); },
+    tray: () => { if (s.qOpen) closeQuick(); else openQuick(); },
+    "tray-open": openQuick,
+    "tray-manager": () => set({ scene: "manager", trayMenu: false }),
+    "tray-settings": () => set({ scene: "manager", page: "settings", trayMenu: false }),
+    "tray-quit": () => { set({ trayMenu: false }); toast("info", "原型里不退出", "真实应用会询问是否同时停止 AI 接入。"); },
+    "q-type": () => set({ qType: v, qSel: 0 }),
+    "q-pick": () => { set({ qSel: +t.dataset.i }); pasteSelected(false); },
+    nav: () => set({ page: v, menu: null, hMulti: [] }),
+    "list-mode": () => set({ listMode: v }),
+    "h-type": () => set({ hType: v }),
+    "h-fav": () => set({ hFav: !s.hFav }),
+    "h-clear": () => set({ hQuery: "", hType: "all", hApp: "all", hFav: false }),
+    "h-pick": () => pickHistory(id, e),
+    "h-unmulti": () => set({ hMulti: [] }),
+    "h-del-multi": () => delClips(s.hMulti),
+    copy: () => { bump(id); toast("ok", "已复制到剪贴板"); },
+    "copy-plain": () => { bump(id); toast("ok", "已按纯文本复制"); },
+    fav: () => set({ clips: s.clips.map((c) => (c.id === id ? { ...c, fav: !c.fav } : c)) }),
+    del: () => delClips([id]),
+    "menu-addto": () => { const r = t.getBoundingClientRect(), w = document.getElementById("win").getBoundingClientRect(); set({ menu: { kind: "addto", ids: t.dataset.ids.split(","), x: Math.min(r.left - w.left, w.width - 200), y: r.bottom - w.top + 4 } }); },
+    addto: () => addTo(t.dataset.col, s.menu.ids),
+    "addto-new": () => { const k = newCol(); addTo(k, s.menu.ids); },
+    "goto-col": () => set({ page: "collections", activeCol: id }),
+    "toast-action": () => { const f = TOAST_ACTIONS[id]; f && f(); set((st) => ({ toasts: st.toasts.filter((x) => String(x.id) !== id) })); },
+    "col-pick": () => set({ activeCol: id, editName: false, editMat: null }),
+    "col-new": () => { const k = newCol(); set({ activeCol: k, editName: true }); setTimeout(() => { const el = document.getElementById("colname"); el && (el.focus(), el.select()); }); },
+    "col-rename": () => { set({ editName: true }); setTimeout(() => { const el = document.getElementById("colname"); el && (el.focus(), el.select()); }); },
+    "col-open": () => { set({ collections: s.collections.map((c) => (c.id === s.activeCol ? { ...c, open: !c.open } : c)) }); },
+    "col-revoke": () => { set({ collections: s.collections.map((c) => (c.id === id ? { ...c, open: false } : c)) }); toast("ok", "已撤销开放", "AI 工具下一次读取会被拒绝。"); },
+    "mat-edit": () => { set({ editMat: id }); setTimeout(() => document.getElementById("me-" + id)?.focus()); },
+    "mat-done": () => set({ editMat: null }),
+    "mat-del": () => { const col = s.collections.find((c) => c.id === s.activeCol), m = col.items.find((x) => x.id === id), at = col.items.indexOf(m);
+      updCol(s.activeCol, (c) => ({ ...c, items: c.items.filter((x) => x.id !== id) }));
+      const key = String(tid + 1); TOAST_ACTIONS[key] = () => updCol(s.activeCol, (c) => { const it = [...c.items]; it.splice(at, 0, m); return { ...c, items: it }; });
+      toast("info", "已从集合移除", "历史里的原文还在。", { label: "撤销" }); },
+    "add-from-history": () => { set({ dialog: { kind: "pick", sel: [], q: "" } }); setTimeout(() => document.getElementById("dq")?.focus()); },
+    "dlg-toggle": () => { const d = s.dialog; set({ dialog: { ...d, sel: d.sel.includes(id) ? d.sel.filter((x) => x !== id) : [...d.sel, id] } }); },
+    "dlg-add": () => { addTo(s.activeCol, s.dialog.sel); set({ dialog: null }); },
+    "dlg-close": closeDialog,
+    "dlg-bg": () => { if (e.target === t) closeDialog(); },
+    "dlg-confirm": () => { const f = s.dialog.onOk; set({ dialog: null }); f && f(); },
+    "copy-compose": () => toast("ok", "已复制合并结果", "可以直接粘贴给 AI 工具。"),
+    "export-md": exportMd,
+    "tpl-pick": () => set({ activeTpl: id, tplVals: {} }),
+    "tpl-new": () => { const k = "t" + nid++; set({ templates: [...s.templates, { id: k, name: "新模板", body: "请根据下面的材料，{{要求}}。\n\n{{材料}}" }], activeTpl: k, tplVals: {} }); setTimeout(() => document.getElementById("tname")?.select()); },
+    "tpl-copy": () => toast("ok", "已复制模板结果"),
+    "rec-hotkey": () => set({ recHotkey: !s.recHotkey }),
+    "toggle-autostart": () => set({ autostart: !s.autostart }),
+    "toggle-sensitive": () => set({ ignoreSensitive: !s.ignoreSensitive }),
+    "toggle-mcp": () => { set({ mcpOn: !s.mcpOn }); toast("info", s.mcpOn ? "AI 接入已关闭" : "AI 接入已打开", s.mcpOn ? "所有开放的集合暂时都不能被读取。" : ""); },
+    "ex-del": () => set({ excluded: s.excluded.filter((a) => a !== v) }),
+    "ex-add": () => { const sel = document.getElementById("exadd"); if (sel.value) set({ excluded: [...s.excluded, sel.value] }); else sel.focus(); },
+    noop: () => {}
+  };
+  A[act] && A[act]();
+});
+// 快捷面板：鼠标悬停跟着选中，单击直接粘贴
+document.addEventListener("mouseover", (e) => { const r = e.target.closest('[data-act="q-pick"]'); if (r && +r.dataset.i !== S().qSel) set({ qSel: +r.dataset.i }); });
+document.addEventListener("contextmenu", (e) => { if (e.target.closest("#trayBtn")) { e.preventDefault(); set({ trayMenu: !S().trayMenu }); setTimeout(() => document.querySelector("#trayMenu button")?.focus()); } });
+
+function closeDialog() { set({ dialog: null }); }
+function updCol(id, f) { set((s) => ({ collections: s.collections.map((c) => (c.id === id ? f(c) : c)) })); }
+function newCol() { const k = "k" + nid++; set((s) => ({ collections: [...s.collections, { id: k, name: "新集合", open: false, template: "", params: {}, items: [] }] })); return k; }
+function addTo(colId, ids) {
+  const s = S(), col = s.collections.find((c) => c.id === colId), have = new Set(col.items.map((m) => m.src));
+  const add = ids.map((i) => s.clips.find((c) => c.id === i)).filter((c) => c && !have.has(c.id)).map(mat);
+  updCol(colId, (c) => ({ ...c, items: [...c.items, ...add] }));
+  set({ menu: null, hMulti: [] });
+  toast("ok", add.length ? `已加入「${col.name}」` : "这些片段已经在集合里了", add.length ? `${add.length} 个片段` : "");
+}
+function delClips(ids) {
+  const s = S(), removed = s.clips.filter((c) => ids.includes(c.id)), order = s.clips.map((c) => c.id);
+  set({ clips: s.clips.filter((c) => !ids.includes(c.id)), hMulti: [], hSel: null });
+  const key = String(tid + 1);
+  TOAST_ACTIONS[key] = () => set((st) => ({ clips: [...st.clips, ...removed].sort((a, b) => order.indexOf(a.id) - order.indexOf(b.id)) }));
+  toast("info", `已删除 ${ids.length} 条`, "集合里的副本不受影响。", { label: "撤销" }, 6000);
+}
+function pickHistory(id, e) {
+  const s = S(), items = hItems().map((c) => c.id);
+  if (e.ctrlKey || e.metaKey) { const cur = s.hMulti.length ? s.hMulti : s.hSel ? [s.hSel] : []; set({ hMulti: cur.includes(id) ? cur.filter((x) => x !== id) : [...cur, id], hSel: id }); return; }
+  if (e.shiftKey && s.hSel) { const a = items.indexOf(s.hSel), b = items.indexOf(id); set({ hMulti: items.slice(Math.min(a, b), Math.max(a, b) + 1) }); return; }
+  set({ hSel: id, hMulti: [] });
+}
+let simI = 0;
+function simCopy() {
+  const s = S(), c = { ...POOL[simI++ % POOL.length], id: "c" + nid++, ago: 0 };
+  if (s.paused) { toast("info", "收录已暂停", `来自 ${APPS[c.app].name} 的复制没有保存。`); return; }
+  if (s.excluded.includes(c.app)) { toast("info", `已忽略 ${APPS[c.app].name}`, "这个应用在排除列表里，复制的内容不保存。"); return; }
+  set({ clips: [{ ...c, enter: true }, ...s.clips.map((x) => ({ ...x, ago: x.ago + 1 }))], qSel: 0 });
+  toast("ok", "收进一条新内容", `${TYPES[c.type][0]} · ${APPS[c.app].name}`, null, 2200);
+}
+function exportMd() {
+  const s = S(), col = s.collections.find((c) => c.id === s.activeCol), tpl = s.templates.find((t) => t.id === col.template);
+  const a = document.createElement("a");
+  a.href = URL.createObjectURL(new Blob([compose(col, tpl, false)], { type: "text/markdown" }));
+  a.download = col.name.replace(/[\\/:*?"<>|]/g, "_") + ".md"; a.click();
+  setTimeout(() => URL.revokeObjectURL(a.href), 1000);
+  toast("ok", "已导出 Markdown", a.download);
+}
+
+/* ---------- 输入 ---------- */
+document.addEventListener("input", (e) => {
+  const el = e.target, s = S();
+  if (el.id === "qq") return set({ qQuery: el.value, qSel: 0 });
+  if (el.id === "hq") return set({ hQuery: el.value });
+  if (el.id === "dq") return set({ dialog: { ...s.dialog, q: el.value } });
+  if (el.id === "ed") { caret = el.selectionStart; return set({ editorText: el.value }); }
+  if (el.dataset.param) return updCol(s.activeCol, (c) => ({ ...c, params: { ...c.params, [el.dataset.param]: el.value } }));
+  if (el.dataset.edit) return updCol(s.activeCol, (c) => ({ ...c, items: c.items.map((m) => (m.id === el.dataset.edit ? { ...m, text: el.value } : m)) }));
+  if (el.dataset.tval) return set({ tplVals: { ...(s.tplVals || {}), [el.dataset.tval]: el.value } });
+  if (el.id === "tname") return set({ templates: s.templates.map((t) => (t.id === s.activeTpl ? { ...t, name: el.value } : t)) });
+  if (el.id === "tbody") return set({ templates: s.templates.map((t) => (t.id === s.activeTpl ? { ...t, body: el.value } : t)) });
+  if (el.id === "colname") return updCol(s.activeCol, (c) => ({ ...c, name: el.value }));
+  if (el.id === "maxn") { const n = +el.value; return set({ maxItems: el.value, maxErr: /^\d+$/.test(el.value) && n >= 100 && n <= 100000 ? "" : "请输入 100 到 100000 之间的整数" }); }
+});
+document.addEventListener("change", (e) => {
+  const el = e.target, s = S();
+  if (el.id === "happ") set({ hApp: el.value });
+  if (el.id === "coltpl") updCol(s.activeCol, (c) => ({ ...c, template: el.value }));
+  if (el.id === "ret") set({ retention: el.value });
+});
+document.addEventListener("focusout", (e) => { if (e.target.id === "colname") set({ editName: false }); if (e.target.id === "ed") caret = e.target.selectionStart; });
+
+/* ---------- 键盘 ---------- */
+document.addEventListener("keydown", (e) => {
+  const s = S(), k = e.key;
+  // 录制快捷键
+  if (s.recHotkey) {
+    e.preventDefault();
+    if (k === "Escape") return set({ recHotkey: false });
+    if (["Control", "Shift", "Alt", "Meta"].includes(k)) return;
+    const combo = [e.ctrlKey && "Ctrl", e.altKey && "Alt", e.shiftKey && "Shift", e.metaKey && "Win"].filter(Boolean);
+    if (!combo.length) return toast("warn", "至少要带一个修饰键", "例如 Ctrl、Alt 或 Shift。");
+    return set({ hotkey: [...combo, k.length === 1 ? k.toUpperCase() : k], recHotkey: false });
+  }
+  if (s.dialog && k === "Escape") return closeDialog();
+  if (s.dialog && k === "Tab") { // 焦点留在对话框里
+    const f = [...document.querySelectorAll("#dlg button:not(:disabled), #dlg input")]; if (!f.length) return;
+    if (e.shiftKey && document.activeElement === f[0]) { e.preventDefault(); f[f.length - 1].focus(); } else if (!e.shiftKey && document.activeElement === f[f.length - 1]) { e.preventDefault(); f[0].focus(); }
+    return;
+  }
+  if ((s.menu || s.trayMenu) && k === "Escape") return set({ menu: null, trayMenu: false });
+  // 唤出快捷面板（原型里用页面内快捷键模拟全局热键）
+  const hk = s.hotkey, want = (m) => hk.includes(m);
+  if (s.scene === "quick" && e.ctrlKey === want("Ctrl") && e.shiftKey === want("Shift") && e.altKey === want("Alt") && k.toUpperCase() === hk[hk.length - 1]) { e.preventDefault(); return s.qOpen ? closeQuick() : openQuick(); }
+  if (s.scene === "quick" && s.pendingPaste && e.target.id === "ed" && e.ctrlKey && k.toLowerCase() === "v") { e.preventDefault(); caret = e.target.selectionStart; return insertText(s.pendingPaste); }
+  if (s.scene === "quick" && s.qOpen) {
+    const items = qItems();
+    if (k === "Escape") { e.preventDefault(); return closeQuick(() => document.getElementById("ed")?.focus()); }
+    if (k === "ArrowDown" || k === "ArrowUp") { e.preventDefault(); const n = Math.max(0, Math.min(items.length - 1, s.qSel + (k === "ArrowDown" ? 1 : -1))); set({ qSel: n }); document.getElementById("qo-" + items[n]?.id)?.scrollIntoView({ block: "nearest" }); return; }
+    if (k === "Enter") { e.preventDefault(); return pasteSelected(e.shiftKey); }
+    if (k === "Tab" && s.qLayout === "single") { e.preventDefault(); return set({ qPreview: !s.qPreview }); }
+    if (e.ctrlKey && /^[1-9]$/.test(k)) { e.preventDefault(); if (items[+k - 1]) { set({ qSel: +k - 1 }); pasteSelected(false); } return; }
+    if (e.ctrlKey && k.toLowerCase() === "d") { e.preventDefault(); const c = items[s.qSel]; if (c) { set({ clips: s.clips.map((x) => (x.id === c.id ? { ...x, fav: !x.fav } : x)) }); toast("ok", c.fav ? "已取消收藏" : "已收藏", "", null, 1800); } return; }
+    if (e.ctrlKey && e.shiftKey && k.toLowerCase() === "s") { e.preventDefault(); const c = items[s.qSel]; if (c) addTo(s.activeCol, [c.id]); return; }
+  }
+  // 历史列表 ↑↓
+  if (s.scene === "manager" && s.page === "history" && (k === "ArrowDown" || k === "ArrowUp") && (e.target.id === "hlist" || e.target.id === "hq")) {
+    e.preventDefault(); const ids = hItems().map((c) => c.id), i = ids.indexOf(s.hSel ?? ids[0]);
+    const n = ids[Math.max(0, Math.min(ids.length - 1, i + (k === "ArrowDown" ? 1 : -1)))]; set({ hSel: n, hMulti: [] });
+    stage.querySelector(`[data-id="${n}"]`)?.scrollIntoView({ block: "nearest" }); return;
+  }
+  if (s.scene === "manager" && s.page === "history" && k === "Delete" && e.target.id === "hlist") { const ids = s.hMulti.length ? s.hMulti : s.hSel ? [s.hSel] : []; if (ids.length) delClips(ids); return; }
+  // 片段排序：焦点在拖动手柄上时 Alt+↑/↓
+  if (e.target.dataset && e.target.dataset.handle && e.altKey && (k === "ArrowUp" || k === "ArrowDown")) { e.preventDefault(); moveMat(e.target.dataset.handle, k === "ArrowUp" ? -1 : 1, true); return; }
+  // 分隔条：←→ 调宽度
+  if (e.target.dataset && e.target.dataset.split && (k === "ArrowLeft" || k === "ArrowRight")) { e.preventDefault(); const key = e.target.dataset.split; setSize(key, s.sizes[key] + (k === "ArrowLeft" ? -16 : 16)); }
+});
+function moveMat(mid, d, refocus) {
+  const s = S(); updCol(s.activeCol, (c) => { const it = [...c.items], i = it.findIndex((m) => m.id === mid), j = i + d; if (j < 0 || j >= it.length) return c; [it[i], it[j]] = [it[j], it[i]]; return { ...c, items: it }; });
+  if (refocus) setTimeout(() => document.querySelector(`[data-handle="${mid}"]`)?.focus());
+}
+
+/* ---------- 分隔条（模拟 react-resizable-panels） ---------- */
+const LIM = { side: [56, 260], hlist: [280, 640], clist: [160, 320], cmid: [320, 640], tlist: [160, 320], tmid: [320, 640] };
+function setSize(key, v) { const [a, b] = LIM[key]; v = Math.max(a, Math.min(b, Math.round(v))); if (key === "side" && v < 120) v = 56; set((s) => ({ sizes: { ...s.sizes, [key]: v } })); }
+document.addEventListener("pointerdown", (e) => {
+  const r = e.target.closest(".resizer");
+  if (r) {
+    e.preventDefault(); const key = r.dataset.split, start = e.clientX, w0 = S().sizes[key], pane = r.previousElementSibling;
+    r.classList.add("drag"); r.setPointerCapture(e.pointerId);
+    const mv = (ev) => { const [a, b] = LIM[key]; pane.style.width = Math.max(a, Math.min(b, w0 + ev.clientX - start)) + "px"; };
+    const up = (ev) => { r.removeEventListener("pointermove", mv); r.removeEventListener("pointerup", up); setSize(key, w0 + ev.clientX - start); };
+    r.addEventListener("pointermove", mv); r.addEventListener("pointerup", up);
+    return;
+  }
+  const h = e.target.closest("[data-handle]");
+  if (h) startSort(e, h);
+});
+
+/* ---------- 拖拽排序（模拟 dnd-kit 的 SortableContext） ---------- */
+function startSort(e, handle) {
+  e.preventDefault();
+  const list = document.getElementById("sortlist"), cards = [...list.querySelectorAll(".mat")], me = handle.closest(".mat");
+  const from = cards.indexOf(me), rects = cards.map((c) => c.getBoundingClientRect()), gap = cards.length > 1 ? rects[1].top - rects[0].bottom : 8;
+  const h = rects[from].height + gap, y0 = e.clientY; let to = from;
+  me.classList.add("dragging", "lifting"); handle.setPointerCapture(e.pointerId);
+  const mv = (ev) => {
+    const dy = ev.clientY - y0; me.style.transform = `translateY(${dy}px) scale(1.01)`;
+    const mid = rects[from].top + rects[from].height / 2 + dy;
+    to = from; rects.forEach((r, i) => { if (i < from && mid < r.top + r.height / 2) to = Math.min(to, i); if (i > from && mid > r.top + r.height / 2) to = Math.max(to, i); });
+    cards.forEach((c, i) => { if (c === me) return; c.style.transform = i >= to && i < from ? `translateY(${h}px)` : i <= to && i > from ? `translateY(${-h}px)` : ""; });
+  };
+  const up = () => {
+    handle.removeEventListener("pointermove", mv); handle.removeEventListener("pointerup", up);
+    // 落位：先滑到目标位置，再提交新顺序
+    me.classList.remove("lifting");
+    const target = to > from ? rects[to].bottom - rects[from].bottom : rects[to].top - rects[from].top;
+    me.style.transform = `translateY(${target}px)`;
+    setTimeout(() => {
+      const mid = me.dataset.mid;
+      updCol(S().activeCol, (c) => { const it = [...c.items], [m] = it.splice(from, 1); it.splice(to, 0, m); return { ...c, items: it }; });
+      if (to !== from) toast("ok", `片段已移到第 ${to + 1} 位`, "", null, 1600);
+      document.querySelector(`[data-handle="${mid}"]`)?.focus({ preventScroll: true });
+    }, 180);
+  };
+  handle.addEventListener("pointermove", mv); handle.addEventListener("pointerup", up);
+}
+
+render();
+if (S().qOpen) setTimeout(() => document.getElementById("qq")?.focus());
+</script>
+</body>
+</html>

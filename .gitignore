@@ -1,0 +1,28 @@
+# Rust and Tauri build output
+target/
+src-tauri/gen/
+
+# Node and browser tooling
+node_modules/
+dist/
+.playwright-mcp/
+playwright-report/
+test-results/
+
+# Local build and release output
+*.exe
+*.pdb
+*.msi
+*.zip
+release/
+
+# Local editor and OS files
+.idea/
+.vscode/
+*.swp
+Thumbs.db
+.DS_Store
+
+# Local secrets and signing inputs
+*.env
+*.pfx
