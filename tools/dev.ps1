@@ -1,10 +1,11 @@
 ﻿# 片羽开发启动：仅为本脚本的子进程补 .cargo/bin PATH，不修改永久环境、执行策略或审批设置。
 # 用法（沿用现有执行策略调用）：
 #   powershell -File tools\dev.ps1 [-DataDir <完整绝对路径>]
+# 默认每次在系统临时目录下创建独立数据目录；需要复用数据时显式传入 -DataDir。
 # 若当前执行策略阻止运行本脚本，会看到脚本被禁止运行的报错；请记录具体报错交回处理，
 # 不要使用 -ExecutionPolicy Bypass 或 Set-ExecutionPolicy 绕过。
 param(
-    [string]$DataDir = (Join-Path 'D:\Develop\Misc Workspace\archive\pinfeather-core-prototype\runtime-data' (Get-Date -Format 'yyyyMMdd-HHmmss'))
+    [string]$DataDir = (Join-Path ([System.IO.Path]::GetTempPath()) ('Pinfeather\dev\' + [Guid]::NewGuid().ToString('N')))
 )
 
 $ErrorActionPreference = 'Stop'
