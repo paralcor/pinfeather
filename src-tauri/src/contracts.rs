@@ -570,6 +570,9 @@ pub fn parse_set_hotkey_request(value: &serde_json::Value) -> ContractResult<Set
     if !SUPPORTED_HOTKEY_KEYS.contains(&key) {
         return Err(reject("unsupported key"));
     }
+    if !ctrl && !alt && !shift && !win {
+        return Err(reject("hotkey requires a modifier"));
+    }
     if win && !ctrl && !alt && !shift && key == "V" {
         return Err(reject("Win+V is reserved"));
     }
@@ -735,12 +738,15 @@ pub fn parse_clip_summary(value: &serde_json::Value) -> ContractResult<ClipSumma
                 .to_string(),
         );
     }
-    let omitted_format_count = require_field(obj, "omitted_format_count")?
-        .as_u64()
-        .ok_or_else(|| reject("omitted_format_count must be an integer"))?;
-    let payload_bytes = require_field(obj, "payload_bytes")?
-        .as_u64()
-        .ok_or_else(|| reject("payload_bytes must be an integer"))?;
+    // JSON numbers must remain exact in the TypeScript consumer.
+    let omitted_format_count = parse_bounded_count(
+        require_field(obj, "omitted_format_count")?,
+        JS_SAFE_INTEGER_MAX,
+    )? as u64;
+    let payload_bytes = parse_bounded_count(
+        require_field(obj, "payload_bytes")?,
+        MAX_PAYLOAD_TOTAL_BYTES as i64,
+    )? as u64;
     let source_process_raw = require_field(obj, "source_process")?;
     let source_process = if source_process_raw.is_null() {
         None
@@ -1466,6 +1472,21 @@ mod tests {
                 }
                 _ => {}
             }
+        }
+    }
+
+    #[test]
+    fn accepted_summary_numbers_round_trip() {
+        let doc = load_fixture("responses.json");
+        for case in doc["cases"].as_array().unwrap() {
+            if case["group"] != "clip_summary" || case["expect"] != "accept" {
+                continue;
+            }
+            let value = case_value(case);
+            let summary = parse_clip_summary(&value).unwrap();
+            let wire = serde_json::to_value(&summary).unwrap();
+            assert_eq!(wire, value, "{}", case["id"]);
+            assert_eq!(parse_clip_summary(&wire).unwrap(), summary, "{}", case["id"]);
         }
     }
 

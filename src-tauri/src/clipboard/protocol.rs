@@ -1,5 +1,6 @@
 //! worker 协议纯契约：帧边界与消息字段校验。
 //! 不创建 worker、不实现 supervisor、不读剪贴板；真实流/超时/回收留给 E03。
+//! 该内部协议只由 Rust 解析；WebView 仅接收宿主转换后的界面 DTO。
 
 use crate::contracts::{
     ContractError, ContractResult, WORKER_PROTOCOL_VERSION, WORKER_REQUEST_MAX_BYTES,
@@ -59,7 +60,7 @@ fn require_field<'a>(
         .ok_or_else(|| ContractError::protocol_error("missing field"))
 }
 
-/// 校验消息 JSON：version=1、capture_id 规范正整数 ID、policy_epoch 非负 i64。
+/// version=1；capture_id 为 1–64 字节 ASCII graphic 标识；policy_epoch 为 JS 安全非负整数。
 pub fn parse_worker_message_json(body: &str) -> ContractResult<WorkerMessage> {
     let value: serde_json::Value = serde_json::from_str(body)
         .map_err(|_| ContractError::protocol_error("body is not valid JSON"))?;

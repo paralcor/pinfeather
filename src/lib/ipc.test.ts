@@ -8,7 +8,6 @@ import eventsResultsFixture from "../../tests/fixtures/contracts/events_results.
 import fixBoundariesFixture from "../../tests/fixtures/contracts/fix_boundaries.json";
 import responseDtosFixture from "../../tests/fixtures/contracts/response_dtos.json";
 import {
-  checkWorkerCorrelation,
   contractErrorToJson,
   errorJsonLeaks,
   normalizeQuery,
@@ -33,15 +32,10 @@ import {
   parseStatusResult,
   normalizeWindowsExePath,
   parseU64String,
-  parseFramePrefix,
   parsePositiveId,
-  parseWorkerMessageJson,
-  splitFrame,
   validateLimit,
   validateRequestId,
   validateTimestampMs,
-  WORKER_REQUEST_MAX_BYTES,
-  WORKER_RESPONSE_MAX_BYTES,
   type ContractResult,
 } from "./ipc";
 
@@ -172,6 +166,18 @@ describe("request DTO fixtures", () => {
 });
 
 describe("response shape and enum fixtures", () => {
+  it("accepted summaries preserve their numeric fields on a JSON round trip", () => {
+    for (const c of loadFixture("responses.json").cases) {
+      if (c.group !== "clip_summary" || c.expect !== "accept") continue;
+      const parsed = parseClipSummary(caseValue(c));
+      expect(parsed.ok, c.id).toBe(true);
+      if (!parsed.ok) continue;
+      const wire = JSON.parse(JSON.stringify(parsed.value));
+      expect(wire, c.id).toEqual(caseValue(c));
+      expect(parseClipSummary(wire), c.id).toEqual(parsed);
+    }
+  });
+
   it("all response groups", () => {
     runCases("responses.json", (c) => {
       const v = caseValue(c);
@@ -213,7 +219,7 @@ describe("response shape and enum fixtures", () => {
   });
 });
 
-describe("error leak and worker frames", () => {
+describe("error serialization", () => {
   it("error json does not leak sentinel", () => {
     const doc = loadFixture("errors_worker.json");
     const sentinel = doc.sensitive_sentinel!;
@@ -231,78 +237,6 @@ describe("error leak and worker frames", () => {
         expect(errorJsonLeaks(serialized, sentinel), `${c.id} leaked`).toBe(false);
       }
     }
-  });
-
-  it("worker frame fixtures", () => {
-    const doc = loadFixture("errors_worker.json");
-    for (const c of doc.cases) {
-      if (c.group !== "worker_frame") continue;
-      const value = caseValue(c) as {
-        body?: string;
-        declared_length?: number;
-        over_cap?: "request" | "response";
-        force_length_mismatch?: boolean;
-      };
-      if (value.declared_length !== undefined) {
-        const max = value.over_cap === "request" ? WORKER_REQUEST_MAX_BYTES : WORKER_RESPONSE_MAX_BYTES;
-        const prefix = new Uint8Array(4);
-        new DataView(prefix.buffer).setUint32(0, value.declared_length, true);
-        const result = parseFramePrefix(prefix, max);
-        expect(result.ok, `${c.id}`).toBe(c.expect === "accept");
-        continue;
-      }
-      const bodyBytes = new TextEncoder().encode(value.body!);
-      const declared = value.force_length_mismatch ? bodyBytes.length + 1 : bodyBytes.length;
-      const frame = new Uint8Array(4 + bodyBytes.length);
-      new DataView(frame.buffer).setUint32(0, declared, true);
-      frame.set(bodyBytes, 4);
-      const split = splitFrame(frame, WORKER_REQUEST_MAX_BYTES);
-      if (c.expect === "reject") {
-        if (split.ok) {
-          const parsed = parseWorkerMessageJson(new TextDecoder().decode(split.value));
-          expect(parsed.ok, `${c.id} should reject at message parse`).toBe(false);
-        }
-      } else {
-        expect(split.ok, `${c.id} frame split`).toBe(true);
-        if (split.ok) {
-          const parsed = parseWorkerMessageJson(new TextDecoder().decode(split.value));
-          expect(parsed.ok, `${c.id} message parse`).toBe(true);
-        }
-      }
-    }
-  });
-
-  it("frame length limit checked before allocation", () => {
-    const p1 = new Uint8Array(4);
-    new DataView(p1.buffer).setUint32(0, 5000, true);
-    expect(parseFramePrefix(p1, WORKER_REQUEST_MAX_BYTES).ok).toBe(false);
-    const p2 = new Uint8Array(4);
-    new DataView(p2.buffer).setUint32(0, 20_000_000, true);
-    expect(parseFramePrefix(p2, WORKER_RESPONSE_MAX_BYTES).ok).toBe(false);
-    const p3 = new Uint8Array(4);
-    new DataView(p3.buffer).setUint32(0, 10, true);
-    expect(parseFramePrefix(p3, WORKER_REQUEST_MAX_BYTES)).toEqual({ ok: true, value: 10 });
-  });
-
-  it("worker correlation id and epoch", () => {
-    const request = parseWorkerMessageJson('{"version":1,"capture_id":"c1","policy_epoch":7}');
-    expect(request.ok).toBe(true);
-    if (!request.ok) return;
-    const okSame = parseWorkerMessageJson('{"version":1,"capture_id":"c1","policy_epoch":7}');
-    expect(okSame.ok).toBe(true);
-    if (okSame.ok) expect(checkWorkerCorrelation(request.value, okSame.value).ok).toBe(true);
-    const badId = parseWorkerMessageJson('{"version":1,"capture_id":"c2","policy_epoch":7}');
-    if (badId.ok) expect(checkWorkerCorrelation(request.value, badId.value).ok).toBe(false);
-    const badEpoch = parseWorkerMessageJson('{"version":1,"capture_id":"c1","policy_epoch":8}');
-    if (badEpoch.ok) expect(checkWorkerCorrelation(request.value, badEpoch.value).ok).toBe(false);
-  });
-
-  it("declared length must match body bytes", () => {
-    const body = new TextEncoder().encode('{"version":1,"capture_id":"c1","policy_epoch":1}');
-    const frame = new Uint8Array(4 + body.length);
-    new DataView(frame.buffer).setUint32(0, body.length + 5, true);
-    frame.set(body, 4);
-    expect(splitFrame(frame, WORKER_REQUEST_MAX_BYTES).ok).toBe(false);
   });
 });
 
@@ -368,7 +302,7 @@ function unitsToString(units: number[]): string | null {
   return out;
 }
 
-describe("F1-F5 fix boundaries", () => {
+describe("F1-F4 fix boundaries", () => {
   it("F1 trim whitespace set matches spec", () => {
     const cases = (fixBoundariesFixture as { trim_cases: Array<Record<string, unknown>> }).trim_cases;
     for (const c of cases) {
@@ -437,29 +371,6 @@ describe("F1-F5 fix boundaries", () => {
         expect(result.value.limit, `${id} limit`).toBe(c.expect_limit);
         if (c.expect_cursor === null) expect(result.value.cursor, `${id} cursor`).toBeNull();
         else expect(result.value.cursor, `${id} cursor`).not.toBeNull();
-      }
-    }
-  });
-
-  it("F5 policy epoch range", () => {
-    const cases = (fixBoundariesFixture as { epoch_raw_cases: Array<Record<string, unknown>> })
-      .epoch_raw_cases;
-    for (const c of cases) {
-      const id = c.id as string;
-      const result = parseWorkerMessageJson(c.raw as string);
-      if (c.expect === "accept") expect(result.ok, `${id} should accept: ${JSON.stringify(result)}`).toBe(true);
-      else expect(result.ok, `${id} should reject`).toBe(false);
-      if (c.correlate_with) {
-        expect(result.ok, `${id} base must parse`).toBe(true);
-        if (result.ok) {
-          const response = parseWorkerMessageJson(c.correlate_with as string);
-          expect(response.ok, `${id} correlate parse`).toBe(true);
-          if (response.ok) {
-            const check = checkWorkerCorrelation(result.value, response.value);
-            if (c.correlate_expect === "accept") expect(check.ok, `${id} correlate`).toBe(true);
-            else expect(check.ok, `${id} correlate`).toBe(false);
-          }
-        }
       }
     }
   });

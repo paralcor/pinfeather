@@ -1,5 +1,5 @@
 /**
- * E02 共享契约 TS 镜像（未来宿主调用入口）。
+ * 界面请求、响应与事件的运行时校验；宿主与 worker 的内部帧协议由 Rust 独占。
  * Rust 权威见 src-tauri/src/contracts.rs；两侧读取 tests/fixtures/contracts/ 同一合成夹具。
  * 仅定义形状与运行时校验，不注册命令、不返回假历史。
  */
@@ -22,8 +22,6 @@ export const MAX_HISTORY_ITEMS = 10000;
 export const MAX_HISTORY_PAYLOAD_BYTES = 256 * 1024 * 1024;
 export const MAX_TEXT_FRAME_BYTES = 64 * 1024;
 export const MAX_PAGE_JSON_BYTES = 1024 * 1024;
-export const WORKER_REQUEST_MAX_BYTES = 4 * 1024;
-export const WORKER_RESPONSE_MAX_BYTES = 18 * 1024 * 1024;
 export const WORKER_PROTOCOL_VERSION = 1;
 export const JS_SAFE_INTEGER_MAX = 9007199254740991;
 
@@ -76,10 +74,6 @@ function fail(code: ErrorCode, message: string): ContractError {
 
 function invalid(message: string): ContractError {
   return fail("invalid_input", message);
-}
-
-function protocol(message: string): ContractError {
-  return fail("protocol_error", message);
 }
 
 function ok<T>(value: T): ContractResult<T> {
@@ -485,6 +479,9 @@ export function parseSetHotkeyRequest(value: unknown): ContractResult<SetHotkeyR
   const key = value.key;
   if (typeof key !== "string") return err(invalid("key must be a string"));
   if (!SUPPORTED_HOTKEY_KEYS.includes(key)) return err(invalid("unsupported key"));
+  if (!value.ctrl && !value.alt && !value.shift && !value.win) {
+    return err(invalid("hotkey requires a modifier"));
+  }
   if (value.win === true && value.ctrl !== true && value.alt !== true && value.shift !== true && key === "V") {
     return err(invalid("Win+V is reserved"));
   }
@@ -628,14 +625,10 @@ export function parseClipSummary(value: unknown): ContractResult<ClipSummary> {
     if (typeof f !== "string") return err(invalid("format name must be a string"));
     formatNames.push(f);
   }
-  const omitted = value.omitted_format_count;
-  if (typeof omitted !== "number" || !Number.isInteger(omitted) || omitted < 0) {
-    return err(invalid("omitted_format_count must be an integer"));
-  }
-  const payloadBytes = value.payload_bytes;
-  if (typeof payloadBytes !== "number" || !Number.isInteger(payloadBytes) || payloadBytes < 0) {
-    return err(invalid("payload_bytes must be an integer"));
-  }
+  const omitted = parseBoundedCount(value.omitted_format_count, JS_SAFE_INTEGER_MAX);
+  if (!omitted.ok) return omitted;
+  const payloadBytes = parseBoundedCount(value.payload_bytes, MAX_PAYLOAD_TOTAL_BYTES);
+  if (!payloadBytes.ok) return payloadBytes;
   const sp = value.source_process;
   if (sp !== null && typeof sp !== "string") {
     return err(invalid("source_process must be a string or null"));
@@ -648,80 +641,11 @@ export function parseClipSummary(value: unknown): ContractResult<ClipSummary> {
     kind: kind.value,
     preview,
     format_names: formatNames,
-    omitted_format_count: omitted,
-    payload_bytes: payloadBytes,
+    omitted_format_count: omitted.value,
+    payload_bytes: payloadBytes.value,
     source_process: sp,
     source_confidence: confidence.value,
   });
-}
-
-export interface WorkerMessage {
-  version: number;
-  capture_id: string;
-  policy_epoch: number;
-}
-
-/** worker 帧纯契约：4 字节 LE 长度，上限在分配之前检查，声明与实际字节一致。 */
-export function parseFramePrefix(prefix: Uint8Array, max: number): ContractResult<number> {
-  if (prefix.length < 4) return err(protocol("frame shorter than prefix"));
-  const declared = prefix[0]! | (prefix[1]! << 8) | (prefix[2]! << 16) | (prefix[3]! << 24);
-  const unsigned = declared >>> 0;
-  if (unsigned > max) return err(protocol("frame length exceeds limit before allocation"));
-  return ok(unsigned);
-}
-
-export function splitFrame(buf: Uint8Array, max: number): ContractResult<Uint8Array> {
-  const declared = parseFramePrefix(buf, max);
-  if (!declared.ok) return declared;
-  const body = buf.subarray(4);
-  if (body.length !== declared.value) {
-    return err(protocol("declared length does not match body"));
-  }
-  return ok(body);
-}
-
-export function parseWorkerMessageJson(body: string): ContractResult<WorkerMessage> {
-  let value: unknown;
-  try {
-    value = JSON.parse(body);
-  } catch {
-    return err(protocol("body is not valid JSON"));
-  }
-  if (!isPlainObject(value)) return err(protocol("body must be an object"));
-  for (const key of Object.keys(value)) {
-    if (key !== "version" && key !== "capture_id" && key !== "policy_epoch") {
-      return err(protocol("unknown field"));
-    }
-  }
-  const version = value.version;
-  if (typeof version !== "number" || !Number.isInteger(version)) {
-    return err(protocol("version must be an integer"));
-  }
-  if (version !== WORKER_PROTOCOL_VERSION) return err(protocol("unsupported protocol version"));
-  const captureId = value.capture_id;
-  if (typeof captureId !== "string") return err(protocol("capture_id must be a string"));
-  if (captureId.length === 0 || captureId.length > 64) {
-    return err(protocol("capture_id length invalid"));
-  }
-  for (let i = 0; i < captureId.length; i += 1) {
-    const c = captureId.charCodeAt(i);
-    if (c < 0x21 || c > 0x7e) return err(protocol("capture_id must be ASCII"));
-  }
-  const epoch = value.policy_epoch;
-  if (typeof epoch !== "number" || !Number.isInteger(epoch) || epoch < 0) {
-    return err(protocol("policy_epoch must be an integer"));
-  }
-  // 7.1：policy_epoch 为 0..=9007199254740991；超限原始 JSON 整数不得因舍入被接受。
-  if (epoch > JS_SAFE_INTEGER_MAX) {
-    return err(protocol("policy_epoch out of range"));
-  }
-  return ok({ version, capture_id: captureId, policy_epoch: epoch });
-}
-
-export function checkWorkerCorrelation(request: WorkerMessage, response: WorkerMessage): ContractResult<null> {
-  if (request.capture_id !== response.capture_id) return err(protocol("capture_id mismatch"));
-  if (request.policy_epoch !== response.policy_epoch) return err(protocol("policy_epoch mismatch"));
-  return ok(null);
 }
 
 /** 稳定错误序列化；测试用此检查不泄漏敏感哨兵。 */

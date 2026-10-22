@@ -400,6 +400,21 @@
   ],
   "epoch_raw_cases": [
     {
+      "id": "epoch_rounded_fraction_rejected",
+      "raw": "{\"version\":1,\"capture_id\":\"c1\",\"policy_epoch\":1.0000000000000001}",
+      "expect": "reject"
+    },
+    {
+      "id": "epoch_fraction_above_safe_max_rejected",
+      "raw": "{\"version\":1,\"capture_id\":\"c1\",\"policy_epoch\":9007199254740991.1}",
+      "expect": "reject"
+    },
+    {
+      "id": "epoch_exponent_rejected",
+      "raw": "{\"version\":1,\"capture_id\":\"c1\",\"policy_epoch\":1e0}",
+      "expect": "reject"
+    },
+    {
       "id": "f5_epoch_zero_ok",
       "raw": "{\"version\":1,\"capture_id\":\"c1\",\"policy_epoch\":0}",
       "expect": "accept"
