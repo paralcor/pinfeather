@@ -9,6 +9,24 @@ license = "MIT"
 name = "pinfeather_lib"
 crate-type = ["staticlib", "cdylib", "rlib"]
 
+[features]
+test-fixtures = []
+
+[[bin]]
+name = "worker_fixture"
+path = "tests/support/worker_fixture.rs"
+required-features = ["test-fixtures"]
+
+[[test]]
+name = "worker_protocol"
+path = "tests/worker_protocol.rs"
+required-features = ["test-fixtures"]
+
+[[bin]]
+name = "target_probe"
+path = "src/bin/target_probe.rs"
+required-features = ["test-fixtures"]
+
 [build-dependencies]
 tauri-build = { version = "2.7.4", features = [] }
 
@@ -16,3 +34,16 @@ tauri-build = { version = "2.7.4", features = [] }
 tauri = { version = "2.12.5", features = [] }
 serde = { version = "1.0.229", features = ["derive"] }
 serde_json = "1.0.154"
+windows-sys = { version = "0.61.2", features = [
+  "Win32_Foundation",
+  "Win32_Security",
+  "Win32_Storage_FileSystem",
+  "Win32_System_IO",
+  "Win32_System_JobObjects",
+  "Win32_System_Pipes",
+  "Win32_System_Threading",
+  "Win32_System_SystemInformation",
+  "Win32_UI_Input_Ime",
+  "Win32_UI_Input_KeyboardAndMouse",
+  "Win32_UI_WindowsAndMessaging",
+] }

@@ -1,3 +1,4 @@
-//! 内部抓取相关模块。E02 仅落地纯协议契约；worker/runtime 留待后续包。
+//! 内部抓取相关模块：纯协议契约与 worker supervisor。
 
 pub mod protocol;
+pub mod worker;

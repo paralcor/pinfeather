@@ -1,5 +1,5 @@
-//! worker 协议纯契约：帧边界与消息字段校验。
-//! 不创建 worker、不实现 supervisor、不读剪贴板；真实流/超时/回收留给 E03。
+//! worker 协议纯契约：帧边界、hello 与消息字段校验。
+//! 不创建 worker、不实现 supervisor、不读剪贴板；真实流/超时/回收由 worker.rs 承担。
 //! 该内部协议只由 Rust 解析；WebView 仅接收宿主转换后的界面 DTO。
 
 use crate::contracts::{
@@ -8,6 +8,10 @@ use crate::contracts::{
 };
 
 pub const FRAME_LENGTH_BYTES: usize = 4;
+
+/// E03a 控制帧（hello/ACK）正文上限：先检查长度再分配/解析（方案 5.2.1）。
+/// 第 5.2 节的 18 MiB 为后续快照响应总上限，不用于三字段 ACK。
+pub const CONTROL_FRAME_MAX_BYTES: usize = 4 * 1024;
 
 /// 4 字节 little-endian 长度前缀；在分配正文之前检查上限。
 pub fn parse_frame_prefix(prefix: [u8; FRAME_LENGTH_BYTES], max: usize) -> ContractResult<usize> {
@@ -112,4 +116,108 @@ pub fn check_correlation(request: &WorkerMessage, response: &WorkerMessage) -> C
         return Err(ContractError::protocol_error("policy_epoch mismatch"));
     }
     Ok(())
+}
+
+/// 握手帧唯一合法正文（严格相等，拒绝任何额外字段/错类型/错版本）。
+pub const HELLO_BODY: &str = "{\"kind\":\"hello\",\"version\":1}";
+
+/// 用权威规则校验请求字段与编码长度，并组出请求帧；纯函数，无副作用。
+/// 校验顺序与 parse_worker_message_json 一致（version/capture_id/policy_epoch），
+/// 编码后仍检查请求帧正文 <= WORKER_REQUEST_MAX_BYTES。
+pub fn encode_request_message(message: &WorkerMessage) -> ContractResult<Vec<u8>> {
+    let body = serde_json::to_string(&serde_json::json!({
+        "version": message.version,
+        "capture_id": message.capture_id,
+        "policy_epoch": message.policy_epoch,
+    }))
+    .map_err(|_| ContractError::protocol_error("request encode failed"))?;
+    parse_worker_message_json(&body)?;
+    if body.len() > WORKER_REQUEST_MAX_BYTES {
+        return Err(ContractError::protocol_error("frame length exceeds limit"));
+    }
+    encode_request_frame(body.as_bytes())
+}
+
+/// 组帧：4 字节 LE 长度前缀 + 正文；超限拒绝，避免发出越界帧。
+pub fn encode_frame(body: &[u8], max: usize) -> ContractResult<Vec<u8>> {
+    if body.len() > max {
+        return Err(ContractError::protocol_error("frame length exceeds limit"));
+    }
+    let mut frame = Vec::with_capacity(FRAME_LENGTH_BYTES + body.len());
+    frame.extend_from_slice(&(body.len() as u32).to_le_bytes());
+    frame.extend_from_slice(body);
+    Ok(frame)
+}
+
+pub fn encode_request_frame(body: &[u8]) -> ContractResult<Vec<u8>> {
+    encode_frame(body, WORKER_REQUEST_MAX_BYTES)
+}
+
+pub fn encode_response_frame(body: &[u8]) -> ContractResult<Vec<u8>> {
+    encode_frame(body, WORKER_RESPONSE_MAX_BYTES)
+}
+
+/// 严格 hello：恰好 {"kind":"hello","version":1}，字段必填且无额外字段。
+pub fn parse_hello_json(body: &str) -> ContractResult<()> {
+    let value: serde_json::Value = serde_json::from_str(body)
+        .map_err(|_| ContractError::protocol_error("body is not valid JSON"))?;
+    let obj = value
+        .as_object()
+        .ok_or_else(|| ContractError::protocol_error("body must be an object"))?;
+    if obj.len() != 2 {
+        return Err(ContractError::protocol_error("hello fields must be exact"));
+    }
+    let kind = require_field(obj, "kind")?
+        .as_str()
+        .ok_or_else(|| ContractError::protocol_error("kind must be a string"))?;
+    if kind != "hello" {
+        return Err(ContractError::protocol_error("kind must be hello"));
+    }
+    let version = require_field(obj, "version")?
+        .as_u64()
+        .ok_or_else(|| ContractError::protocol_error("version must be an integer"))?;
+    if version != WORKER_PROTOCOL_VERSION as u64 {
+        return Err(ContractError::protocol_error("unsupported protocol version"));
+    }
+    Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn hello_strict_accepts_exact_body() {
+        parse_hello_json(HELLO_BODY).unwrap();
+        parse_hello_json("{\"version\":1,\"kind\":\"hello\"}").unwrap();
+    }
+
+    #[test]
+    fn hello_rejects_variant_bodies() {
+        // 无 hello 字段、额外字段、错类型、错版本、非对象、非 JSON 全部拒绝。
+        for bad in [
+            "{}",
+            "{\"kind\":\"hello\"}",
+            "{\"kind\":\"hello\",\"version\":1,\"extra\":true}",
+            "{\"kind\":\"hi\",\"version\":1}",
+            "{\"kind\":\"hello\",\"version\":2}",
+            "{\"kind\":\"hello\",\"version\":\"1\"}",
+            "{\"kind\":1,\"version\":1}",
+            "[]",
+            "not json",
+        ] {
+            assert!(
+                parse_hello_json(bad).is_err(),
+                "should reject hello body: {bad}"
+            );
+        }
+    }
+
+    #[test]
+    fn encode_frame_checks_limit_and_prefix() {
+        let frame = encode_request_frame(b"abc").unwrap();
+        assert_eq!(&frame[..4], &3u32.to_le_bytes());
+        assert_eq!(&frame[4..], b"abc");
+        assert!(encode_frame(&[0u8; 5], 4).is_err());
+    }
 }

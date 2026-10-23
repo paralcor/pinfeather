@@ -1,6 +1,7 @@
 pub mod clipboard;
 pub mod config;
 pub mod contracts;
+pub mod platform;
 
 use config::HostArgs;
 
