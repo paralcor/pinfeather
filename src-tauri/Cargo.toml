@@ -18,6 +18,16 @@ path = "tests/support/worker_fixture.rs"
 required-features = ["test-fixtures"]
 
 [[test]]
+name = "runtime_storage_contract"
+path = "tests/runtime_storage_contract.rs"
+required-features = ["test-fixtures"]
+
+[[test]]
+name = "capture_windows"
+path = "tests/capture_windows.rs"
+required-features = ["test-fixtures"]
+
+[[test]]
 name = "worker_protocol"
 path = "tests/worker_protocol.rs"
 required-features = ["test-fixtures"]
@@ -36,10 +46,15 @@ serde = { version = "1.0.229", features = ["derive"] }
 serde_json = "1.0.154"
 windows-sys = { version = "0.61.2", features = [
   "Win32_Foundation",
+  "Win32_Globalization",
+  "Win32_Graphics_Gdi",
   "Win32_Security",
   "Win32_Storage_FileSystem",
   "Win32_System_IO",
+  "Win32_System_DataExchange",
+  "Win32_System_LibraryLoader",
   "Win32_System_JobObjects",
+  "Win32_System_Memory",
   "Win32_System_Pipes",
   "Win32_System_Threading",
   "Win32_System_SystemInformation",
@@ -47,3 +62,6 @@ windows-sys = { version = "0.61.2", features = [
   "Win32_UI_Input_KeyboardAndMouse",
   "Win32_UI_WindowsAndMessaging",
 ] }
+rusqlite = { version = "=0.40.2", features = ["bundled"] }
+base64 = "=0.23.1"
+uuid = { version = "=1.28.0", features = ["v4"] }

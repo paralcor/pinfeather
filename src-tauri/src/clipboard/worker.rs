@@ -1,6 +1,6 @@
 //! 抓取 worker 的 supervisor：唯一持有子进程、Job、管道与读取线程。
 //! 产品路径固定 current_exe + --capture-worker-v1；仅 test-fixtures 可指定 fixture 与受控故障模式。
-//! 本模块不读剪贴板、不写库、不启动 WebView；E03a 只证明传输与资源回收。
+//! 本模块只传输并校验快照，不直接读剪贴板、写库或启动 WebView。
 
 use std::collections::VecDeque;
 use std::os::windows::io::{AsRawHandle, OwnedHandle};
@@ -20,7 +20,7 @@ pub const HANDSHAKE_TIMEOUT: Duration = Duration::from_millis(2000);
 pub const CAPTURE_TIMEOUT: Duration = Duration::from_millis(750);
 pub const CLEANUP_TIMEOUT: Duration = Duration::from_millis(2000);
 
-/// reader 帧队列容量：最多 2 个控制帧（方案 5.2.1）；停止信号走独立通道。
+/// reader 最多缓存2帧；测试ACK限4KiB，产品快照限18MiB，hello始终限4KiB。
 const READER_QUEUE_FRAMES: usize = 2;
 const SETTLED_ID_MEMORY: usize = 8;
 
@@ -53,6 +53,7 @@ pub struct ReapReport {
 struct WorkerConfig {
     exe: PathBuf,
     args: Vec<String>,
+    snapshot: bool,
 }
 
 enum PumpEvent {
@@ -69,7 +70,7 @@ struct WorkerProcess {
     identity: WorkerIdentity,
     reader: Option<JoinHandle<()>>,
     writer: Option<JoinHandle<()>>,
-    /// 有界帧队列：sync_channel(2)，正文各 ≤4 KiB。
+    /// 有界帧队列：sync_channel(2)，大小取决于控制/快照模式。
     frames: Receiver<Vec<u8>>,
     /// 终止/失败通知：独立于帧队列容量，读者绝不阻塞在此发送上。
     status: Receiver<Option<ContractError>>,
@@ -104,6 +105,7 @@ impl WorkerSupervisor {
         Self::with_config(WorkerConfig {
             exe: std::env::current_exe().unwrap_or_else(|_| PathBuf::from("pinfeather.exe")),
             args: vec![String::from("--capture-worker-v1")],
+            snapshot: true,
         })
     }
 
@@ -113,8 +115,16 @@ impl WorkerSupervisor {
         Self::with_config(WorkerConfig {
             exe,
             args: vec![format!("--mode={mode}")],
+            snapshot: false,
         })
     }
+
+    #[cfg(feature = "test-fixtures")]
+    pub fn for_snapshot_fixture(exe: PathBuf, mode: &str) -> Self {
+        Self::with_config(WorkerConfig{exe,args:vec![format!("--mode={mode}")],snapshot:true})
+    }
+    #[cfg(feature="test-fixtures")]
+    pub fn for_test_product(exe:PathBuf)->Self{Self::with_config(WorkerConfig{exe,args:vec!["--capture-worker-v1".into()],snapshot:true})}
 
     fn with_config(config: WorkerConfig) -> Self {
         WorkerSupervisor {
@@ -215,7 +225,19 @@ impl WorkerSupervisor {
         self.test_wait_reader_stop = true;
     }
 
+    /// ACK round trips exist only for the E03 transport fixture.
+    #[cfg(feature = "test-fixtures")]
     pub fn capture(&mut self, request: &WorkerMessage) -> ContractResult<WorkerMessage> {
+        if self.config.snapshot {return Err(ContractError::protocol_error("snapshot worker requires snapshot API"));}
+        match self.exchange(request)? {WorkerReply::Ack(ack)=>Ok(ack),_=>Err(ContractError::protocol_error("expected control ACK"))}
+    }
+
+    pub fn capture_snapshot(&mut self, request: &WorkerMessage) -> ContractResult<super::protocol::ValidatedSnapshot> {
+        if !self.config.snapshot {return Err(ContractError::protocol_error("control fixture cannot capture"));}
+        match self.exchange(request)? {WorkerReply::Snapshot(snapshot)=>Ok(snapshot),_=>Err(ContractError::protocol_error("expected snapshot"))}
+    }
+
+    fn exchange(&mut self, request: &WorkerMessage) -> ContractResult<WorkerReply> {
         if self.closed {
             return Err(ContractError::new(ErrorCode::Busy, "supervisor closed"));
         }
@@ -291,7 +313,14 @@ impl WorkerSupervisor {
                                 ));
                             }
                             self.state = WorkerState::Ready;
-                            self.consecutive_timeouts = 0;
+                            if matches!(&ack,WorkerReply::Snapshot(s) if s.response.reason==Some(super::capture::CaptureReason::CloseFailed)) {
+                                self.state=WorkerState::Reaping;
+                                self.reap();
+                                self.state=self.state_after_reap();
+                            }
+                            if matches!(&ack,WorkerReply::Ack(_)) || matches!(&ack,WorkerReply::Snapshot(s) if s.response.result==super::capture::CaptureResult::Captured) {
+                                self.consecutive_timeouts = 0;
+                            }
                             self.settle_id(&request.capture_id);
                             return Ok(ack);
                         }
@@ -367,17 +396,19 @@ impl WorkerSupervisor {
                 return FrameOutcome::Failed(ContractError::protocol_error("frame body not UTF-8"))
             }
         };
-        let response = match parse_worker_message_json(body) {
-            Ok(message) => message,
-            Err(e) => return FrameOutcome::Failed(e),
+        let reply = if self.config.snapshot {
+            match super::protocol::parse_snapshot(bytes) {Ok(s)=>WorkerReply::Snapshot(s),Err(e)=>return FrameOutcome::Failed(e)}
+        } else {
+            match parse_worker_message_json(body) {Ok(m)=>WorkerReply::Ack(m),Err(e)=>return FrameOutcome::Failed(e)}
         };
+        let response = match &reply {WorkerReply::Ack(m)=>m.clone(),WorkerReply::Snapshot(s)=>s.message()};
         if response.capture_id != request.capture_id && self.settled_ids.contains(&response.capture_id)
         {
             self.late_frames_discarded += 1;
             return FrameOutcome::DiscardedLate;
         }
         match check_correlation(request, &response) {
-            Ok(()) => FrameOutcome::Accepted(response),
+            Ok(()) => FrameOutcome::Accepted(reply),
             Err(e) => FrameOutcome::Failed(e),
         }
     }
@@ -557,8 +588,10 @@ impl WorkerSupervisor {
     }
 }
 
+enum WorkerReply { Ack(WorkerMessage), Snapshot(super::protocol::ValidatedSnapshot) }
+
 enum FrameOutcome {
-    Accepted(WorkerMessage),
+    Accepted(WorkerReply),
     DiscardedLate,
     Failed(ContractError),
 }
@@ -596,6 +629,7 @@ mod tests {
         let mut s = WorkerSupervisor::with_config(WorkerConfig {
             exe: PathBuf::from("unused.exe"),
             args: vec![],
+            snapshot: false,
         });
         s.close();
         s.close();
@@ -812,15 +846,17 @@ mod win {
     }
 
     /// 读线程：帧走有界队列（满=协议失败并退出），终止通知走独立通道且绝不阻塞。
-    fn reader_loop(handle: HANDLE, frames: SyncSender<Vec<u8>>, status: Sender<ReaderEvent>) {
+    fn reader_loop(handle: HANDLE, frames: SyncSender<Vec<u8>>, status: Sender<ReaderEvent>, snapshot: bool) {
+        let mut hello = true;
         loop {
-            match read_frame(handle, CONTROL_FRAME_MAX_BYTES) {
+            let max=if hello || !snapshot {CONTROL_FRAME_MAX_BYTES}else{crate::contracts::WORKER_RESPONSE_MAX_BYTES};
+            match read_frame(handle, max) {
                 Ok(None) => {
                     let _ = status.send(None);
                     break;
                 }
                 Ok(Some(body)) => match frames.try_send(body) {
-                    Ok(()) => {}
+                    Ok(()) => {hello=false;}
                     Err(TrySendError::Full(_)) => {
                         let _ = status.send(Some(ContractError::protocol_error(
                             "reader queue overflow",
@@ -987,8 +1023,9 @@ mod win {
         let (frame_tx, frame_rx) = mpsc::sync_channel(super::READER_QUEUE_FRAMES);
         let (status_tx, status_rx) = mpsc::channel();
         let reader_handle = stdout_read as usize;
+        let snapshot = config.snapshot;
         let reader = thread::spawn(move || {
-            reader_loop(reader_handle as HANDLE, frame_tx, status_tx);
+            reader_loop(reader_handle as HANDLE, frame_tx, status_tx, snapshot);
         });
 
         Ok(WorkerProcess {

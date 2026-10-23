@@ -2,6 +2,10 @@ pub mod clipboard;
 pub mod config;
 pub mod contracts;
 pub mod platform;
+pub mod store;
+pub mod runtime;
+pub mod host;
+pub mod commands;
 
 use config::HostArgs;
 
@@ -55,26 +59,8 @@ mod tests {
     }
 }
 
-#[derive(serde::Serialize)]
-struct ShellStatus {
-    data_dir: String,
-    start_paused: bool,
-}
-
-struct ShellState {
-    data_dir: String,
-    start_paused: bool,
-}
-
-#[tauri::command]
-fn get_shell_status(state: tauri::State<'_, ShellState>) -> ShellStatus {
-    ShellStatus {
-        data_dir: state.data_dir.clone(),
-        start_paused: state.start_paused,
-    }
-}
-
 pub fn run(args: HostArgs) {
+    use tauri::{Manager,Emitter};
     let prepared = match config::prepare_data_dir(&args.data_dir) {
         Ok(prepared) => prepared,
         Err(message) => {
@@ -82,17 +68,18 @@ pub fn run(args: HostArgs) {
             std::process::exit(1);
         }
     };
-    let state = ShellState {
-        data_dir: prepared.data_dir.display().to_string(),
-        start_paused: args.start_paused,
-    };
+    let data_dir=prepared.data_dir;
     let webview_dir = prepared.webview_dir;
 
     tauri::Builder::default()
-        .manage(state)
-        .invoke_handler(tauri::generate_handler![get_shell_status])
+        .invoke_handler(tauri::generate_handler![commands::get_status,commands::list_clips,commands::set_capture_enabled])
         .setup(move |app| {
-            tauri::WebviewWindowBuilder::new(
+            let handle=app.handle().clone();
+            let runtime=std::sync::Arc::new(host::HostRuntime::start(data_dir.clone(),std::sync::Arc::new(move|name,revision|{let _=handle.emit(name,serde_json::json!({"revision":revision.to_string()}));})).map_err(|e|std::io::Error::other(e.message))?);
+            // Collection always requires an explicit user action in this isolated run.
+            // --start-paused remains accepted; no implicit remembered enable exists.
+            app.manage(runtime);
+            let window=tauri::WebviewWindowBuilder::new(
                 app,
                 "main",
                 tauri::WebviewUrl::App("index.html".into()),
@@ -102,6 +89,21 @@ pub fn run(args: HostArgs) {
             .data_directory(webview_dir)
             .on_navigation(|url| navigation_allowed(url, cfg!(debug_assertions)))
             .build()?;
+            let owner=app.handle().clone();
+            window.on_window_event(move|event|{
+                if let tauri::WindowEvent::CloseRequested{api,..}=event {
+                    let runtime=owner.state::<std::sync::Arc<host::HostRuntime>>().inner().clone();
+                    if runtime.exit_ready.load(std::sync::atomic::Ordering::Acquire){return;}
+                    api.prevent_close();
+                    if runtime.exit_pending.swap(true,std::sync::atomic::Ordering::AcqRel){return;}
+                    let handle=owner.clone();
+                    tauri::async_runtime::spawn(async move{
+                        let closing=runtime.clone();
+                        let result=tauri::async_runtime::spawn_blocking(move||closing.shutdown(std::time::Duration::from_secs(3))).await;
+                        if matches!(result,Ok(Ok(()))){handle.exit(0);}else{runtime.exit_pending.store(false,std::sync::atomic::Ordering::Release);runtime.exit_failed();}
+                    });
+                }
+            });
             Ok(())
         })
         .run(tauri::generate_context!())

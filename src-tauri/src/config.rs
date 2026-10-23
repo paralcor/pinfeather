@@ -57,6 +57,7 @@ pub fn parse_args<I: IntoIterator<Item = String>>(args: I) -> Result<LaunchMode,
 pub struct PreparedDataDir {
     pub data_dir: PathBuf,
     pub webview_dir: PathBuf,
+    pub history_path: PathBuf,
 }
 
 pub fn prepare_data_dir(data_dir: &Path) -> Result<PreparedDataDir, String> {
@@ -74,5 +75,6 @@ pub fn prepare_data_dir(data_dir: &Path) -> Result<PreparedDataDir, String> {
     Ok(PreparedDataDir {
         data_dir: data_dir.to_path_buf(),
         webview_dir,
+        history_path: data_dir.join("history.sqlite3"),
     })
 }

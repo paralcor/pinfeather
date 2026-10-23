@@ -1,13 +1,13 @@
 # 片羽首轮执行任务卡
 
-版本：v1，更新于 2026-10-23。用户已将首轮完整工作交由新 Codex 会话负责。E03a F2/F3 已关闭；E03b 三目标的外部 IMM 方法不可用，IME 子关卡 needs_plan_revision。用户已批准独立 W1/W2 先行，W3 自动回贴继续阻塞；不把 W0 或首轮标为完成，其余依赖与人工关卡不变。
+版本：v1，更新于 2026-10-24。当前Codex唯一负责首轮实现及review，E00–E06已有相应自动证据。E03b三目标外部IMM方法不可用，IME子关卡needs_plan_revision；用户已批准独立W1/W2先行，W3自动回贴继续阻塞。E07/T2待人工，不把W0或首轮标为完成。
 
 总设计：[完整方案](pinfeather_implementation_plan.md)。结果判定：[验证与验收](pinfeather_acceptance_plan.md)。产品契约：[MVP](rumo_clipboard_mvp_specification.md)。当前已有最小工程壳、锁文件、E02 契约与 E03a fixture supervisor。F2/F3 修复后检查为 npm 28 项、Rust lib 34 项、worker 集成 37 项、typecheck 和正常 release 构建通过；本会话自审和复跑记录见 archive/runs/20261023-e03a-codex-owner-fixes，不冒称独立模型 review。真实剪贴板运行未验收。
 
 ## 1. 角色、权限与推进规则
 
-- 新 Codex：唯一负责人和写者，负责设计、实现、修复、验证、review 与状态维护；“Codex 不写代码”的旧限制已被用户替代。
-- Mimo 与原 Codex：停止写入及派工，仅保留历史报告/会话；新负责人不得自动恢复旧执行任务。
+- 当前 Codex：按用户 2026-10-23 最新改派，唯一负责设计、实现、修复、验证、review 与状态维护；覆盖中途的“Mimo 写仓库、Codex 只 review”安排。
+- Mimo 与此前 Codex：停止写入及派工，仅保留历史报告/会话。Mimo 的 E05 交接只包含基线核对、阅读，以及 base64 直接依赖和 Memory feature 两处配置，未实现或运行 E05 测试；不恢复旧执行任务。
 - 用户：审阅重要方案变化、确认所需项目依赖安装、完成真实桌面验收、决定提交/发布及重要产品变化。常规包由新 Codex 按依赖持续推进。
 - 沿用新 Codex 会话实际审批/工具权限；不复制旧 Mimo 的 bypass 设置、不加跳过审批标志、不默认提权、不改系统策略、不读取凭据定位模型。可见模型身份不明确时只核实身份，不默默切模型。
 - 一次一个工作包；每次只写当前任务涉及文件，依赖失败就停留当前任务。细节遇到不一致先记录，不自行扩大范围。
@@ -132,7 +132,7 @@ $env:PATH = (Join-Path $env:USERPROFILE '.cargo\bin') + ';' + $env:PATH
 ### E05 · 完成真实只读抓取与消息监听
 
 - 依赖：E04通过；E03协议已验证。
-- 写入：clipboard/windows.rs、clipboard/mod.rs、runtime.rs、原生消息窗；tests/capture_contract.rs。
+- 写入：clipboard/windows.rs、capture.rs、listener.rs、worker_entry.rs、mod.rs、protocol.rs、worker.rs、runtime.rs、main.rs/lib.rs、必要 Cargo 配置及正式合成测试；tests/capture_contract.rs、worker_protocol.rs、support/worker_fixture.rs。
 - 实现：隐藏窗/消息泵注册与回收；有界通知队列；worker持锁读取、尺寸/UTF16/标记校验、一致序列、owner来源；观察/抓取/排队/落盘分阶段。暂停下不读载荷。
 - 测试：所有策略标记、坏值、超限、序列零/回绕/读取中变更、重复通知、5次重试截止、通知队列和快照队列各自满载；纯规则测试使用内存字节/时钟注入。
 - 检查：`cargo test --manifest-path src-tauri/Cargo.toml --test capture_contract`；正常壳仍能关闭，无静默后台进程。
@@ -253,5 +253,13 @@ $env:PATH = (Join-Path $env:USERPROFILE '.cargo\bin') + ';' + $env:PATH
 
 - E03a：F2/F3 失败回归及修复完成，本会话自审/复跑见 archive/runs/20261023-e03a-codex-owner-fixes；未启用另一写者或独立模型 review。
 - E03b 自动部分：新增[目标/IME只读探针与运行入口](pinfeather_w0_probe_guide.md)，当前 Rust lib 38、worker 37、诊断 CLI 2 项通过，正常 release 构建通过。用户本次授权下已完成工程壳无 UIA/只读 UIA 各 3 次相同单次 WM_CLOSE 对照，均观察到已识别进程树退出。原滞留未复现、原因未知；不能从这 6 次推广为稳定性或人工点击已验收。
-- E03b/V01 后续实测：用户完成三目标候选输入并确认，Edge/VS Code/Terminal 合计 529 条稳定、普通权限记录均为 IMM context 不可读、IME unknown。原始数据见 archive/runs/20261023-180555-ime-live。用户已选择独立 W1/W2 先行，W3 保持阻塞，W0 不标通过。E04 仅有本地依赖准备，未实现事务存储，未完成依赖快照不纳入本次发布。管理员/未知权限/关闭目标仍未覆盖。
+- E03b/V01 后续实测：用户完成三目标候选输入并确认，Edge/VS Code/Terminal 合计 529 条稳定、普通权限记录均为 IMM context 不可读、IME unknown。原始数据见 archive/runs/20261023-180555-ime-live。用户已选择独立 W1/W2 先行，W3 保持阻塞，W0 不标通过。管理员/未知权限/关闭目标仍未覆盖。
+- E04：`store.rs` 实现 schema v1、同库多载荷事务、capture 幂等、容量与级联删除；`config.rs` 只确定 history 路径，不在工程壳启动时自动开库。文件测试全部使用本次 archive 新建库。覆盖正常重开、提交 WAL 的读取、未知/高版本/模式漂移拒绝和现场字节保留；真实 SQLite 中途/提交失败与三项错误实现反证均已执行。库 42、存储集成 13、worker 37、探针 CLI 2 项通过；证据见 archive/runs/20261023-192601-e04-store-resume。连接线程归属另由编译失败文档测试检查。尚未装配存储线程、监听、列表 IPC，T2 不勾选。
+- 用户于 2026-10-23 另行授权 Mimo 并行做 E05 规则/测试矩阵核对；Claude Code 仅提供 Read/Glob/Grep，仓库仍由 Codex 独占写入。新任务及报告见上述 E04 运行目录的 mimo-e05-rules，不恢复历史写者。
+- E04 接手收尾：用户改派 Mimo（新交互 CLI，bypass 已获许可）为唯一仓库写者并接手 E04 收尾及剩余实现，Codex 只 review。Mimo 复核 Windows 冻结句柄/只读 WAL 预检（无有效 WAL 才 immutable，有 WAL 走 win32-none 私有索引，已提交 WAL 不被忽略）与全部既有断言，保留通过代码不重写；发现并补齐两处测试缺口：各格式带合法内容的尺寸上界±1（越界 PNG 样例改用合法签名使尺寸上限成为唯一拒绝依据）、capture_id 64 字节与时间戳 JS 安全整数上界。新增 2 项存储集成测试，对 PNG 尺寸上界、capture_id 上界、时间戳上界各做一次错误实现反证均被捕获。复核材料见 archive/runs/20261023-195513-mimo-implementation-transfer/e04-takeover/。
+- E04 Codex 复审不通过并定位 F1/P1、F2/P2（源自原交付 store.rs）：缺主库/零字节主库时同名已提交 WAL/journal/shm 会被 SQLite 吞删并新建空库；非空身份未知但 schema 为空的库（如 DROP TABLE 后）被当作新库初始化。Mimo 以真实 rlib 复现（复审探针）后先补失败先行正式回归（12 种侧车现场×全文件集合/字节比较、非空未知空 schema 库现场保持、内存库 Denied 直证），再做最小修复：open 前侧车守卫拒绝非新目标；InitPermit（Memory/FreshFile/Denied）区分初始化资格，写锁下重取新鲜长度再 DDL，不用过期长度覆盖另一创建者。容量/身份契约未改。修复后实跑 lib 43、存储集成 17、worker 37、探针 CLI 2、doc 1 及普通 release 构建全部通过。证据见 archive/runs/20261023-195513-mimo-implementation-transfer/e04-f1-f2-fix/。仍缺 rustfmt/clippy；存储线程/监听/列表 IPC 属 E06，T2 不勾选。
+- E04 F1 经复审关闭；F2 遗留 P2（WAL 分支）：未知空 schema 非空库带已提交 WAL 时预检放行 Empty，RW 打开后才在 Denied 拒绝，连接关闭 checkpoint 把 WAL 写进主库并删除（4096+20632 → 8192 现场被改）。Mimo 失败回归先行（写连接打开时复制主+WAL 构造样本，比较全部文件集合/字节）后最小修复：preflight 保留 SchemaState，已有非空主库须只读预检确认 Current 才进 RW，未知/空 schema 目标在任何 RW/create 前拒绝。保留 PNF1 WAL 正例、新建/零字节、F1 全部正反例。实跑 lib 43、存储集成 18、worker 37、探针 CLI 2、doc 1 及普通 release 构建通过。证据见 archive/runs/20261023-195513-mimo-implementation-transfer/e04-f2-wal-fix/。
 - rustfmt/clippy 缺组件，未安装，保留检查缺口。复制草稿、现有数据与外部发布边界不变。
+- E04 F2 WAL 补修已由当前 Codex 独立复审通过，见 archive/runs/20261023-e04-f2-wal-review。Mimo 的 red-store-contract.txt 实际为筛选1项、0过1败、17 filtered；全量18项通过来自green日志，不能把red描述成17项通过。
+- E05 当前由 Codex 实现：只读抓取规则、独立快照协议、同exe产品worker、消息线程及有界通知/快照队列。入口与自动/人工证据边界见方案5.2.2；执行记录在 archive/runs/20261023-e05-codex-owner。存储线程、内部写回登记、commit gate和列表IPC仍属E06，T2不勾选。
+- E06：Codex实现内部来源登记与多格式写入所有权、只保留标记/owner的禁止历史响应、独立存储线程、提交gate与历史预留、真实状态/最近列表IPC及React列表。SQL失败保留待提交快照，显式重试后才继续；普通浏览器提示需要桌面宿主。源码、自动检查、自审及错误实现反证见 archive/runs/20261024-e06-codex-owner。原生手动入口使用Cargo定位的产品exe，保持ignored；未运行真实剪贴板写入，E07/T2待人工。

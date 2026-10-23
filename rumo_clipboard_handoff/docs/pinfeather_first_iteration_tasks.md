@@ -1,6 +1,6 @@
 # 片羽首轮任务清单：规格修订与单机纵向原型
 
-更新日期：2026-10-23。状态：T0 范围核查、T1 规格内容已完成；工程壳与 E02 已有自动证据，E03a 的 F2/F3 已修复并经本会话复核，E03b/W0 及真实产品链路和验收待办。用户已改为新 Codex 会话全程负责设计、实现、修复、验证与 review；Mimo 和原 Codex 停写。
+更新日期：2026-10-24。状态：T0/T1、E00–E06已有产物与相应自动证据；E03b/W0仍受IME阻塞，E07真实复制及产品验收待办。当前Codex全程负责设计、实现、修复、验证与review；Mimo和此前Codex停写，历史身份保留。
 
 本清单承接[交接文档第 7 节任务 1、2](pinfeather_project_handoff.md#7-后续接手任务)。勾选表示对应产物和验收证据均已具备；写好方案、做出界面或编译通过，不能代替实际应用验收。
 
@@ -154,9 +154,12 @@ R1 的 API 边界见 [SetForegroundWindow](https://learn.microsoft.com/en-us/win
 | E00–E02 / E03a | 最小工程壳及契约有测试/构建证据；E03a F1–F4 已关闭，本会话自审/复跑见 archive/runs/20261023-e03a-codex-owner-fixes；Rust lib 34、worker 37、前端 28 项及 release 构建通过。rustfmt/clippy 缺组件，未通过；E03b/W0 待验 |
 | E03b 自动部分 | [只读探针与运行说明](pinfeather_w0_probe_guide.md)已准备；当前 Rust lib 38、worker 37、CLI 2 项通过。普通 release 的 6 次相同单次 WM_CLOSE 复验均退出，无 UIA/只读 UIA 各 3 次；后者核对真实目录与暂停状态。三目标 IME 结果见下一行，历史滞留根因未知 |
 | E03b 三目标 IME / 推进例外 | 用户完成并确认 Edge/VS Code/Terminal 未提交候选；529 条目标记录均无法读取 IMM context、IME unknown，needs_plan_revision。用户已批准独立 W1/W2 先行，W3 自动回贴继续阻塞；不放宽未知状态或勾选首轮完成。证据见 archive/runs/20261023-180555-ime-live |
+| E04 存储 | schema v1 存储模块已有多格式事务、幂等、容量、级联删除与 WAL 重开证据；Codex 复审定位 F1/P1（缺主库/零字节主库侧车被吞删重建）与 F2/P2（非空未知空 schema 库被接管；WAL 分支拒绝晚于 RW 打开、关闭 checkpoint 改写现场），Mimo 失败回归先行后修复（侧车守卫 + InitPermit 写锁下新鲜长度重核 + 只读预检确认 Current 才进 RW）。补测各格式尺寸上界±1与 capture_id/时间戳上界，3 项错误实现反证被捕获。Mimo 实跑库 43、存储集成 18、worker 37、CLI 2、doc 1 项及 release 构建通过。证据见 archive/runs/20261023-192601-e04-store-resume 与 archive/runs/20261023-195513-mimo-implementation-transfer/（e04-takeover、e04-f1-f2-fix、e04-f2-wal-fix）；存储线程、真实监听和列表尚未装配，T2/R3 不据此勾选 |
+| E05 抓取/监听 | Codex 实现独立快照协议、只读产品worker、消息线程与有界队列；纯规则、受控子进程和消息泵检查记录见 archive/runs/20261023-e05-codex-owner。宿主业务装配与真实剪贴板仍待 E06/E07，不据此勾选T2 |
+| E06 内部写回/存储IPC | Codex已装配独立存储线程、提交gate、内部来源规则与真实状态/最近列表。自动规则、真实SQLite与前端检查见 archive/runs/20261024-e06-codex-owner；真实剪贴板集成保持ignored，E07/T2待人工 |
 | T2–T6、A1–A11 | 真实业务链路及相应验收未开始；只读目标/IME 结果不替代真实剪贴板、回贴或完整进程树资源测量 |
 
-执行细分见[完整方案](pinfeather_implementation_plan.md)、[E00–E15任务卡](pinfeather_execution_tasks.md)和[验收计划](pinfeather_acceptance_plan.md)。Codex 作为唯一写者已修复并复核 E03a，后续按已批准的 W1/W2 例外推进；不自动恢复 Mimo 派工，W3 仍受 IME 可行性阻塞，人工关卡保持。
+执行细分见[完整方案](pinfeather_implementation_plan.md)、[E00–E15任务卡](pinfeather_execution_tasks.md)和[验收计划](pinfeather_acceptance_plan.md)。用户最新改派由当前 Codex 唯一负责设计、实现、修复、验证与 review；Mimo 已停止 E05，既有 E04 修复保留实际执行身份。W3 仍受 IME 可行性阻塞，人工关卡保持。
 
 历史环境记录：MSVC x64 19.44.35229、SDK 10.0.22621.0；E03b 工程壳实际加载 WebView2 155.0.4283.62。执行环境记录为 Node 24.19.0、npm 11.17.0、Git 2.55.0.windows.5、Rust/Cargo 1.98.0；Rust 仅在当前进程补 PATH。检查数见上表，不替代产品真机验收。
 

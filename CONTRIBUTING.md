@@ -2,7 +2,7 @@
 
 English contributions are welcome. Please follow the same rules below.
 
-片羽已有最小 Tauri/Rust/React 工程、共享契约、worker 传输与回收测试和只读目标探针，剪贴板业务尚未实现。当前范围和验收边界见[交接文档](rumo_clipboard_handoff/docs/pinfeather_project_handoff.md)，界面方向见[原型说明](design/prototype/README.md)。
+片羽已有 Tauri/Rust/React 工程、共享契约、worker 传输与回收、只读目标探针及 schema v1 存储。宿主已装配暂停/收录状态、存储线程和最近历史列表，真实复制仍待 E07 人工验收。当前范围和验收边界见[交接文档](rumo_clipboard_handoff/docs/pinfeather_project_handoff.md)，界面方向见[原型说明](design/prototype/README.md)。
 
 ## 提 issue
 
@@ -34,11 +34,12 @@ New-Item -ItemType Directory -Path $env:TEMP | Out-Null
 npm ci
 npm test
 npm run build
-cargo test --locked --manifest-path src-tauri/Cargo.toml --features test-fixtures --lib --bins --test worker_protocol -- --test-threads=1
+cargo test --locked --manifest-path src-tauri/Cargo.toml --features test-fixtures --lib --bins --test worker_protocol --test store_contract --test capture_contract --test internal_write_contract --test list_recent_contract --test runtime_storage_contract --test capture_windows -- --test-threads=1
+cargo test --locked --manifest-path src-tauri/Cargo.toml --doc
 npm run tauri -- build --no-bundle
 ```
 
-普通 release 不启用 `test-fixtures`。当前测试不操作系统剪贴板、焦点或输入；真实目标/IME 的人工步骤见[探针说明](rumo_clipboard_handoff/docs/pinfeather_w0_probe_guide.md)。`cargo fmt --manifest-path src-tauri/Cargo.toml -- --check` 和 `cargo clippy --manifest-path src-tauri/Cargo.toml --all-targets -- -D warnings` 需要相应组件；缺失时报告检查缺口，不写通过。
+普通 release 不启用 `test-fixtures`。文件测试只在上述显式目录内新建数据库，缺少 `PINFEATHER_TEST_DATA_ROOT` 会失败；其余存储规则使用内存库。常规测试不操作系统剪贴板、焦点或输入，`capture_windows` 的1项真实剪贴板测试保持ignored，不计通过数，只有用户确认隔离环境后才能单独运行。真实目标/IME 的人工步骤见[探针说明](rumo_clipboard_handoff/docs/pinfeather_w0_probe_guide.md)。`cargo fmt --manifest-path src-tauri/Cargo.toml -- --check` 和 `cargo clippy --manifest-path src-tauri/Cargo.toml --all-targets -- -D warnings` 需要相应组件；缺失时报告检查缺口，不写通过。
 
 开发启动使用 `tools/dev.ps1 -DataDir <本次隔离数据目录的绝对路径>`，默认暂停；目录必须与个人数据隔离。构建不制作或安装 MSI。
 

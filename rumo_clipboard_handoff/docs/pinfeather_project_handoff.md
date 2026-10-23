@@ -1,8 +1,8 @@
 # 片羽 Pinfeather：项目定位、规划与技术评审交接
 
-更新日期：2026-10-23（UTC+08:00）
+更新日期：2026-10-24（UTC+08:00）
 
-状态：MVP 基线已确认，已有最小桌面工程壳、共享契约及 fixture worker supervisor；真实剪贴板业务尚未实现。2026-10-23 用户改为由新 Codex 会话全程负责设计、实现、修复、验证和 review，Mimo 与原 Codex 停写。E02 已通过源码与自动证据 review；E03a 的 F1–F4 已关闭，F2/F3 修复与本会话复核见 archive/runs/20261023-e03a-codex-owner-fixes。E03b/W0、真机及性能验收待办。两份 issue 草稿保留不发布。
+状态：MVP 基线已确认，宿主已装配抓取/监听、schema v1 存储线程、暂停/收录状态与最近历史列表，E07真实复制尚待用户验收。当前 Codex 唯一负责设计、实现、修复、验证与 review，Mimo 已停止；历史报告保留原执行身份。E03a 的 F1–F4、E04 的 F1/F2 已关闭。E03b/W0、T2真机、搜索/回贴及性能验收待办。两份 issue 草稿保留不发布。
 
 ## 1. 接手说明
 
@@ -38,10 +38,13 @@ MVP 规格已修订，当前重点是验证并实现关键技术路径。原有 
 
 E03b 最新运行入口见[W0 只读探针说明](pinfeather_w0_probe_guide.md)。Rust lib 38、worker 37、诊断 CLI 2 项通过，普通 release 已完成 6 次相同单次 WM_CLOSE 退出复验（无 UIA/只读 UIA 各 3 次），后者核对隔离目录与暂停状态；未复现旧滞留，根因仍未知。三目标真实 IME 结果与用户已批准的推进例外见下段，W0 不标整体通过。
 
-后续真实 IME 结果：用户已完成并确认 Edge/VS Code/Terminal 的候选输入，529 条稳定/普通权限目标记录均不能读取外部 IMM context，IME 子关卡 needs_plan_revision。用户选择独立 W1/W2 先行、W3 继续阻塞；W0 整体与首轮不标通过，未知 IME 禁自动回贴规则保持。证据及提案见 archive/runs/20261023-180555-ime-live。E04 仅完成本地依赖准备，存储未实现，其未完成依赖快照不纳入发布。
+后续真实 IME 结果：用户已完成并确认 Edge/VS Code/Terminal 的候选输入，529 条稳定/普通权限目标记录均不能读取外部 IMM context，IME 子关卡 needs_plan_revision。用户选择独立 W1/W2 先行、W3 继续阻塞；W0 整体与首轮不标通过，未知 IME 禁自动回贴规则保持。证据及提案见 archive/runs/20261023-180555-ime-live。
+
+E04 已有独立 schema v1 存储模块及真实 SQLite 测试：同库多格式事务、capture 幂等、容量、级联删除、正常重开及已提交 WAL 读取。未知/高版本/模式漂移被拒绝且保留原文件；中途/提交失败整体回滚。Codex 复审定位 F1/P1（缺主库/零字节主库侧车被吞删重建）与 F2/P2（非空未知空 schema 库被接管初始化；其 WAL 分支拒绝晚于 RW 打开、关闭时 checkpoint 改写现场），均源自原交付 store.rs；Mimo 失败回归先行后修复：侧车守卫 + InitPermit（写锁下新鲜长度重核）+ 只读预检确认 Current 才进 RW。容量/身份契约未改。补测各格式尺寸上界±1及 capture_id/时间戳上界，3 项错误实现反证被捕获。Mimo 实跑库 43、存储集成 18、worker 37、探针 CLI 2、doc 1 项通过。Codex 实现证据见 archive/runs/20261023-192601-e04-store-resume，Mimo 复核见 archive/runs/20261023-195513-mimo-implementation-transfer/e04-takeover/，F1/F2 修复见同 transfer 目录 e04-f1-f2-fix/ 与 e04-f2-wal-fix/。E04交付时未装配宿主业务；E06装配见下条，T2/R3仍待真实验收。
 
 - Rust 的 `src-tauri/src/contracts.rs` 定义界面契约权威；`src/lib/ipc.ts` 校验对应的请求、响应与事件。两端复用 `tests/fixtures/contracts/` 中的界面契约夹具。
-- 宿主与抓取 worker 的帧协议只由 `src-tauri/src/clipboard/protocol.rs` 解析和校验。WebView 不接收原始帧，TS 不维护该协议的解析副本。已有 supervisor 与合成故障 fixture 的真实子进程测试，产品抓取 worker 仍明确未实现拒绝；控制帧限 4 KiB、队列两帧，后续快照总上限仍 18 MiB。fatal reader 优先级及未确认 writer 禁重建已有失败回归与修复证据；Rust lib 34、worker 37、前端 28 项及正常 release 构建通过，仅证明本机合成传输与回收边界。
+- E06：`host.rs` 分别拥有抓取和存储线程，SQLite连接仅在存储线程内创建/使用；提交gate与暂停/排除确认线性化，事务ACK后才发history_changed，失败保留FIFO快照供显式重试。内部写回只提供Rust的已存条目入口，不暴露任意文本IPC或回贴按钮；运行期标记、owner和sequence共同识别内部来源。`get_status/list_clips/set_capture_enabled`校验Tauri实际窗口与本地来源，界面订阅后读取状态，只渲染真实摘要。E06证据见 archive/runs/20261024-e06-codex-owner，真实剪贴板集成测试仍为ignored，T2不勾选。
+- 宿主与抓取 worker 的帧协议只由 `src-tauri/src/clipboard/protocol.rs` 解析和校验。WebView 不接收原始帧，TS 不维护该协议的解析副本。产品 worker 已有真实只读入口，快照响应独立于 fixture ACK；控制帧限4KiB，快照正文限18MiB，解码载荷合计12MiB，reader队列两帧。fatal reader 优先级及未确认 writer 禁重建规则保留。E05 的自动测试覆盖合成字节、真实受控子进程与不注册剪贴板的消息泵；生产监听、真实复制及宿主关闭仍待装配后的用户验收。
 - 快捷键请求必须至少带一个修饰键，单独的 `Win+V` 被拒绝。摘要的 `payload_bytes` 为 0 至 12 MiB，`omitted_format_count` 为 0 至 9007199254740991，均保持 JSON 数字类型；历史 ID 与 u64 累计计数仍使用既有十进制字符串契约。
 - 开发入口为 `tools/dev.ps1`。默认每次在系统临时目录的 `Pinfeather/dev/<GUID>` 下创建独立数据目录；需要复用数据时传入 `-DataDir <完整绝对路径>`。脚本不自动删除数据，应用本身仍要求显式 `--data-dir`。
 

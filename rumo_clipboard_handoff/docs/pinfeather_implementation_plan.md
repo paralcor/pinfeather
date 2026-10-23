@@ -1,6 +1,6 @@
 # 片羽首轮完整实施方案
 
-版本：v1，更新于 2026-10-23。状态：用户已授权按包执行；E00–E02 已有工程与自动证据，E03 按下述边界分步交回。真实剪贴板链路及真机、性能验收待办。
+版本：v1，更新于 2026-10-24。状态：E00–E06已有工程与相应自动证据；E03b的IME子关卡仍阻塞W3，E07真实复制及后续真机、性能验收待办。
 
 2026-10-23 用户更新职责：新 Codex 会话全程负责设计、实现、修复、验证与 review，是工作区唯一写者。Mimo 已停止执行，原 Codex 会话在确认交接后也停止写入。此前“Codex 不写代码、Mimo 实现”的限制被本次授权替代；历史报告仍保留原执行身份。
 
@@ -160,6 +160,38 @@ W0 必须用不访问剪贴板的受阻测试子进程证明“超时→终止�
 - fixture 覆盖正常、无 hello、hello 错误、无响应、半长度头、半正文、超长声明、坏 JSON、错 ID/epoch、崩溃及迟到响应。证据包含本轮精确 PID/创建时间、退出完成、读取线程确认和重复关闭结果，不能只凭函数返回 timeout。
 - fixture 为 feature-gated 独立 bin；普通 release 不包含它。自动测试不启动 WebView，不访问系统剪贴板、用户库、桌面焦点或输入法。
 
+### 5.2.2 E05 快照协议与监听入口
+
+`CapturePipeline::start_paused` 创建独立消息线程，注册完成后发布监听就绪；默认暂停，不创建抓取请求或读取载荷。后台调用方通过 `poll_capture` 串行抓取；抓取期间释放状态锁，消息线程继续接纳元数据。宿主 UI、存储线程和 IPC 在 E06/E07 装配，不用库模块存在推断 T2 已通过。
+
+请求沿用 version/capture_id/policy_epoch。产品响应严格为 `kind="snapshot"`，包含 result（captured/ignored/failed）、安全 reason 类别、sequence_before/locked/after、owner（hwnd十进制字符串/pid/process可空）、formats（name/data标准base64）、omitted_formats、internal_origin（可空base64）、cloud_marker_anomaly 和 attempts（1–5）。父端拒绝额外字段、错误类型/身份/关联、坏base64及解码后越界；captured/ignored 只接纳同次锁内非零且一致的序列。正文只由原始载荷派生，不传冗余全文。协议仅供同一产品 exe 内的两个进程，原子升级，无已部署旧协议兼容分支。
+
+hello 仍先以4KiB上限读取；此后的产品快照正文上限18MiB，解码后允许载荷合计12MiB。ACK 往返入口只编译于 test-fixtures，继续使用4KiB控制帧上限，产品解析器拒绝ACK。reader最多缓存2帧，另有一份在读帧；产品编码帧缓冲相应上界为2×18MiB加18MiB，不是E03a控制测试的8KiB。解码后的大块wire字符串立即释放，不留第二份全文或向多个监听者复制BLOB。
+
+父端发送前750ms总截止包含读取、解码和关联校验，worker本地5次/20–40–80–160ms仅是从属预算；重建不重放超时的原请求，下一独立通知才有新预算。只有正常captured响应重置连续超时，ignored/failed不重置。CloseClipboard失败丢弃快照并终止、回收自己的worker，保留cleanup_failed禁重建规则。
+
+消息线程仅记录通知元数据（上限256）。抓取前按当前序列相等性淘汰已覆盖观察并计superseded，不用数值大小排序；相邻同序列通知关联同一capture，观察过不同序列后再出现相同数值属于新事件，不把序列当永久ID。通知overrun与64条/32MiB快照队列满均关闭admission并记录原因，不递增epoch、不覆盖已接纳快照；用户显式恢复且快照队列有余量才重开。用户暂停/排除变化递增epoch、取消旧未提交快照。E06提交gate仍必须重核策略与真实历史容量。
+
+零序列不确认内容，并解除先前观察的身份关联；恢复非零后重新建立capture。owner路径先按既有Windows路径契约规范化，再用Windows ordinal Unicode不区分大小写比较排除项；路径无法确认且存在排除规则时禁收，并保留来源未知提示类别。
+
+注册格式先通过 RegisterClipboardFormatW 取得运行期ID，再按ID识别HTML、PNG与隐私标记；名称比较不区分大小写，不能依赖生产者返回的拼写，见[微软注册格式说明](https://learn.microsoft.com/en-us/windows/win32/api/winuser/nf-winuser-registerclipboardformatw)。未知格式只枚举名称，最多256项、每名256个Unicode字符，不反序列化其数据。未知/损坏内部标记继续按外部候选处理，E06登记表尚未装配，不能据此抑制自录。
+
+监听器关闭通过自身原生线程句柄关联的消息线程退出，2s内确认后才join/释放；失败保留线程并阻止再创建，避免向已回收的HWND发送关闭。普通测试的消息泵检查不注册真实剪贴板监听；产品worker的hello/EOF检查不发送抓取请求。真实通知、延迟渲染和窗口关闭验收另行由用户操作。
+
+### 5.2.3 E06 宿主装配与自动检查边界
+
+`HostRuntime`在开库和注册监听前持有本次Windows会话的命名互斥对象，第二宿主明确拒绝启动；E13的同目录唤起与完整恢复流程尚未实现。抓取线程唯一持有listener/supervisor；存储线程内创建并使用SQLite连接，读请求队列限16，每批最多4个读请求后检查FIFO写队列。窗口调用的状态、列表和暂停等待通过Tauri后台任务执行，不在GUI消息线程等待提交gate。
+
+历史禁止的快照继续不读取文本载荷，但允许返回有界内部标记/owner/sequence元数据，父端用28字节标记和128项操作登记确认内部来源；不存在登记、实例不符、owner不符、未确认sequence均不能按内部成功抑制。写回标记与两项隐私DWORD先于文本，SetClipboardData成功才移交HGLOBAL；失败只释放尚未移交的内存，部分写入不报成功、不恢复旧剪贴板。写回仅有Rust的已存条目入口，不注册任意文本IPC；排队超时的写入在副作用前拒绝，已开始但结果未知时不得自动重试。
+
+队列预留包含正在SQLite事务中的一份快照，接纳时同时核查历史条数/字节与队列额度；事务内Store仍核查真实容量。最终策略复核、事务提交与暂停/排除确认共用gate，SQL期间释放普通状态锁，监听元数据仍可入队。失败保留原FIFO载荷并关闭admission，只有显式重试才重新提交；history_changed只在成功事务ACK后发出。
+
+最近列表只读摘要元数据与格式名，不向WebView传BLOB；当前仅空查询，upper_id keyset分页及1MiB输出预算照既有契约检查。原get_shell_status已替换为get_status/list_clips/set_capture_enabled，校验注入的真实窗口及本地origin。React先订阅再读取，不乐观确认暂停，用revision防旧状态覆盖，合并事件保证单个列表请求在途；状态中的历史计量变化也触发列表刷新，补偿遗漏的history事件。普通浏览器无宿主时不调用IPC或显示假记录。
+
+关闭请求先停止观察，已接纳且策略仍有效的队列继续提交；3s内未确认全部线程回收则保留窗口和未保存内容。SQLite失败时仍可显式重试保存后再次关闭。本包提供必要的有界退出保护，不替代E13的完整生命周期/异常恢复验收。
+
+普通自动检查仅用合成Win32接口、真实受控worker、SQLite内存或本次新建隔离库，以及不注册剪贴板的消息泵；宿主UI、生产监听、真实owner/内存句柄和内部写回仍待E07人工。`capture_windows`只在test-fixtures编译，始终ignored，并使用Cargo的产品exe路径而非测试harness；未运行不能计入通过数。执行证据见 archive/runs/20261024-e06-codex-owner。
+
 ### 5.3 Win32 内存与格式
 
 `GetClipboardData` 的句柄属于系统，GlobalLock 后复制到自有字节，GlobalUnlock 并 CloseClipboard；不跨锁持有指针、不 GlobalFree 系统给的句柄。GlobalSize 和加法都检查溢出/上限，不先按不可信尺寸分配。
@@ -193,6 +225,8 @@ runtime维护已提交条数/载荷字节和待存预留量，首次从store读�
 ### 6.1 schema v1
 
 一个 `history.sqlite3`，单连接归存储线程，WAL + foreign_keys=ON + synchronous=FULL；busy_timeout 250 ms。仅全新空库初始化，schema 和 user_version 在同一事务设置。建议 application_id 使用固定十六进制 `0x504E4631`（PNF1），识别无关数据库；不符合、模式更高或非空未知库拒绝写入，不重建。启动只读 quick_check 失败即停止收录。
+
+E04 的文件预检先用 Windows 只读文件句柄阻止主库及已有 WAL 被写入或替换。无有效 WAL 时在冻结文件上只读检查；存在 WAL 时使用 SQLite 内置 `win32-none` 与私有 WAL 索引读取，避免普通只读连接创建共享内存文件。该 VFS 仅用于预检，必须持有冻结句柄，绝不用于写连接。存在非空 rollback journal 时保留现场并拒绝打开。预检后普通 SQLite 写事务仍重新校验身份、版本和完整模式；DDL、application_id、user_version 一起提交。机制依据见 [SQLite VFS](https://www.sqlite.org/vfs.html)、[只读 WAL](https://www.sqlite.org/wal.html#read_only_databases)和 [Windows 文件共享模式](https://doc.rust-lang.org/std/os/windows/fs/trait.OpenOptionsExt.html#tymethod.share_mode)。
 
 | 表 | 字段与约束 |
 | --- | --- |
@@ -277,7 +311,7 @@ Tauri CSP 生产仅本地打包资源和所需 IPC，禁止远程导航/弹窗�
 | versions | app为非空ASCII graphic字符串、最多32字节；schema=1；worker_protocol=1。后两项是当前支持的版本，不冒充已成功打开数据库/握手 |
 | last_paste | PasteClipResult或null；不包含正文、标题或任意注入参数 |
 
-服务状态彼此独立；解析不得把storage.ready推导成所有服务就绪。E02只定义合成夹具和校验，不构造运行中服务、计数或新的“成功”命令。原有get_shell_status壳命令不在本包替换。
+服务状态彼此独立；解析不得把storage.ready推导成所有服务就绪。E02仅定义合成夹具和校验；E06由真实服务构造get_status，并替换原get_shell_status壳命令，不用固定返回冒充运行状态。
 
 `ListClipsResult`固定字段为request_id、normalized_query、summaries、next_cursor，Rust返回明确的结果结构。normalized_query必须已经符合7.1且最多256标量；summaries最多100项；整个结果JSON的UTF-8编码最多1MiB；cursor非空时绑定同一查询。与实际请求的limit/结果代次对应由调用方使用请求上下文复核，不能仅因形状通过就更新UI。
 
@@ -372,3 +406,5 @@ E03b 自动部分已实现，见[只读探针说明](pinfeather_w0_probe_guide.m
 - 2026-10-23：按真实失败回归关闭 E03a F2/F3；reader fatal 优先于合法 ACK，writer 纳入有界回收，未确认线程及句柄保留并禁重建。同步管道以 CancelSynchronousIo 请求取消，以原生线程句柄 signaled 确认结束；正常 EOF 与半帧分开。证据见 archive/runs/20261023-e03a-codex-owner-fixes。E03b/W0 真机前提仍待验。
 - 2026-10-23：E03b 新增 feature-gated 只读探针；不把 IMM 零长度当作 TSF 未组合。经用户本次授权完成工程壳 6 次单次 WM_CLOSE 对照（无 UIA/只读 UIA 各 3 次），未复现旧滞留，保留原因未知。证据见 archive/runs/20261023-e03b-target-ime；不以自动关闭冒充人工目标/IME 验收，W0 未过。
 - 2026-10-23：用户完成 Edge、VS Code、Windows Terminal 的真实候选输入并确认，529 条目标记录均无法读取外部 IMM context，IME 为 unknown。原方法不可作为通用安全预检；用户选择“先做 W1/W2，W3 仍阻塞”，只修改独立开发的依赖门槛，不放宽自动回贴规则或首轮最终标准。原始数据、具体提案及用户决定见 archive/runs/20261023-180555-ime-live。
+- 2026-10-23：E04 拒绝库测试发现普通只读 WAL 连接仍会创建 sidecar；只读 exclusive 在本机返回 SQLITE_IOERR_LOCK。最终使用冻结文件与只读私有 WAL 索引预检，正常重开及 WAL 高版本无改动拒绝测试通过。未采用会忽略已提交 WAL 的无条件 immutable 打开；证据见 archive/runs/20261023-192601-e04-store-resume。
+- 2026-10-23：用户再次改派当前Codex全程负责，Mimo停止E05；接手保留已批准base64依赖与Memory feature。E05协议、只读worker和监听/队列按5.2.2实现；自动检查不访问系统剪贴板，真实捕获仍待E07。淘汰积压通知时只比较序列相等，观察过不同序列后不复用先前数值的永久身份；反例与证据见 archive/runs/20261023-e05-codex-owner。

@@ -119,6 +119,24 @@ fn main() {
         };
 
         match mode.as_str() {
+            mode if mode.starts_with("snapshot-") => {
+                use base64::{Engine,engine::general_purpose::STANDARD};
+                use pinfeather_lib::clipboard::capture::{CaptureResponse,CaptureResult,CaptureReason,WireFormat};
+                if mode=="snapshot-driven" && request.capture_id.starts_with("STALL") {block_until_stdin_eof();return;}
+                let mut response=CaptureResponse::empty(&request);
+                response.result=CaptureResult::Captured;response.reason=None;response.attempts=1;
+                response.sequence_before=7;response.sequence_locked=7;response.sequence_after=7;
+                response.formats=vec![WireFormat{name:"HTML Format".into(),data:STANDARD.encode(vec![65u8;8192])}];
+                match mode {
+                    "snapshot-bad-base64"=>response.formats[0].data="!invalid".into(),
+                    "snapshot-wrong-id"=>response.capture_id="wrong-id".into(),
+                    "snapshot-close-failed"=>{response.result=CaptureResult::Failed;response.reason=Some(CaptureReason::CloseFailed);response.formats.clear();}
+                    "snapshot-driven" if request.capture_id.starts_with("IGNORE")=>{response.result=CaptureResult::Ignored;response.reason=Some(CaptureReason::HistoryDenied);response.formats.clear();}
+                    _=>{}
+                }
+                let bytes=serde_json::to_vec(&response).unwrap();
+                for _ in 0..if mode=="snapshot-flood"{8}else{1}{write_frame(&bytes);}
+            }
             "good" => {
                 let body = ack_body(&request, &request.capture_id, request.policy_epoch);
                 write_frame(body.as_bytes());

@@ -18,6 +18,45 @@ fn fixture(mode: &str) -> WorkerSupervisor {
     )
 }
 
+fn snapshot_fixture(mode:&str)->WorkerSupervisor{WorkerSupervisor::for_snapshot_fixture(PathBuf::from(env!("CARGO_BIN_EXE_worker_fixture")),mode)}
+
+#[test]
+fn snapshot_large_frame_roundtrip_and_control_ack_separation(){
+    let mut s=snapshot_fixture("snapshot-good");let snapshot=s.capture_snapshot(&msg("SNAP-1")).unwrap();
+    assert_eq!(snapshot.payloads[0].data,vec![65u8;8192]);assert!(snapshot.response.formats.is_empty());
+    let identity=s.current_identity().unwrap();let second=s.capture_snapshot(&msg("SNAP-2")).unwrap();assert_eq!(second.message(),msg("SNAP-2"));assert_eq!(s.current_identity(),Some(identity));s.close();assert_reaped(s.last_reap().unwrap(),"snapshot-close");
+    let mut ack=fixture("good");assert!(ack.capture_snapshot(&msg("not-snapshot")).is_err());assert_eq!(ack.spawn_count(),0);
+}
+
+#[test]
+fn malformed_snapshot_ack_wrong_id_oversize_and_partial_reap_real_process(){
+    for mode in ["good","snapshot-bad-base64","snapshot-wrong-id","oversize","half-body"] {
+        let mut s=snapshot_fixture(mode);let error=s.capture_snapshot(&msg("SNAP-FAIL")).unwrap_err();assert_eq!(error.code,ErrorCode::ProtocolError,"{mode}");assert_reaped(s.last_reap().unwrap(),mode);
+    }
+}
+
+#[test]
+fn snapshot_reader_fatal_overflow_precedes_valid_frame(){
+    let mut s=snapshot_fixture("snapshot-flood");s.set_test_wait_reader_stop();let error=s.capture_snapshot(&msg("FLOOD-SNAP")).unwrap_err();assert_eq!(error.code,ErrorCode::ProtocolError);assert_reaped(s.last_reap().unwrap(),"snapshot-overflow");
+}
+
+#[test]
+fn close_failure_reaps_and_ignored_response_does_not_reset_timeout_budget(){
+    let mut s=snapshot_fixture("snapshot-close-failed");let response=s.capture_snapshot(&msg("CLOSE-FAIL")).unwrap();assert_eq!(response.response.reason,Some(pinfeather_lib::clipboard::capture::CaptureReason::CloseFailed));assert_reaped(s.last_reap().unwrap(),"close-failure");
+    let mut s=snapshot_fixture("snapshot-driven");assert_eq!(s.capture_snapshot(&msg("STALL-1")).unwrap_err().code,ErrorCode::Timeout);assert_reaped(s.last_reap().unwrap(),"first-timeout");
+    assert_eq!(s.capture_snapshot(&msg("IGNORE-1")).unwrap().response.result,pinfeather_lib::clipboard::capture::CaptureResult::Ignored);assert_eq!(s.consecutive_timeouts(),1);
+    assert_eq!(s.capture_snapshot(&msg("STALL-2")).unwrap_err().code,ErrorCode::Timeout);assert_eq!(s.consecutive_timeouts(),2);assert_eq!(s.state(),WorkerState::FailedPaused);assert_reaped(s.last_reap().unwrap(),"second-timeout");
+}
+
+#[test]
+fn product_worker_hello_and_eof_exit_without_request_or_clipboard_access(){
+    use std::{process::{Command,Stdio},os::windows::io::AsRawHandle};
+    use windows_sys::Win32::{Foundation::WAIT_OBJECT_0,System::Threading::WaitForSingleObject};
+    let mut child=Command::new(env!("CARGO_BIN_EXE_pinfeather")).arg("--capture-worker-v1").stdin(Stdio::null()).stdout(Stdio::piped()).stderr(Stdio::piped()).spawn().unwrap();
+    if unsafe{WaitForSingleObject(child.as_raw_handle(),2000)}!=WAIT_OBJECT_0 {let _=child.kill();let _=child.wait();panic!("worker did not exit on EOF");}
+    let output=child.wait_with_output().unwrap();assert!(output.status.success());let body=pinfeather_lib::clipboard::protocol::split_response_frame(&output.stdout).unwrap();pinfeather_lib::clipboard::protocol::parse_hello_json(std::str::from_utf8(body).unwrap()).unwrap();assert!(output.stderr.is_empty());
+}
+
 fn msg(id: &str) -> WorkerMessage {
     WorkerMessage {
         version: WORKER_PROTOCOL_VERSION,

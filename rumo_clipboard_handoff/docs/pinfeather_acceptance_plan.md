@@ -70,7 +70,7 @@
 | npm run tauri -- build --no-bundle | release宿主与本地资源装配，不制作/安装MSI |
 | git diff --check | 已跟踪改动空白；不自动包含未跟踪文件 |
 
-`capture_windows`另列为ignored原生集成target，只在用户确认隔离环境后手动启动：先明确设置`PINFEATHER_ALLOW_SYSTEM_CLIPBOARD_TESTS=1`及本次`PINFEATHER_TEST_DATA_ROOT`，再运行`cargo test --manifest-path src-tauri/Cargo.toml --test capture_windows -- --ignored --test-threads=1`。它只用合成载荷，但会替换系统剪贴板，不能由普通test脚本或agent自动跑。未获环境/授权时写未运行，不写通过。此target可验证真实内部write→监听→来源分类，不需要给产品增加任意写入命令。
+`capture_windows`另列为ignored原生集成target，只在用户确认隔离环境后手动启动：先明确设置`PINFEATHER_ALLOW_SYSTEM_CLIPBOARD_TESTS=1`及本次新建`PINFEATHER_TEST_DATA_ROOT`，再运行`cargo test --manifest-path src-tauri/Cargo.toml --features test-fixtures --test capture_windows -- --ignored --test-threads=1`。它通过`CARGO_BIN_EXE_pinfeather`定位产品worker，使用合成载荷但会替换系统剪贴板；不能由普通test脚本或agent自动跑，不与已运行宿主并行。未获环境/授权时写未运行，不写通过。此target可验证真实内部write→监听→来源分类，不需要给产品增加任意写入命令。
 
 Rust依赖与PATH由执行启动脚本管理；不默认全局配置。每个命令检查测试清单与数目，测试筛选跑0个/ignored未执行/编译target缺失均不是通过。性能测试显式ignored且在P3单独运行，不误算常规测试数。
 

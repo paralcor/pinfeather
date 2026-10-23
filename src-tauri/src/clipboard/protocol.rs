@@ -10,7 +10,7 @@ use crate::contracts::{
 pub const FRAME_LENGTH_BYTES: usize = 4;
 
 /// E03a 控制帧（hello/ACK）正文上限：先检查长度再分配/解析（方案 5.2.1）。
-/// 第 5.2 节的 18 MiB 为后续快照响应总上限，不用于三字段 ACK。
+/// 第 5.2 节的 18 MiB 是快照响应总上限，不用于三字段 ACK。
 pub const CONTROL_FRAME_MAX_BYTES: usize = 4 * 1024;
 
 /// 4 字节 little-endian 长度前缀；在分配正文之前检查上限。
@@ -180,6 +180,83 @@ pub fn parse_hello_json(body: &str) -> ContractResult<()> {
         return Err(ContractError::protocol_error("unsupported protocol version"));
     }
     Ok(())
+}
+
+#[derive(Debug)]
+pub struct ValidatedSnapshot {
+    /// Large wire strings are removed after decoding; no redundant text copy.
+    pub response: super::capture::CaptureResponse,
+    pub payloads: Vec<crate::store::Payload>,
+    pub internal_origin: Option<Vec<u8>>,
+}
+
+pub fn encode_snapshot(response: &super::capture::CaptureResponse) -> ContractResult<Vec<u8>> {
+    let bytes=serde_json::to_vec(response).map_err(|_|ContractError::protocol_error("snapshot encode failed"))?;
+    encode_response_frame(&bytes)
+}
+
+pub fn decode_snapshot(body: &[u8], request: &WorkerMessage) -> ContractResult<ValidatedSnapshot> {
+    let parsed = parse_snapshot(body)?;
+    check_correlation(request, &parsed.message())?;
+    Ok(parsed)
+}
+
+impl ValidatedSnapshot {
+    pub fn message(&self) -> WorkerMessage {
+        WorkerMessage{version:self.response.version,capture_id:self.response.capture_id.clone(),policy_epoch:self.response.policy_epoch}
+    }
+}
+
+pub(crate) fn parse_snapshot(body: &[u8]) -> ContractResult<ValidatedSnapshot> {
+    use super::capture::{CaptureResponse,CaptureResult,CaptureReason,format_limit,validate_payloads,MAX_FORMATS};
+    use base64::{Engine,engine::general_purpose::STANDARD};
+    let bad=||ContractError::protocol_error("invalid snapshot response");
+    if body.len()>WORKER_RESPONSE_MAX_BYTES {return Err(bad());}
+    let mut r:CaptureResponse=serde_json::from_slice(body).map_err(|_|bad())?;
+    let msg=WorkerMessage{version:r.version,capture_id:r.capture_id.clone(),policy_epoch:r.policy_epoch};
+    encode_request_message(&msg)?;
+    if r.kind!="snapshot" || !(1..=5).contains(&r.attempts) || r.formats.len()>3 || r.omitted_formats.len()>MAX_FORMATS {return Err(bad());}
+    let mut names=std::collections::BTreeSet::new();
+    if r.omitted_formats.iter().any(|n| n.is_empty() || n.chars().count()>256 || format_limit(n).is_some() || !names.insert(n)) {return Err(bad());}
+    if r.owner.pid==Some(0) || (r.owner.pid.is_some() && r.owner.hwnd.is_none()) || (r.owner.process.is_some() && r.owner.pid.is_none())
+        || r.owner.process.as_ref().is_some_and(|p|p.is_empty()||p.chars().count()>1024||p.contains('\0')) {return Err(bad());}
+    if let Some(hwnd)=&r.owner.hwnd {
+        if hwnd.parse::<u64>().ok().filter(|n|*n>0 && n.to_string()==*hwnd).is_none() {return Err(bad());}
+    }
+    let mut payloads=Vec::new();
+    let mut internal_origin=None;
+    match r.result {
+        CaptureResult::Captured => {
+            if r.reason.is_some() || r.sequence_before==0 || r.sequence_before!=r.sequence_locked || r.sequence_before!=r.sequence_after {return Err(bad());}
+            for f in std::mem::take(&mut r.formats) {
+                let limit=format_limit(&f.name).ok_or_else(bad)?;
+                if f.data.len()>limit.div_ceil(3)*4 {return Err(bad());}
+                payloads.push(crate::store::Payload{format_name:f.name,data:STANDARD.decode(f.data).map_err(|_|bad())?});
+            }
+            validate_payloads(&payloads).map_err(|_|bad())?;
+            if let Some(raw)=r.internal_origin.take() {
+                if raw.len()>256usize.div_ceil(3)*4 {return Err(bad());}
+                let bytes=STANDARD.decode(raw).map_err(|_|bad())?;
+                if !(28..=256).contains(&bytes.len()) {return Err(bad());}
+                internal_origin=Some(bytes);
+            }
+        }
+        CaptureResult::Ignored => {
+            if !matches!(r.reason,Some(CaptureReason::Excluded|CaptureReason::HistoryDenied|CaptureReason::InvalidHistoryMarker|CaptureReason::NoSupportedFormat))
+                || !r.formats.is_empty() || r.sequence_before==0 || r.sequence_before!=r.sequence_locked || r.sequence_before!=r.sequence_after {return Err(bad());}
+        }
+        CaptureResult::Failed => {
+            if !matches!(r.reason,Some(CaptureReason::Busy|CaptureReason::ZeroSequence|CaptureReason::SequenceChanged|CaptureReason::InvalidPayload|CaptureReason::ReadFailed|CaptureReason::CloseFailed|CaptureReason::Deadline))
+                || !r.formats.is_empty() || r.internal_origin.is_some() {return Err(bad());}
+        }
+    }
+    if let Some(raw)=r.internal_origin.take() {
+        if raw.len()>256usize.div_ceil(3)*4 {return Err(bad());}
+        let bytes=STANDARD.decode(raw).map_err(|_|bad())?;
+        if !(28..=256).contains(&bytes.len()) {return Err(bad());}
+        internal_origin=Some(bytes);
+    }
+    Ok(ValidatedSnapshot{response:r,payloads,internal_origin})
 }
 
 #[cfg(test)]
