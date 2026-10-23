@@ -27,7 +27,7 @@
 
 ### 2.1 键盘与消息钩子状态感知
 
-候选流程包含低级键盘钩子与 `WH_GETMESSAGE`。下列示例保留初步骨架，其中钩子编号和注释不一致的问题仍待修订，见交接说明 R8；不能直接运行或据此认定输入状态可可靠判断。
+候选流程包含低级键盘钩子与 `WH_GETMESSAGE`。R8 的初次及重试分支均使用 Windows SDK 具名常量：`WH_KEYBOARD_LL` 为 13，10 是 `WH_SHELL`。此处只修正示例常量，回调签名、安装失败、超时、卸载及跨进程适用性仍未验证，不能直接运行或据此认定输入状态可可靠判断。片羽首轮使用正常全局快捷键注册，不引入本方案钩子。
 
 ```c
 void HookInputPipeline(void)
@@ -39,20 +39,20 @@ void HookInputPipeline(void)
     
     // 2. 挂载 WH_KEYBOARD_LL 底层按键钩子
     if (g_hKeyboardHook == (HHOOK)0) {
-        g_hKeyboardHook = SetWindowsHookExW(10, (HOOKPROC)&KeyboardProc, g_hInst, 0);
+        g_hKeyboardHook = SetWindowsHookExW(WH_KEYBOARD_LL, (HOOKPROC)&KeyboardProc, g_hInst, 0);
     }
     if (g_hKeyboardHook == (HHOOK)0) {
-        Sleep(5); // 失败时自适应重试
-        g_hKeyboardHook = SetWindowsHookExW(10, (HOOKPROC)&KeyboardProc, g_hInst, 0);
+        Sleep(5); // 仅保留旧骨架的一次重试，不代表已设计退避策略
+        g_hKeyboardHook = SetWindowsHookExW(WH_KEYBOARD_LL, (HOOKPROC)&KeyboardProc, g_hInst, 0);
     }
 
     // 3. 挂载 WH_GETMESSAGE 消息流钩子
     if (g_hMessageHook == (HHOOK)0) {
-        g_hMessageHook = SetWindowsHookExW(3, MessageProc, g_hInst, 0);
+        g_hMessageHook = SetWindowsHookExW(WH_GETMESSAGE, MessageProc, g_hInst, 0);
     }
     if (g_hMessageHook == (HHOOK)0) {
         Sleep(5);
-        g_hMessageHook = SetWindowsHookExW(3, MessageProc, g_hInst, 0);
+        g_hMessageHook = SetWindowsHookExW(WH_GETMESSAGE, MessageProc, g_hInst, 0);
     }
 }
 ```

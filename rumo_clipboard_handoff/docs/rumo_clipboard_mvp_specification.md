@@ -1,501 +1,200 @@
-# Rumo 现代化高可靠剪贴板核心架构设计规格书与 MVP 代码骨架
-
-## 1. 架构总览与技术栈选型
-
-本自研现代化剪贴板系统（代号 **Rumo Clipboard**）充分吸收了 Rumo 剪贴板全谱系方案演进中 7 套子方案的核心长处，彻底规避了传统架构的历史包袱：
-* **核心优势融合**：
-  * **方案 A 融合**：突破 Windows 前台锁（`SPI_SETFOREGROUNDLOCKTIMEOUT` 归零）、修饰键强制清空状态机（`AllKeysUp`）、元数据与 BLOB 载荷物理隔离。
-  * **方案 B 融合**：硬件级递增序列号防抖（`GetClipboardSequenceNumber`）、Windows 官方云剪贴板与历史排除协议。
-  * **方案 C 融合**：mDNS 局域网自发现与多网卡单播自愈标头、AI Agent 的 Model Context Protocol (MCP) 原生集成。
-  * **方案 D 融合**：参数化动态模板插槽（`{{ slot }}`）、即时表单渲染与 Double Copy 意图识别。
-  * **方案 E 融合**：零拷贝二进制序列化、高扩展性规则清洗流水线。
-  * **方案 G 融合**：极低内存驻留设计（无纯重型虚拟机内存过载）、三阶段防自激屏蔽链。
-* **工程规避**：
-  * 坚决不用全局注入钩子（DLL 注入，消除杀软报毒风险）；
-  * 常驻空闲内存控制在 **12MB - 18MB** 以内。
-
-### 1.1 系统整体分层架构图
-```text
-┌────────────────────────────────────────────────────────────────────────┐
-│                      Frontend Layer (Tauri Webview)                    │
-│   - Multi-Board Kanban & Tags        - Parametric Form Generator       │
-│   - QuickPaste Floating HUD (<50ms)  - Real-time MCP Status & Sync     │
-└───────────────────────────────────┬────────────────────────────────────┘
-                                    │ Tauri IPC (Commands & Events)
-┌───────────────────────────────────▼────────────────────────────────────┐
-│                    Rust Core Layer (Safe Native Core)                  │
-│                                                                        │
-│  ┌─────────────────────────┐          ┌─────────────────────────────┐  │
-│  │   Clipboard Supervisor  │          │   Focus & Input Injector    │  │
-│  │  - AddClipboardListener │          │  - SPI Timeout Reset (0ms)  │  │
-│  │  - Sequence Guard (u32) │          │  - KeyState Clearer (Up)    │  │
-│  │  - Triple-Stage Filter  │          │  - IME Composition Shield   │  │
-│  └───────────┬─────────────┘          └──────────────┬──────────────┘  │
-│              │                                       │                 │
-│  ┌───────────▼─────────────┐          ┌──────────────▼──────────────┐  │
-│  │     Storage Engine      │          │     AI & Sync Protocols     │  │
-│  │  - SQLite3MC (FTS5)     │          │  - Embedded MCP SSE Server  │  │
-│  │  - Hot Metadata / Cold  │          │  - mDNS + Header Self-Heal  │  │
-│  │  - MemoryPack / LZ4     │          │  - E2EE Pairing Handshake   │  │
-│  └─────────────────────────┘          └─────────────────────────────┘  │
-└────────────────────────────────────────────────────────────────────────┘
-```
-
----
-
-## 2. 核心模块一：剪贴板监听、防抖与三阶段防自激防线（`clipboard_supervisor.rs`）
-
-本模块融合了方案 B 的序列号防抖与方案 A/G 的三阶段忽略协议，彻底杜绝死锁与自激触发。
-
-```rust
-// src-tauri/src/clipboard_supervisor.rs
-use std::sync::atomic::{AtomicBool, AtomicU32, Ordering};
-use std::sync::Arc;
-use windows::Win32::Foundation::{HWND, LPARAM, LRESULT, WPARAM};
-use windows::Win32::System::DataExchange::{
-    AddClipboardFormatListener, GetClipboardSequenceNumber, IsClipboardFormatAvailable,
-    RegisterClipboardFormatW, RemoveClipboardFormatListener,
-};
-use windows::Win32::UI::WindowsAndMessaging::{
-    CreateWindowExW, DefWindowProcW, DestroyWindow, RegisterClassW,
-    SetWindowLongPtrW, CS_HREDRAW, CS_VREDRAW, GWLP_USERDATA,
-    WINDOW_EX_STYLE, WNDCLASSW, WS_OVERLAPPED,
-};
-use windows::core::{w, PCWSTR};
-
-const WM_CLIPBOARDUPDATE: u32 = 0x031D;
-
-pub struct ClipboardSupervisor {
-    last_seq: AtomicU32,
-    // 三阶段防自激屏蔽标志
-    is_internal_copying: AtomicBool,
-    is_internal_pasting: AtomicBool,
-    is_internal_restoring: AtomicBool,
-    cf_ignore: u32,
-    cf_exclude_cloud: u32,
-    cf_can_include_history: u32,
-    hwnd: HWND,
-}
-
-impl ClipboardSupervisor {
-    pub fn new() -> Arc<Self> {
-        let cf_ignore = unsafe { RegisterClipboardFormatW(w!("Clipboard Viewer Ignore")) };
-        let cf_exclude_cloud = unsafe {
-            RegisterClipboardFormatW(w!("ExcludeClipboardContentFromMonitorProcessing"))
-        };
-        let cf_can_include_history = unsafe {
-            RegisterClipboardFormatW(w!("CanIncludeInClipboardHistory"))
-        };
-
-        let supervisor = Arc::new(Self {
-            last_seq: AtomicU32::new(0),
-            is_internal_copying: AtomicBool::new(false),
-            is_internal_pasting: AtomicBool::new(false),
-            is_internal_restoring: AtomicBool::new(false),
-            cf_ignore,
-            cf_exclude_cloud,
-            cf_can_include_history,
-            hwnd: HWND(0),
-        });
-
-        // 启动专属 Win32 消息泵窗口
-        supervisor.init_message_window();
-        supervisor
-    }
-
-    /// 标记进入写回阶段，通知系统与外部密码管理器忽略
-    pub fn begin_internal_paste_scope(&self) -> InternalScopeGuard {
-        self.is_internal_pasting.store(true, Ordering::SeqCst);
-        InternalScopeGuard {
-            flag: &self.is_internal_pasting,
-        }
-    }
-
-    /// 核心剪贴板变更处理回调
-    pub fn handle_clipboard_update(&self) {
-        // 1. 硬件级递增序列号校验（吸收方案 B 精髓）
-        let current_seq = unsafe { GetClipboardSequenceNumber() };
-        let old_seq = self.last_seq.swap(current_seq, Ordering::SeqCst);
-        if current_seq == old_seq {
-            return; // 过滤虚假信号与自身重复脉冲
-        }
-
-        // 2. 三阶段原子屏蔽校验（吸收方案 G 精髓）
-        if self.is_internal_copying.load(Ordering::SeqCst)
-            || self.is_internal_pasting.load(Ordering::SeqCst)
-            || self.is_internal_restoring.load(Ordering::SeqCst)
-        {
-            return; // 自身回写引起的更新，直接阻断
-        }
-
-        // 3. 密码管理器与系统隐私格式穿透拦截（吸收方案 A 与 Windows 官方规范）
-        unsafe {
-            if IsClipboardFormatAvailable(self.cf_ignore)
-                || IsClipboardFormatAvailable(self.cf_exclude_cloud)
-            {
-                // 属于密码管理器生成的临时口令或自身忽略项，不记录历史
-                return;
-            }
-        }
-
-        // 4. 派发有效载荷提取流水线
-        self.dispatch_payload_extraction();
-    }
-
-    fn dispatch_payload_extraction(&self) {
-        // 提取格式并流式存入 SQLite3MC
-    }
-
-    fn init_message_window(self: &Arc<Self>) {
-        // 创建隐藏窗口并注册 AddClipboardFormatListener
-    }
-}
-
-pub struct InternalScopeGuard<'a> {
-    flag: &'a AtomicBool,
-}
-
-impl<'a> Drop for InternalScopeGuard<'a> {
-    fn drop(&mut self) {
-        self.flag.store(false, Ordering::SeqCst);
-    }
-}
-```
-
----
-
-## 3. 核心模块二：焦点穿透回贴与修饰键释放状态机（`focus_injector.rs`）
-
-本模块集成了方案 A 的前台锁定超时清零、强制 KeyUp 状态机、以及针对输入法状态的静默回贴。
-
-```rust
-// src-tauri/src/focus_injector.rs
-use std::thread;
-use std::time::Duration;
-use windows::Win32::Foundation::{HWND, LPARAM, WPARAM};
-use windows::Win32::System::Threading::GetCurrentThreadId;
-use windows::Win32::UI::Input::KeyboardAndMouse::{
-    GetKeyState, SendInput, INPUT, INPUT_0, INPUT_KEYBOARD, KEYBDINPUT,
-    KEYEVENTF_KEYUP, VIRTUAL_KEY, VK_CONTROL, VK_LCONTROL, VK_LMENU, VK_LSHIFT,
-    VK_MENU, VK_RCONTROL, VK_RMENU, VK_RSHIFT, VK_SHIFT,
-};
-use windows::Win32::UI::WindowsAndMessaging::{
-    AttachThreadInput, BringWindowToTop, GetForegroundWindow,
-    GetWindowThreadProcessId, SetForegroundWindow, SystemParametersInfoW,
-    SPI_GETFOREGROUNDLOCKTIMEOUT, SPI_SETFOREGROUNDLOCKTIMEOUT,
-    SYSTEM_PARAMETERS_INFO_UPDATE_FLAGS,
-};
-
-pub struct FocusInjector;
-
-impl FocusInjector {
-    /// 以微秒级速度穿透并将剪贴板内容贴入目标原活动窗口
-    pub fn paste_to_target(target_hwnd: HWND) -> Result<(), String> {
-        if target_hwnd.0 == 0 {
-            return Err("Invalid target window handle".into());
-        }
-
-        // 1. 修饰键释放状态机（吸收方案 A 与方案 B 精髓）
-        Self::ensure_all_modifiers_released();
-
-        unsafe {
-            // 2. 突破 Windows 前台抢占锁: 归零超时设置 (方案 A 核心精髓)
-            let mut original_timeout: u32 = 0;
-            SystemParametersInfoW(
-                SPI_GETFOREGROUNDLOCKTIMEOUT,
-                0,
-                Some(&mut original_timeout as *mut u32 as *mut _),
-                SYSTEM_PARAMETERS_INFO_UPDATE_FLAGS(0),
-            );
-            SystemParametersInfoW(
-                SPI_SETFOREGROUNDLOCKTIMEOUT,
-                0,
-                Some(std::ptr::null_mut()),
-                SYSTEM_PARAMETERS_INFO_UPDATE_FLAGS(0),
-            );
-
-            // 3. 线程输入队列绑定与前台窗口激活
-            let current_thread = GetCurrentThreadId();
-            let target_thread = GetWindowThreadProcessId(target_hwnd, None);
-
-            let attached = if current_thread != target_thread {
-                AttachThreadInput(current_thread, target_thread, true).as_bool()
-            } else {
-                false
-            };
-
-            BringWindowToTop(target_hwnd);
-            SetForegroundWindow(target_hwnd);
-
-            if attached {
-                AttachThreadInput(current_thread, target_thread, false);
-            }
-
-            // 4. 还原前台锁定超时
-            SystemParametersInfoW(
-                SPI_SETFOREGROUNDLOCKTIMEOUT,
-                0,
-                Some(original_timeout as *mut _),
-                SYSTEM_PARAMETERS_INFO_UPDATE_FLAGS(0),
-            );
-        }
-
-        // 5. 等待窗口完全响应焦点（短暂让步 20ms）
-        thread::sleep(Duration::from_millis(20));
-
-        // 6. 发送合成击键 Ctrl + V
-        Self::simulate_ctrl_v();
-
-        Ok(())
-    }
-
-    /// 强制释放所有物理修饰键，防止硬件级卡键
-    fn ensure_all_modifiers_released() {
-        let modifier_keys = [
-            VK_LSHIFT, VK_RSHIFT, VK_SHIFT,
-            VK_LCONTROL, VK_RCONTROL, VK_CONTROL,
-            VK_LMENU, VK_RMENU, VK_MENU,
-        ];
-
-        let mut inputs: Vec<INPUT> = Vec::new();
-        for &vk in &modifier_keys {
-            let state = unsafe { GetKeyState(vk.0 as i32) };
-            if (state & (0x8000u16 as i16)) != 0 {
-                // 物理按键处于按下状态，灌入合成 KeyUp
-                inputs.push(INPUT {
-                    r#type: INPUT_KEYBOARD,
-                    Anonymous: INPUT_0 {
-                        ki: KEYBDINPUT {
-                            wVk: vk,
-                            wScan: 0,
-                            dwFlags: KEYEVENTF_KEYUP,
-                            time: 0,
-                            dwExtraInfo: 0,
-                        },
-                    },
-                });
-            }
-        }
-
-        if !inputs.is_empty() {
-            unsafe {
-                SendInput(&inputs, std::mem::size_of::<INPUT>() as i32);
-            }
-        }
-    }
-
-    /// 模拟标准 Ctrl + V
-    fn simulate_ctrl_v() {
-        let inputs = [
-            // Ctrl Down
-            Self::create_key_input(VK_CONTROL, 0),
-            // V Down
-            Self::create_key_input(VIRTUAL_KEY(0x56), 0),
-            // V Up
-            Self::create_key_input(VIRTUAL_KEY(0x56), KEYEVENTF_KEYUP.0),
-            // Ctrl Up
-            Self::create_key_input(VK_CONTROL, KEYEVENTF_KEYUP.0),
-        ];
-
-        unsafe {
-            SendInput(&inputs, std::mem::size_of::<INPUT>() as i32);
-        }
-    }
-
-    fn create_key_input(vk: VIRTUAL_KEY, flags: u32) -> INPUT {
-        INPUT {
-            r#type: INPUT_KEYBOARD,
-            Anonymous: INPUT_0 {
-                ki: KEYBDINPUT {
-                    wVk: vk,
-                    wScan: 0,
-                    dwFlags: windows::Win32::UI::Input::KeyboardAndMouse::KEYBD_EVENT_FLAGS(flags),
-                    time: 0,
-                    dwExtraInfo: 0,
-                },
-            },
-        }
-    }
-}
-```
-
----
-
-## 4. 核心模块三：动态参数模板插槽替换引擎（`template_engine.rs`）
-
-吸收方案 D 的生产力创新，用 Rust 原生正则实现高效参数提取与插槽填充。
-
-```rust
-// src-tauri/src/template_engine.rs
-use regex::Regex;
-use std::collections::HashMap;
-
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub enum SlotKind {
-    Clipboard,
-    Date,
-    CustomVariable(String),
-}
-
-#[derive(Debug, Clone)]
-pub struct TemplateSlot {
-    pub raw_tag: String,
-    pub kind: SlotKind,
-}
-
-pub struct TemplateEngine {
-    slot_regex: Regex,
-}
-
-impl TemplateEngine {
-    pub fn new() -> Self {
-        Self {
-            slot_regex: Regex::new(r"\{\{\s*(.*?)\s*\}\}").unwrap(),
-        }
-    }
-
-    /// 扫描模板文本中所有的插槽变量
-    pub fn extract_slots(&self, template: &str) -> Vec<TemplateSlot> {
-        let mut slots = Vec::new();
-        for cap in self.slot_regex.captures_iter(template) {
-            let slot_name = cap[1].trim();
-            let kind = match slot_name.to_lowercase().as_str() {
-                "clipboard" => SlotKind::Clipboard,
-                "date" => SlotKind::Date,
-                _ => SlotKind::CustomVariable(slot_name.to_string()),
-            };
-            slots.push(TemplateSlot {
-                raw_tag: cap[0].to_string(),
-                kind,
-            });
-        }
-        slots
-    }
-
-    /// 根据用户提供的参数字典合成最终文本
-    pub fn render(
-        &self,
-        template: &str,
-        values: &HashMap<String, String>,
-        live_clipboard: &str,
-    ) -> String {
-        self.slot_regex
-            .replace_all(template, |caps: &regex::Captures| {
-                let key = caps[1].trim();
-                match key.to_lowercase().as_str() {
-                    "clipboard" => live_clipboard.to_string(),
-                    "date" => chrono::Local::now().format("%Y-%m-%d %H:%M:%S").to_string(),
-                    _ => values.get(key).cloned().unwrap_or_else(|| caps[0].to_string()),
-                }
-            })
-            .to_string()
-    }
-}
-```
-
----
-
-## 5. 核心模块四：内嵌 Model Context Protocol (MCP) 服务（`mcp_service.rs`）
-
-吸收方案 C 的 AI 原生思路，向本地大语言模型（Claude Desktop、Cursor 等）暴露标准 MCP 协议，让剪贴板成为 AI 的上下文数据库。
-
-```rust
-// src-tauri/src/mcp_service.rs
-use serde::{Deserialize, Serialize};
-use serde_json::{json, Value};
-
-#[derive(Serialize, Deserialize)]
-pub struct McpRequest {
-    pub jsonrpc: String,
-    pub id: Value,
-    pub method: String,
-    pub params: Option<Value>,
-}
-
-pub struct EmbeddedMcpServer;
-
-impl EmbeddedMcpServer {
-    /// 处理来自 AI 助手的标准 MCP JSON-RPC 请求
-    pub fn handle_request(req: McpRequest) -> Value {
-        match req.method.as_str() {
-            "tools/list" => json!({
-                "jsonrpc": "2.0",
-                "id": req.id,
-                "result": {
-                    "tools": [
-                        {
-                            "name": "search_clipboard",
-                            "description": "全文检索用户的剪贴板历史记录，支持关键词与数据类型过滤",
-                            "inputSchema": {
-                                "type": "object",
-                                "properties": {
-                                    "query": { "type": "string", "description": "搜索关键词" },
-                                    "limit": { "type": "integer", "default": 20 }
-                                }
-                            }
-                        },
-                        {
-                            "name": "copy_to_clipboard",
-                            "description": "由 AI 助手安全回写一段文本到用户系统剪贴板",
-                            "inputSchema": {
-                                "type": "object",
-                                "properties": {
-                                    "content": { "type": "string", "description": "要写入的纯文本" }
-                                },
-                                "required": ["content"]
-                            }
-                        }
-                    ]
-                }
-            }),
-
-            "tools/call" => {
-                Self::execute_tool_call(req.id, req.params.unwrap_or(json!({})))
-            }
-
-            _ => json!({
-                "jsonrpc": "2.0",
-                "id": req.id,
-                "error": { "code": -32601, "message": "Method not found" }
-            }),
-        }
-    }
-
-    fn execute_tool_call(id: Value, params: Value) -> Value {
-        let tool_name = params["name"].as_str().unwrap_or("");
-        match tool_name {
-            "search_clipboard" => json!({
-                "jsonrpc": "2.0",
-                "id": id,
-                "result": {
-                    "content": [{ "type": "text", "text": "检索到的剪贴板数据示例..." }]
-                }
-            }),
-            _ => json!({
-                "jsonrpc": "2.0",
-                "id": id,
-                "error": { "code": -32602, "message": "Invalid params" }
-            }),
-        }
-    }
-}
-```
-
----
-
-## 6. 存储引擎设计：物理分表与全文索引
-
-借鉴方案 A 与方案 G 的数据库表分离模式：
-* **`clips_meta`（主表，热区）**：
-  * `id INTEGER PRIMARY KEY AUTOINCREMENT`
-  * `timestamp INTEGER NOT NULL`
-  * `text_preview TEXT`（前 200 字符，用于快速列表呈现）
-  * `crc32 INTEGER NOT NULL`（快速重复检测）
-  * `is_favorite BOOLEAN DEFAULT 0`
-  * `source_process TEXT`（来源应用名，如 chrome.exe）
-* **`clips_payload`（载荷表，冷区）**：
-  * `id INTEGER PRIMARY KEY`
-  * `format TEXT NOT NULL`（`text/plain`, `text/html`, `image/png`）
-  * `data BLOB NOT NULL`（LZ4 即时压缩的原始载荷）
-* **`clips_fts`（FTS5 全文索引虚拟表）**：
-  * 同步维护纯文本全文倒排索引，支持毫秒级多关键字词缀检索。
+# 片羽 Pinfeather：首轮 MVP 规格
+
+修订日期：2026-10-23。状态：首轮规格基线已确认；已有工程壳、共享契约、合成 worker 传输与只读目标探针，真实剪贴板业务及产品验收未完成。
+
+本文件是单机核心链路的契约入口，承接[设计目标](pinfeather_design_goals.md)、[项目交接](pinfeather_project_handoff.md)及[首轮任务清单](pinfeather_first_iteration_tasks.md)。原有 Rumo MVP 的未编译代码骨架已由本规格替代，不能作为实现依据；历史内容可从 Git 查询。候选 A–G 仍是研究材料。
+
+## 1. 范围、决定与状态
+
+已确认：Windows 优先、本地优先；本轮使用 Tauri + Rust + React/TypeScript 跑通**监听 → 存储 → 搜索 → 快捷面板 → 回贴**。文字与链接贯通链路，同次复制的文本和 HTML 验证多格式关系，图片仅检查载荷路径。集合、模板、CLI/MCP、同步后置，不注册对应命令、服务或界面入口。
+
+用户已确认第 2 节的平台目标、权限边界及第 3–6 节的隔离原型基线；工程默认值仅适用于首轮，不构成长期产品默认值。第 7 节规定后续范围，第 8 节规定验收证据。用户已明确：issue 前置适用于现有设计方案需要重大调整，按确认方案建立工程无需先发 issue；两份 issue 草稿保留且不发布。Codex 作为唯一写者负责设计、实现、验证和 review，旧 Mimo 执行安排已结束。[完整实施方案](pinfeather_implementation_plan.md)及其任务/验收文档已获按包执行授权。三目标 IME 均为 unknown，用户只批准独立 W1/W2 先行，W3 自动回贴仍阻塞，W0 整体与首轮不标完成。贡献使用原型约定库，各类能力只引入实际需要的一种，npm 精确版本、lock 由工具生成。
+
+| 问题 | 规格处理 | 实现与验收状态 |
+| --- | --- | --- |
+| R1 错误窗口与成功误报 | 第 5 节定义目标身份、取消及发送结果 | 待实现，A2–A4 未测 |
+| R2 漏记与内部自激 | 第 3、6 节定义来源标记、快照、队列及退出 | 待实现，A5–A8/A11 未测 |
+| R3 多格式关系 | 第 4 节一对多、同库事务、格式与删除边界 | 待实现，A9 未测 |
+| R4 AI 访问边界 | 第 7 节移出历史访问与回写入口 | 规格已修订，实现后置；权限未验收 |
+| R5 MCP 伪实现 | 删除固定返回的旧骨架，不宣称可连接客户端 | 规格已修订，实现后置；接入未验收 |
+| R6 中文短词 | 第 4.3 节定义完整正文的字面子串查询 | 待实现，A10 未测 |
+| R7 依赖与性能 | 第 8 节先记录 release 基线再定预算 | 工程壳已构建；性能与完整进程树内存未测 |
+| R8 钩子编号 | [候选 F](rumo_plan_queue_injection.md#21-键盘与消息钩子状态感知)两处分支改具名常量 | 仅修正示例；钩子方案未验证，本轮不用 |
+
+## 2. Windows 支持目标
+
+这是已确认的目标矩阵，不能作为兼容性测试通过的声明。最低目标版本为 Windows 11 25H2 x64；采用仍受支持的累积更新，逐个组合验收。
+
+| 维度 | 目标范围 | 当前证据 |
+| --- | --- | --- |
+| 版本与 edition | Windows 11 25H2、26H2，Home/Pro | 本机 25H2 家庭中文版（CoreCountrySpecific）26200.9711 已运行工程壳及探针；产品链路未验收 |
+| 架构 | x64 Windows，x64 应用包 | 本机 x64 构建和工程壳运行有证据；目标应用位数单列 |
+| 权限 | 片羽普通权限；管理员目标及权限未知不自动回贴 | 三类普通目标已只读观测；管理员/未知目标的真机降级未验收 |
+| 桌面与运行时 | 当前用户交互式桌面，WebView2 | 工程壳实际加载 155.0.4283.62；不是完整产品验收 |
+| 未纳入 | Windows 10、其他 Windows 11 版本（包括 26H1）、Server、ARM64、32 位系统 | 不作支持承诺 |
+
+25H2 Home/Pro 与 26H2 Home/Pro 当前均在服务期内；生命周期不证明片羽兼容。依据：[Microsoft Windows 11 发布信息](https://learn.microsoft.com/en-us/windows/release-health/windows11-release-information)，核查日期 2026-10-22。Pro、26H2 及其他设备均未验收。
+
+不默认提权，不设置 UIAccess，不修改系统前台锁，不接管用户键盘或鼠标做验收。WebView2 缺失时停止启动并提供明确诊断；不自动安装系统组件。
+
+## 3. 收录契约（R2）
+
+### 3.1 所有者与状态
+
+Rust 宿主拥有监听消息线程、抓取工作进程、存储线程、快捷键与窗口。消息线程创建隐藏窗口、注册 `AddClipboardFormatListener` 并驱动消息泵，只派发变更与控制消息，不执行数据库或延迟渲染读取。注册完成后才发布监听就绪；启动失败回收已取得资源。
+
+事件状态为 `observed → capturing → captured → queued → persisted`，也可结束于 `ignored / superseded / failed / overloaded`。已观察、取得快照、提交事务分别计数；条目仅在提交成功后对界面可见。错误日志只记录操作 ID、阶段、大小、序列号与错误类别，不记录正文或窗口标题。
+
+`GetClipboardSequenceNumber` 只在相等性比较中表示变更；不当作硬件时钟、来源身份、抓取成功或永久全局 ID。零值不可证明有效状态。序列号会回绕，不按数值大小判定先后。通知延迟或合并时读取当前状态，不编造中间内容。[微软序列号说明](https://learn.microsoft.com/en-us/windows/win32/api/winuser/nf-winuser-getclipboardsequencenumber)。
+
+### 3.2 快照与内部来源
+
+抓取工作进程取得剪贴板锁，在同一次持锁范围读取策略标记、允许的格式和数据；校验抓取前后序列号，不将不同版本的格式拼成一条记录。变更则丢弃不一致快照，按同一截止时间重新读取最新版本，记录被覆盖的观察事件。
+
+内部写回在同一次 `OpenClipboard → EmptyClipboard → SetClipboardData → CloseClipboard` 中写入载荷和注册格式 `Pinfeather.InternalOrigin.v1`。标记内容为版本、宿主启动实例标识和单次 operation ID；格式运行期编号不持久化。只有匹配当前实例已登记操作的有效标记才识别为内部写入。来源标记用于抑制自录，不是安全认证；未知、损坏标记不能作为忽略外部内容的理由。
+
+写入前登记操作，完成或失败后记录结果；通知延迟时仍可关联。最近操作登记有界保留，当前剪贴板所指操作在其快照被分类前不淘汰。内部载荷或标记任一步失败均不得报告“已复制”，不得继续自动回贴。Win32 多格式写入不是可回滚事务，失败可能留下部分剪贴板内容；保留诊断，不通过恢复旧剪贴板覆盖用户随后复制的内容。
+
+禁止用全局忙标志、固定屏蔽时间窗或内容相等判断内部来源。相同文本再次由外部复制，仍保存为独立历史事件。本轮不合并内容、不按 CRC32 去重；单次快照重试以宿主实例和抓取 ID 保证幂等。
+
+### 3.3 限制与工程默认值
+
+以下已获用户确认，仅用于隔离原型；后续产品容量和清理策略另定。
+
+| 项目 | 首轮默认值与行为 | 原因 |
+| --- | --- | --- |
+| 文本与 HTML | 每格式不超过 2 MiB | 限制单次分配，覆盖代码与日志样本 |
+| 图片路径样本 | 注册格式 PNG，不超过 8 MiB，检查格式头；不解码、不回贴 | 先验证 BLOB 关系，不承诺 DIB/任意图像转换 |
+| 单条合计 | 允许格式合计不超过 12 MiB | 界定抓取和事务内存；超限拒绝整条，显示原因 |
+| 待存队列 | 最多 64 条且合计不超过 32 MiB，任一先到即满 | 避免仅按条数限制导致内存膨胀 |
+| 抓取并发 | 1 个串行工作进程 | 剪贴板是全局当前状态；隔离延迟渲染阻塞 |
+| 读取重试 | 含首次最多 5 次，尝试间隔 20/40/80/160 ms，总截止 750 ms | 占用与不稳定快照可重试；不阻塞消息泵 |
+| 受阻读取 | 宿主监控截止时间，超时终止并回收自有抓取进程；最多自动重建 1 次，仍超时则暂停并提示 | 同步延迟渲染可能越过检查点，线程超时不等于取消底层调用 |
+| 历史与占用 | 最多 10,000 条且载荷合计 256 MiB，达到任一上限停止新增并提示 | 本轮不自动清理、不静默删除；性能夹具独立配置 |
+| 保留时长 | 隔离测试历史不按时间删除 | 清理与收藏策略后置，不替用户确认 90 天产品默认值 |
+
+被成功抓取的快照入队后按 FIFO 提交；队列满不覆盖旧项，当前快照记 `overloaded`，暂停新抓取并显示累计未保存数量。恢复收录需要用户操作，不宣称能补回丢失载荷。队列仍须继续排空并可退出。
+
+抓取前已被覆盖的内容不能还原；记录 `superseded` 与源操作核对，不将其从快速复制漏记统计中隐藏。瞬时成功间隔、数量和最小无漏记间隔由 A5 实测，当前不作零漏记保证。
+
+### 3.4 暂停、排除与系统标记
+
+暂停会撤销尚未提交的抓取并丢弃其未提交快照；已提交历史保留。应用排除以可核查的剪贴板 owner 进程路径匹配，前台窗口只能显示为观察值；owner 缺失或无法解析时记来源未知。本轮最小排除策略：有排除规则且 owner 无法确认时，不收录并提示；无规则时允许未知来源，仍遵守格式标记。
+
+策略在入队前及提交前复核，避免暂停或新排除规则后仍写入排队内容。排除设置不反向删除已存历史。不预置从原型假数据推导的应用名单。
+
+| 注册格式 | 本地收录策略 |
+| --- | --- |
+| `ExcludeClipboardContentFromMonitorProcessing` | 存在即禁收；其语义是放置任意数据，不按 DWORD 布尔值解释 |
+| `CanIncludeInClipboardHistory` | 读取序列化 DWORD：0 禁收、1 允许进入其余规则；长度错误、读取失败或其他值禁收并记类别 |
+| `CanUploadToCloudClipboard` | 0/1 不改变本地历史规则；损坏值只记录标记异常，不将仅云策略当本地禁收；本轮无上传 |
+| `Clipboard Viewer Ignore` | 兼容约定：存在即禁收；不当作官方身份认证 |
+
+依据：[微软剪贴板格式源文档](https://github.com/MicrosoftDocs/win32/blob/docs/desktop-src/dataxchg/clipboard-formats.md)。内部写回同时设置本地历史禁止、云上传禁止值，但内部来源分类仍使用 operation 标记。
+
+## 4. 存储、格式与搜索（R3/R6）
+
+### 4.1 数据边界与回滚
+
+本轮只使用新建隔离测试库。拟放在首轮 archive 下独立的 `runtime-data` 目录，启动需显式数据目录，禁止回落到生产历史路径。普通产品数据路径留待后续确定。启动显示目录与隔离模式；不读取其他剪贴板工具数据库。
+
+采用单个 SQLite 文件内分表，不做物理分库：与附加多个库相比，同库事务更容易约束多格式和搜索正文一致，代价是载荷共用文件。模式版本用 `PRAGMA user_version=1`；每条连接启用外键，初版不引入加密、MemoryPack、压缩、FTS 或工作集裁剪。
+
+打开、版本、权限或完整性失败时停止收录并报告，不能自动删库、覆盖或重建。高于支持版本拒绝写入；非空未知库拒绝初始化；后续升级必须有独立迁移与备份方案。初版无已有部署消费者，不提供虚假的旧格式兼容。回滚代码时保留测试库；不让旧版本写入新模式，无 down migration 或数据清空动作。
+
+### 4.2 记录关系
+
+以下是逻辑模型，schema 由后续真实迁移与测试落实，不在文档中提供可直接操作用户库的 SQL。
+
+| 表/字段 | 契约 |
+| --- | --- |
+| `clips.id` | SQLite 生成的稳定正整数，对 IPC 以十进制字符串表示，避免 JS 整数精度损失 |
+| `clips.capture_id` | 宿主实例 + 抓取 ID，唯一；仅用于同次快照提交幂等，不是内容去重 |
+| `clips.captured_at_ms` | UTC 毫秒；显示时转换本地时间，时钟相同以 id 倒序打破平局 |
+| `clips.preview` | 最多前 200 个 Unicode 字符的摘要，只作列表显示 |
+| `clips.text_full` | 完整解码文本，可空；正文与摘要同事务生成，不从 HTML 执行或抓取网络内容 |
+| `clips.source` | owner 进程路径可空，带可信度；不假定前台应用就是来源 |
+| `payloads` | 外键 `clip_id → clips.id ON DELETE CASCADE`；主键为 `(clip_id, format_name)`；BLOB、字节数、编码/格式版本明确 |
+
+格式名持久化使用 `CF_UNICODETEXT`、`HTML Format`、`PNG`。注册格式名称启动时映射到本次 Windows 编号，不能跨启动复用编号。文本 UTF-16LE 严格解码，拒绝奇数字节、无终止符或无效代理对；保留原始 BLOB 与全文。HTML 保存原始字节，预览只显示转义文本，不加载脚本/远程资源。PNG 仅记录样本载荷，不宣称图像有效性或安全解码验证通过。
+
+允许格式有多个时一起保存；不支持格式不保存，元数据列明遗漏格式名。存在任何允许格式读取错误、超限或损坏时拒绝整条，避免假报完整。纯图片可存载荷，无 OCR，无文本搜索。`CF_DIB/CF_DIBV5/CF_BITMAP/RTF` 与其他格式不在本轮保真范围；无允许格式时显示不支持。
+
+元数据、全部载荷、全文在一个事务提交，失败整体回滚；删除同库事务级联载荷并移除正文，列表/预览事件只在提交后发出。删除仅作隔离样本的关系验收，不实现自动清理。不得把 SQLite 事务保证套用到 Win32 剪贴板写回。
+
+### 4.3 查询语义
+
+搜索是**完整正文的单个字面子串**，使用参数绑定；中文一字、二字、长片段均适用。英文 ASCII A–Z/a–z 不区分大小写；其他 Unicode 按原字符匹配，不承诺拼音、繁简、重音或规范化等价。查询首尾 Unicode 空白裁掉，内部空白与换行原样保留，不拆成多词。`%`、`_`、引号、反斜杠、SQL/FTS 操作符均作为普通字符。
+
+初版以 SQLite `instr(lower(text_full), lower(?)) > 0` 做正确性基线；lower 仅承诺 ASCII。空查询返回最近历史，非空只匹配有正文的条目；不隐式检索窗口标题或摘要。统一按 `captured_at_ms DESC, id DESC` 排序，使用条目不改变复制时间和顺序；使用时间单独记录，不作为粘贴成功证据。
+
+查询最长 256 个 Unicode 字符；单页默认 50、最大 100 条，游标绑定查询与最后排序键；非法大小/游标返回输入错误，不加载全部载荷。全文预览按 id 获取，最多 2 MiB 文本，图片 BLOB 不经 JSON 全量传给前端。
+
+前端递增 request ID，只接受当前查询的返回；旧请求完成不覆盖新状态。查询由存储工作线程处理，不阻塞消息泵；超时提示并丢弃迟到结果，不等同于终止底层 SQL。
+
+FTS 后续仅作加速候选，不能改变语义；一至两字必须有正确回退。trigram 全文查询不匹配不足三个字符的子串，见 [SQLite 官方文档](https://sqlite.org/fts5.html#the_trigram_tokenizer)。1k/10k/100k 的线性扫描成本均需实测，不能预填毫秒级结论。
+
+## 5. 快捷面板与回贴（R1）
+
+### 5.1 目标与状态
+
+唤出前记录目标顶层 HWND、PID、线程 ID 与进程创建时间；子控件焦点能可靠识别时一并记录。HWND 复用、目标退出、权限识别失败、目标为片羽自身或管理员进程时，不允许自动回贴。托盘唤出而无法取得可信原目标时只提供复制。
+
+状态：`target_recorded → selecting → clipboard_written → restoring_focus → preflight → instruction_sent`；各步可终止为 `cancelled / failed / manual_only`。剪贴板写入成功与输入指令结果分字段表达，结果附 operation ID；不能仅返回一个 `Ok(())` 暗示粘贴完成。
+
+用户选择后先校验目标有效、未发生外部前台切换，再写回所选纯文本。面板隐藏前后跟踪前台变化：只允许片羽面板到原目标的预期恢复；观察到其他窗口、无法确认的变化或过期会话立即取消，不主动抢回用户新选择的窗口。每次打开面板生成新会话，关闭/取消后拒绝旧操作和迟到回调。
+
+### 5.2 激活与注入
+
+`SetForegroundWindow` 最多尝试一次，以实际前台身份满足条件为准，有界等待最多 300 ms；等待 Ctrl/Shift/Alt/Win 物理修饰键释放最多 500 ms。未满足即降级，不强发 KeyUp，不用固定 20 ms 假定激活完成，不修改系统前台锁或清空输入法 Composition，不默认 `AttachThreadInput` 强抢焦点。
+
+注入前再次校验目标身份、前台 HWND、权限、面板会话、物理按键与剪贴板 operation 标记/序列号。期间外部复制覆盖所选内容则取消，不能把新的外部内容粘贴到旧目标。已知存在未提交 IME 或无法可靠判断目标输入状态时，只复制并让用户手动粘贴；这一降级需真机验证，不能假装所有 IME 都可检查。
+
+一次 `SendInput` 发送 Ctrl Down、V Down、V Up、Ctrl Up，检查返回数量等于 4。不足或为零即报告失败，不自动重发整组；记录实际数量和系统错误，不把所有失败推断为 UIPI。部分注入可能留下合成修饰状态；仅在能区分本次合成按键且确认无用户物理按键参与时清理本次输入，否则提示用户检查按键，不能强制清空物理键状态。
+
+完整数量只显示“已发送粘贴指令”；目标控件实际消费由人工 A1 确认，不显示“已粘贴成功”。前台最终复核至系统分发仍有竞态，不能保证绝不误贴。[SetForegroundWindow](https://learn.microsoft.com/en-us/windows/win32/api/winuser/nf-winuser-setforegroundwindow)可能被拒绝；[SendInput](https://learn.microsoft.com/en-us/windows/win32/api/winuser/nf-winuser-sendinput)受 UIPI 与现有按键状态限制。
+
+### 5.3 用户结果与交互
+
+只有载荷及来源标记全部写入成功，且剪贴板仍是本操作内容时，才能提示“内容已复制，可手动粘贴”。写入失败或被外部复制替换分别提示，不恢复旧剪贴板。本轮写回后保留所选内容，不自动还原。
+
+基础键盘路径为上下选择、Enter 纯文本回贴、Esc 取消；中文组合输入过程中 Enter 只交给 IME，不触发回贴。首轮暂用 `Ctrl+Alt+V` 作为可改的原型入口，避免默认占用常见纯文本粘贴键 `Ctrl+Shift+V`。注册冲突明确报错，托盘仍可打开。不实现钩子抢键，不修改目标应用绑定。
+
+单击回贴、悬停选中、Ctrl+1–9 快选先后置至基础路径通过；如需沿用原型单击行为另确认。Esc 取消不写剪贴板；可确认目标仍有效且用户未切换时恢复焦点，否则只关闭。回贴取消不改变历史排序。
+
+## 6. 生命周期、IPC 与故障
+
+宿主为唯一状态权威，React 仅持有摘要、选中与显示状态。宿主 commands 只接收白名单操作：分页/搜索、取文本预览、选中回贴、暂停/恢复、排除规则、关闭面板；无任意文件、SQL、脚本或输入注入接口。Rust 验证类型、长度、范围、会话与操作 ID，不信任前端按钮的可用状态。
+
+只加载打包本地前端；生产禁远程导航，Tauri capabilities 按窗口最小授权，不开放通用 shell。事件只发条目 ID、计数、错误类别和监听状态，前端刷新取得摘要；不把全文广播给无关窗口。来源路径不用于执行。启动和前端版本同时升级，不支持混用旧 UI 与新宿主；命令及字段版本在建工程时固定并验证拒绝未知输入。
+
+退出顺序：禁新面板动作/快捷键 → 标记 stopping → 移除监听 → 取消并回收抓取进程 → 排空已接纳快照 → 提交并关闭库 → 销毁消息窗口与线程 → 退出宿主。排空截止 3 s，失败则保留进程暂停状态并显示未保存数量，由用户决定重试或放弃退出；不能默默丢队列并显示成功。所有资源由创建者清理，部分启动失败、重复退出调用均安全。
+
+同一用户及数据目录仅允许一个实例持有写库和监听，第二实例仅唤出第一实例；主实例未就绪或不可达则明确失败，不并发开第二写者。异常终止后已提交事务应保留，未提交/内存队列可能丢失，启动不宣称自动恢复未落盘事件。退出、崩溃、重启须由 A11 验证。
+
+## 7. 后续契约（R4/R5/R8）
+
+集合、模板、CLI/MCP 与同步均无本轮实现入口。后续 AI 访问只读用户明确开放的集合，普通历史默认不开放；逐次校验调用身份、开放状态、撤销、数量/字节上限和退出行为。stdio、工具注解和 `destructiveHint` 均不替代授权。响应内容可能再发送至模型服务，交付前需用户知情。
+
+MCP 要另选真实客户端、协议与 SDK 版本，实现协商、所有公开工具分支、输入与错误语义，再以真实客户端验收。旧的固定搜索结果、缺失回写分支不能作为 SDK 服务。模板参数、集合副本、同步新增与删除边界另定规格；本轮不借用这些后续设计扩大数据访问。
+
+R8 仅修订候选 F 的 `WH_KEYBOARD_LL`（13）与 `WH_GETMESSAGE` 具名常量。初次与重试分支都核对；未验证回调、超时、卸载或跨进程行为。本轮用正常全局快捷键注册，不引入全局键盘钩子或跨进程注入。[微软钩子定义](https://learn.microsoft.com/en-us/windows/win32/api/winuser/nf-winuser-setwindowshookexw)。
+
+## 8. 验收与性能（R7）
+
+任务依赖及 A1–A11 的完整场景以[首轮清单](pinfeather_first_iteration_tasks.md)为准。R1/R2/R6 任一阻塞不能验收首轮通过。
+
+| 层次 | 必须取得的证据 | 当前状态 |
+| --- | --- | --- |
+| 状态/规则测试 | 目标切换、迟到回调、部分注入、序列回绕、标记解析、暂停排队竞争、队列/字节边界、重试截止 | 未实现、未运行 |
+| SQLite 集成 | 正文短词、特殊字符、摘要外命中、排序分页、多格式同事务、故障回滚、级联删除、版本拒绝与重启 | 未实现、未运行 |
+| 宿主装配 | 真实监听/存储/IPC、权限配置、快捷键注册失败、抓取受阻与退出 | 未实现、未运行 |
+| 无头网页 | React 搜索与选择、请求乱序、IME composition、错误状态显示 | 未实现、未运行；旧 HTML 模拟不代表此项通过 |
+| 真实应用 | 浏览器、编辑器、终端及微软拼音配置；目标控件逐项核对，终端不粘贴可执行命令 | 已做只读 IME 观测，均 unknown；端到端用例未测 |
+| release 测量 | 冷启动 10 次、热唤出 50 次，1k/10k/100k 正文查询，宿主及所属 WebView2 内存 | 工程壳已构建；所列测量未做 |
+
+冷启动记录从新进程到快捷键可用、到首次内容可交互两个时点；另列重启系统后的首次启动。热唤出记录 p50/p95/最大值。搜索记录正确性、后端耗时与可见延迟，不混用 debug/dev 与 release。
+
+内存按启动稳定、隐藏空闲、显示、连续复制/搜索、反复开关分别采样，记录采样周期、峰值与稳定窗口，统计 Rust 宿主及归属应用的 WebView2 浏览器/渲染/GPU进程；临时抓取工作进程纳入采样。工作集与 Private Bytes 分列，PID 去重，说明共享页求和限制。不用主动裁剪工作集制造低数字。性能预算基于实测再定，旧 12–18 MB、低于 50 ms 均不作承诺。
+
+一次性样本、日志与原始数据位于首轮任务指定 archive；仓库保留合成夹具、命令、环境版本、结论和未测边界。不得将私人剪贴板内容写入公开记录。

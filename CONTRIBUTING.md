@@ -2,7 +2,7 @@
 
 English contributions are welcome. Please follow the same rules below.
 
-片羽还在规划阶段，没有代码。现在最有用的是对[交接文档](rumo_clipboard_handoff/docs/pinfeather_project_handoff.md)和[界面原型](design/prototype/README.md)的意见。
+片羽已有最小 Tauri/Rust/React 工程、共享契约、worker 传输与回收测试和只读目标探针，剪贴板业务尚未实现。当前范围和验收边界见[交接文档](rumo_clipboard_handoff/docs/pinfeather_project_handoff.md)，界面方向见[原型说明](design/prototype/README.md)。
 
 ## 提 issue
 
@@ -16,8 +16,31 @@ English contributions are welcome. Please follow the same rules below.
 
 - 大的改动请先开 issue 讨论，避免做了之后方向不合适。
 - 一个 PR 只做一件事。几件不相关的事混在一起的 PR，会请你拆开再提交。
-- 项目还没有代码，构建和测试命令确定后会补在这里。在那之前，请在 PR 里写明你实际运行了什么、手动测了什么。
+- 按下列命令检查受影响范围，并在 PR 里写明实际运行结果、手动验证和未覆盖项；编译或 fixture 测试不代表真实剪贴板链路通过。
 - 按 PR 模板填写改了什么、为什么改、怎么验证的，以及 AI 使用说明。
+
+## 构建与检查
+
+在 Windows 仓库根目录运行，先按锁文件准备项目依赖；工具链和依赖版本见[实施方案](rumo_clipboard_handoff/docs/pinfeather_implementation_plan.md#41-依赖选择)。不自动安装系统组件或修改执行策略。
+
+```powershell
+$env:PATH = (Join-Path $env:USERPROFILE '.cargo\bin') + ';' + $env:PATH
+$pinfeatherTestRun = Join-Path 'D:\Develop\Misc Workspace\archive\pinfeather-core-prototype\runs' ((Get-Date -Format 'yyyyMMdd-HHmmss') + '-' + [Guid]::NewGuid().ToString('N'))
+New-Item -ItemType Directory -Path $pinfeatherTestRun -Force | Out-Null
+$env:PINFEATHER_TEST_DATA_ROOT = $pinfeatherTestRun
+$env:TEMP = Join-Path $pinfeatherTestRun 'npm-temp'
+$env:TMP = $env:TEMP
+New-Item -ItemType Directory -Path $env:TEMP | Out-Null
+npm ci
+npm test
+npm run build
+cargo test --locked --manifest-path src-tauri/Cargo.toml --features test-fixtures --lib --bins --test worker_protocol -- --test-threads=1
+npm run tauri -- build --no-bundle
+```
+
+普通 release 不启用 `test-fixtures`。当前测试不操作系统剪贴板、焦点或输入；真实目标/IME 的人工步骤见[探针说明](rumo_clipboard_handoff/docs/pinfeather_w0_probe_guide.md)。`cargo fmt --manifest-path src-tauri/Cargo.toml -- --check` 和 `cargo clippy --manifest-path src-tauri/Cargo.toml --all-targets -- -D warnings` 需要相应组件；缺失时报告检查缺口，不写通过。
+
+开发启动使用 `tools/dev.ps1 -DataDir <本次隔离数据目录的绝对路径>`，默认暂停；目录必须与个人数据隔离。构建不制作或安装 MSI。
 
 ## 依赖
 
