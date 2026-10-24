@@ -87,6 +87,10 @@ body {
 .toolbar { display: flex; align-items: center; justify-content: space-between; flex-wrap: wrap; gap: 12px; }
 .toolbar h2 { margin: 0; font-size: 16px; }
 .toolbar p { margin: 0; }
+.search-bar { display: flex; flex-wrap: wrap; align-items: center; gap: var(--gap); }
+.search-label { font-size: 12px; font-weight: 500; color: var(--muted-foreground); }
+.search-input { flex: 1 1 220px; min-width: 0; padding: 7px 10px; border: 1px solid var(--input); border-radius: var(--radius-sm); background: var(--card); color: var(--foreground); font: inherit; }
+.search-input:focus-visible { outline: 2px solid var(--ring); outline-offset: 3px; }
 button { font: inherit; cursor: pointer; padding: 7px 12px; border: 1px solid var(--input); border-radius: var(--radius-sm); background: var(--card); color: var(--foreground); }
 button:hover:not(:disabled) { background: var(--accent); }
 button:disabled { cursor: default; opacity: .6; }
@@ -94,7 +98,10 @@ button:focus-visible, summary:focus-visible { outline: 2px solid var(--ring); ou
 .counts { display: flex; flex-wrap: wrap; gap: 20px; margin: 0; }
 .history-list { padding: 0; list-style: none; margin: 12px 0; border-top: 1px solid var(--border); }
 .history-list li { padding: 14px 4px; border-bottom: 1px solid var(--border); }
+.history-list li button { margin-top: 8px; }
 .preview { margin: 0 0 7px; white-space: pre-wrap; overflow-wrap: anywhere; }
+.preview-card { padding: 16px; border: 1px solid var(--border); border-radius: var(--radius); background: var(--card); display: flex; flex-direction: column; gap: 12px; }
+.preview-body { margin: 0; padding: 12px; border: 1px solid var(--border); border-radius: var(--radius-sm); background: var(--muted); color: var(--foreground); font: 12px/1.5 "Cascadia Code", "Cascadia Mono", Consolas, "Microsoft YaHei UI", monospace; white-space: pre-wrap; overflow-wrap: anywhere; word-break: break-word; max-height: 320px; overflow: auto; }
 .item-meta { display: flex; flex-wrap: wrap; gap: 4px 14px; color: var(--muted-foreground); margin: 0; font-size: 12px; }
 .data-path { overflow-wrap: anywhere; margin: 8px 0 0; color: var(--muted-foreground); }
 summary { cursor: pointer; color: var(--muted-foreground); }

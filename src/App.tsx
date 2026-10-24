@@ -2,12 +2,23 @@ import { useEffect, useMemo } from "react";
 import { useStore } from "zustand";
 import { nativeBridge, type DesktopBridge } from "./lib/desktop";
 import { createHistoryModel } from "./lib/history-store";
-import type { ClipSummary } from "./lib/ipc";
+import { normalizeQuery, type ClipSummary } from "./lib/ipc";
 
-function HistoryItem({ item }: { item: ClipSummary }) {
+function HistoryItem({ item, selected, disabled, onSelect }: { item: ClipSummary; selected: boolean; disabled: boolean; onSelect: (id: string) => void }) {
   const date = new Date(item.captured_at_ms);
   const validTime = Number.isFinite(date.getTime());
-  return <li><p className="preview">{item.preview || (item.kind === "png" ? "已保存 PNG 样本" : "已保存非文本内容")}</p><p className="item-meta"><time dateTime={validTime ? date.toISOString() : undefined}>{validTime ? date.toLocaleString() : "时间超出可显示范围"}</time><span>{item.format_names.join(" · ")}</span><span>{Math.ceil(item.payload_bytes / 1024)} KiB</span><span>{item.source_confidence === "unknown" ? "来源未知" : "来源已核对"}</span></p></li>;
+  return (
+    <li>
+      <p className="preview">{item.preview || (item.kind === "png" ? "已保存 PNG 样本" : "已保存非文本内容")}</p>
+      <p className="item-meta">
+        <time dateTime={validTime ? date.toISOString() : undefined}>{validTime ? date.toLocaleString() : "时间超出可显示范围"}</time>
+        <span>{item.format_names.join(" · ")}</span>
+        <span>{Math.ceil(item.payload_bytes / 1024)} KiB</span>
+        <span>{item.source_confidence === "unknown" ? "来源未知" : "来源已核对"}</span>
+      </p>
+      <button type="button" aria-pressed={selected} disabled={disabled} onClick={() => onSelect(item.id)}>查看正文</button>
+    </li>
+  );
 }
 
 export default function App({ bridge = nativeBridge }: { bridge?: DesktopBridge }) {
@@ -15,6 +26,8 @@ export default function App({ bridge = nativeBridge }: { bridge?: DesktopBridge 
   const view = useStore(model.store);
   useEffect(() => model.start(), [model]);
   const status = view.status;
+  const normalizedQuery = normalizeQuery(view.query);
+  const searching = normalizedQuery.ok && normalizedQuery.value.length > 0;
   const label = !status ? "正在读取状态" : ({ listening: "正在收录", paused: "已暂停", overloaded: "已停止新增：队列或历史容量已满", failed: "存储或抓取异常", stopping: "正在退出", startup: "正在启动" })[status.state];
   const retry = status?.services.storage === "failed" && status.queue.items > 0;
   return (
@@ -31,12 +44,37 @@ export default function App({ bridge = nativeBridge }: { bridge?: DesktopBridge 
         {view.error && <p className="error" role="alert">{view.error}</p>}
         <section aria-labelledby="history-heading" aria-busy={view.loading}>
           <div className="toolbar"><h2 id="history-heading">最近历史</h2><button disabled={view.loading} onClick={() => void model.refresh()}>刷新</button></div>
+          <div className="search-bar">
+            <label className="search-label" htmlFor="history-search">搜索历史正文</label>
+            <input id="history-search" className="search-input" type="search" value={view.query} onChange={event => model.setQuery(event.target.value)} autoComplete="off" />
+            <button type="button" onClick={() => model.setQuery("")}>清空搜索</button>
+          </div>
           {view.loading && <p role="status">正在读取历史…</p>}
-          {!view.loading && !view.error && status?.services.storage === "ready" && view.summaries.length === 0 && <p className="notice">暂无历史。开始收录后，在其他应用中复制内容。</p>}
-          <ol className="history-list">{view.summaries.map(item => <HistoryItem key={item.id} item={item} />)}</ol>
+          {!view.loading && !view.error && view.summaries.length === 0 && (searching
+            ? <p className="notice" role="status">没有匹配的历史正文。</p>
+            : status?.services.storage === "ready" && <p className="notice" role="status">暂无历史。开始收录后，在其他应用中复制内容。</p>)}
+          <ol className="history-list">{view.summaries.map(item => <HistoryItem key={item.id} item={item} selected={view.selectedId === item.id} disabled={view.loading} onSelect={id => model.selectClip(id)} />)}</ol>
           {view.cursor && <button disabled={view.loading} onClick={() => void model.more()}>加载更多</button>}
         </section>
-        <p className="notice">列表只显示已提交的历史；未保存队列单独计数。隐私标记、内部写回及应用排除会跳过收录。搜索、快捷面板与回贴尚未开放。</p>
+        <section className="preview-card" aria-labelledby="preview-heading">
+          <div className="toolbar">
+            <h2 id="preview-heading">正文预览</h2>
+            {view.selectedId && <button type="button" onClick={() => model.selectClip(null)}>关闭正文预览</button>}
+          </div>
+          {!view.selectedId ? <p className="notice">从列表中选择一条历史以预览正文。</p> : <>
+            {view.previewLoading && <p role="status">正在读取正文…</p>}
+            {view.previewError && <p className="error" role="alert">{view.previewError}</p>}
+            {view.previewText !== "" && <pre className="preview-body">{view.previewText}</pre>}
+            {view.previewError
+              ? <button type="button" onClick={() => (view.previewNextOffset === null ? model.retryPreview() : model.morePreview())}>{view.previewNextOffset === null ? "重试读取正文" : "重试继续读取正文"}</button>
+              : view.previewNextOffset !== null
+                ? <button type="button" disabled={view.previewLoading} onClick={() => model.morePreview()}>继续读取正文</button>
+                : !view.previewLoading && (view.previewText === ""
+                  ? <p className="notice">无可预览正文。</p>
+                  : <p className="notice" role="status">读取完毕。</p>)}
+          </>}
+        </section>
+        <p className="notice">列表只显示已提交的历史；未保存队列单独计数。隐私标记、内部写回及应用排除会跳过收录。已开放历史正文搜索；快捷面板与回贴尚未开放。</p>
       </>}
     </main>
   );

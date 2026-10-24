@@ -1,11 +1,12 @@
 import { invoke, isTauri } from "@tauri-apps/api/core";
 import { listen } from "@tauri-apps/api/event";
-import { parseStatusResult, parseListClipsResult, parseRevisionEvent, type StatusResult, type ListClipsResult, type ListCursor, type ContractResult } from "./ipc";
+import { parseStatusResult, parseListClipsRequest, parseListClipsResult, parseGetClipTextRequest, parseGetClipTextResult, parseRevisionEvent, type StatusResult, type ListClipsResult, type ListCursor, type GetClipTextResult, type ContractResult } from "./ipc";
 
 export interface DesktopBridge {
   available: boolean;
   status(): Promise<StatusResult>;
-  list(requestId: string, cursor: ListCursor | null): Promise<ListClipsResult>;
+  list(requestId: string, cursor: ListCursor | null, query?: string): Promise<ListClipsResult>;
+  getText(requestId: string, clipId: string, offset: number): Promise<GetClipTextResult>;
   setEnabled(enabled: boolean): Promise<StatusResult>;
   subscribe(name: "history_changed" | "status_changed", callback: () => void): Promise<() => void>;
 }
@@ -16,10 +17,17 @@ function checked<T>(result: ContractResult<T>): T {
 export const nativeBridge: DesktopBridge = {
   available: isTauri(),
   async status() { return checked(parseStatusResult(await invoke("get_status"))); },
-  async list(requestId, cursor) {
-    const result = checked(parseListClipsResult(await invoke("list_clips", { request: { request_id: requestId, query: "", limit: 50, cursor } })));
-    if (result.request_id !== requestId || result.normalized_query !== "") throw new Error("无法读取历史，请重试。");
+  async list(requestId, cursor, query = "") {
+    const request = checked(parseListClipsRequest({ request_id: requestId, query, limit: 50, cursor }));
+    const result = checked(parseListClipsResult(await invoke("list_clips", { request })));
+    if (result.request_id !== request.request_id || result.normalized_query !== request.query) throw new Error("无法读取历史，请重试。");
+    if (result.summaries.length > request.limit) throw new Error("无法读取历史，请重试。");
+    if (request.cursor && result.next_cursor && result.next_cursor.upper_id !== request.cursor.upper_id) throw new Error("无法读取历史，请重试。");
     return result;
+  },
+  async getText(requestId, clipId, offset) {
+    const request = checked(parseGetClipTextRequest({ request_id: requestId, clip_id: clipId, offset }));
+    return checked(parseGetClipTextResult(await invoke("get_clip_text", { request }), request));
   },
   async setEnabled(enabled) { return checked(parseStatusResult(await invoke("set_capture_enabled", { request: { enabled } }))); },
   async subscribe(name, callback) { return listen(name, event => { if (parseRevisionEvent(event.payload, "revision").ok) callback(); }); },
