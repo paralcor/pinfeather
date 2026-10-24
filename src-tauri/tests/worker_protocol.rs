@@ -36,6 +36,10 @@ fn assert_reaped(report: &ReapReport, label: &str) {
         "{label}: reader thread confirmed stopped"
     );
     assert!(report.writer_stopped, "{label}: writer thread confirmed stopped");
+    assert!(
+        report.stderr_stopped,
+        "{label}: stderr drain thread confirmed stopped"
+    );
     assert!(!report.cleanup_failed, "{label}: cleanup succeeded");
     assert!(
         report.cleanup_elapsed <= Duration::from_millis(2500),
@@ -189,6 +193,21 @@ fn late_response_never_accepted() {
     assert_eq!(err.code, ErrorCode::Timeout);
     assert_eq!(s.state(), WorkerState::Ready);
     assert_reaped(s.last_reap().expect("reap recorded"), "late");
+}
+
+#[test]
+fn stderr_flood_does_not_block_ack() {
+    let mut s = fixture("stderr-flood");
+    for id in ["ERR-1", "ERR-2"] {
+        let ack = s
+            .capture(&msg(id))
+            .expect("worker stderr output must not block the ACK");
+        assert_eq!(ack.capture_id, id);
+    }
+    assert_eq!(s.spawn_count(), 1);
+    assert_eq!(s.consecutive_timeouts(), 0);
+    s.close();
+    assert_reaped(s.last_reap().expect("reap recorded"), "stderr-flood");
 }
 
 #[test]

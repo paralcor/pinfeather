@@ -45,6 +45,7 @@ pub struct ReapReport {
     pub exited: bool,
     pub reader_stopped: bool,
     pub writer_stopped: bool,
+    pub stderr_stopped: bool,
     pub cleanup_failed: bool,
     pub cleanup_elapsed: Duration,
 }
@@ -69,6 +70,8 @@ struct WorkerProcess {
     identity: WorkerIdentity,
     reader: Option<JoinHandle<()>>,
     writer: Option<JoinHandle<()>>,
+    /// 持续排空 stderr，避免 worker 诊断写满管道后阻塞；宿主尚无日志设施，内容直接丢弃。
+    stderr: Option<JoinHandle<()>>,
     /// 有界帧队列：sync_channel(2)，正文各 ≤4 KiB。
     frames: Receiver<Vec<u8>>,
     /// 终止/失败通知：独立于帧队列容量，读者绝不阻塞在此发送上。
@@ -527,6 +530,7 @@ impl WorkerSupervisor {
             exited: true,
             reader_stopped: true,
             writer_stopped: true,
+            stderr_stopped: true,
             cleanup_failed: false,
             cleanup_elapsed: Duration::ZERO,
         };
@@ -534,9 +538,10 @@ impl WorkerSupervisor {
         if let Some(mut wp) = self.worker.take() {
             report.identity = Some(wp.identity);
             win::terminate(wp.process.as_raw_handle());
-            // writer 和 reader 共用同一个清理截止；循环取消覆盖取消早于 IO 的竞态。
+            // writer、reader 与 stderr 排空共用同一个清理截止；循环取消覆盖取消早于 IO 的竞态。
             report.writer_stopped = win::finish_thread(&mut wp.writer, deadline);
             report.reader_stopped = win::finish_thread(&mut wp.reader, deadline);
+            report.stderr_stopped = win::finish_thread(&mut wp.stderr, deadline);
             report.exited = win::wait_exit(wp.process.as_raw_handle(), deadline);
             for _ in 0..READER_QUEUE_FRAMES {
                 if wp.frames.try_recv().is_err() {
@@ -544,7 +549,10 @@ impl WorkerSupervisor {
                 }
                 self.late_frames_discarded += 1;
             }
-            report.cleanup_failed = !(report.exited && report.reader_stopped && report.writer_stopped);
+            report.cleanup_failed = !(report.exited
+                && report.reader_stopped
+                && report.writer_stopped
+                && report.stderr_stopped);
             if report.cleanup_failed {
                 // 仍有线程借用管道，不能关闭/复用句柄，也不能创建另一 worker。
                 self.worker = Some(wp);
@@ -837,6 +845,26 @@ mod win {
         }
     }
 
+    /// stderr 排空线程：固定缓冲读取后丢弃，EOF、断管或取消即退出。
+    fn drain_loop(handle: HANDLE) {
+        let mut sink = [0u8; 4096];
+        loop {
+            let mut read = 0u32;
+            let ok = unsafe {
+                ReadFile(
+                    handle,
+                    sink.as_mut_ptr(),
+                    sink.len() as u32,
+                    &mut read,
+                    std::ptr::null_mut(),
+                )
+            };
+            if ok == 0 || read == 0 {
+                break;
+            }
+        }
+    }
+
     fn quote_wide(arg: &[u16], out: &mut Vec<u16>) {
         out.push(b'"' as u16);
         out.extend_from_slice(arg);
@@ -990,6 +1018,8 @@ mod win {
         let reader = thread::spawn(move || {
             reader_loop(reader_handle as HANDLE, frame_tx, status_tx);
         });
+        let stderr_handle = stderr_read as usize;
+        let stderr = thread::spawn(move || drain_loop(stderr_handle as HANDLE));
 
         Ok(WorkerProcess {
             _job: OwnedHandle::from_raw_handle(job),
@@ -1000,6 +1030,7 @@ mod win {
             identity,
             reader: Some(reader),
             writer: None,
+            stderr: Some(stderr),
             frames: frame_rx,
             status: status_rx,
             reader_status: None,
