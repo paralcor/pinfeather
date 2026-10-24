@@ -1,6 +1,6 @@
 //! worker_fixture：E03a 受控故障 fixture（独立 bin，仅 test-fixtures 构建）。
 //! 只做合成管道 IO：不读剪贴板、不写数据库、不启动 WebView。
-//! stdout 只输出协议帧；stdin 读请求帧；stderr 静默。
+//! stdout 只输出协议帧；stdin 读请求帧；stderr 仅 stderr-flood 模式写诊断噪声，其余静默。
 
 use std::io::{Read, Write};
 use std::process;
@@ -186,6 +186,15 @@ fn main() {
                 let body = ack_body(&request, &request.capture_id, request.policy_epoch);
                 write_frame(body.as_bytes());
                 return;
+            }
+            "stderr-flood" => {
+                // 每次请求先写远超管道缓冲的 stderr 再回 ACK：宿主不排空则阻塞在此。
+                let mut err = std::io::stderr().lock();
+                let _ = err.write_all(&[b'x'; 128 * 1024]);
+                let _ = err.flush();
+                drop(err);
+                let body = ack_body(&request, &request.capture_id, request.policy_epoch);
+                write_frame(body.as_bytes());
             }
             "double-ack" => {
                 let body = ack_body(&request, &request.capture_id, request.policy_epoch);
