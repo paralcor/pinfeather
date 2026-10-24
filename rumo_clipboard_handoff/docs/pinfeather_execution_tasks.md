@@ -1,15 +1,16 @@
 # 片羽首轮执行任务卡
 
-版本：v1，更新于 2026-10-24。当前Codex唯一负责首轮实现及review，E00–E06已有相应自动证据，E07/T2基础链路已通过本机人工验收，下一包为E08。E03b三目标外部IMM方法不可用，IME子关卡needs_plan_revision；用户已批准独立W1/W2先行，W3自动回贴继续阻塞。不把W0或首轮标为完成。
+版本：v1，更新于2026-10-24。E07/T2基础收录、E08查询契约及E09/T3基础搜索/预览已验收，真实宿主结果见[验收计划6.2节](pinfeather_acceptance_plan.md#62-e09-本机搜索与正文预览)。当前Codex唯一负责协调、独立审查和验收，实现按明确任务交给Mimo。E03b三目标外部IMM方法不可用，IME子关卡needs_plan_revision；用户已批准独立W1/W2先行，W3自动回贴继续阻塞。不把W0、完整R6或首轮标为完成。
 
-总设计：[完整方案](pinfeather_implementation_plan.md)。结果判定：[验证与验收](pinfeather_acceptance_plan.md)。产品契约：[MVP](rumo_clipboard_mvp_specification.md)。当前已有最小工程壳、锁文件、E02 契约与 E03a fixture supervisor。F2/F3 修复后检查为 npm 28 项、Rust lib 34 项、worker 集成 37 项、typecheck 和正常 release 构建通过；本会话自审和复跑记录见 archive/runs/20261023-e03a-codex-owner-fixes，不冒称独立模型 review。真实剪贴板运行未验收。
+总设计：[完整方案](pinfeather_implementation_plan.md)。结果判定：[验证与验收](pinfeather_acceptance_plan.md)。产品契约：[MVP](rumo_clipboard_mvp_specification.md)。E03a历史F2/F3修复记录见archive/runs/20261023-e03a-codex-owner-fixes；当时的npm 28项、Rust lib 34项及worker 37项仅是该阶段计数。当前状态以本页顶部及验收结果为准，后续E07真实复制和E09真实宿主搜索已有独立证据。
 
 ## 1. 角色、权限与推进规则
 
-- 当前 Codex：按用户 2026-10-23 最新改派，唯一负责设计、实现、修复、验证、review 与状态维护；覆盖中途的“Mimo 写仓库、Codex 只 review”安排。
-- Mimo 与此前 Codex：停止写入及派工，仅保留历史报告/会话。Mimo 的 E05 交接只包含基线核对、阅读，以及 base64 直接依赖和 Memory feature 两处配置，未实现或运行 E05 测试；不恢复旧执行任务。
+- 当前Codex：唯一负责首轮协调、分工、独立审查、验收与状态维护；按用户明确授权执行提交或推送。
+- Mimo：仅按当前Codex明确分配的范围实现，完成后停写等待独立审查；Gemini负责明确分配的合成夹具任务。空闲会话不自行恢复旧任务，同一范围只允许一个写者。
+- 此前Codex：正式交接后停止派工和修改；历史报告保留实际执行身份，不改写为当前会话结果。
 - 用户：审阅重要方案变化、确认所需项目依赖安装、完成真实桌面验收、决定提交/发布及重要产品变化。常规包由新 Codex 按依赖持续推进。
-- 沿用新 Codex 会话实际审批/工具权限；不复制旧 Mimo 的 bypass 设置、不加跳过审批标志、不默认提权、不改系统策略、不读取凭据定位模型。可见模型身份不明确时只核实身份，不默默切模型。
+- 以实际会话权限及用户对具体agent、范围的明确授权为准；不默认提权、不改系统策略、不读取凭据定位模型。可见模型身份不明确时只核实身份，不默默切模型。
 - 一次一个工作包；每次只写当前任务涉及文件，依赖失败就停留当前任务。细节遇到不一致先记录，不自行扩大范围。
 - 未获用户明确授权时，不暂存、提交、推送、开 PR 或发 issue；不 stash、reset、clean、改证书、装系统组件或删除 copy。2026-10-23 用户已授权提交并推送已完成阶段至 origin/main；两份 copy、归档数据及未完成 E04 依赖快照排除在外。
 - 需要项目依赖安装时先列精确清单、用途、安装命令及peer/engine核查结果，按执行会话现有授权/审批处理；审阅本方案不等于执行了一次安装。

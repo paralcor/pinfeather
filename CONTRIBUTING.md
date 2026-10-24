@@ -2,7 +2,7 @@
 
 English contributions are welcome. Please follow the same rules below.
 
-片羽已有 Tauri/Rust/React 工程、共享契约、worker 传输与回收、只读目标探针及 schema v1 存储。E07 已在本机验证真实文本/链接复制、多格式保存、暂停、内部写回不自录及同目录重启；搜索与回贴尚未开放。启动和人工验收步骤见[运行指南](rumo_clipboard_handoff/docs/pinfeather_development.md)，范围与证据边界见[交接文档](rumo_clipboard_handoff/docs/pinfeather_project_handoff.md)，界面方向见[原型说明](design/prototype/README.md)。
+片羽已有 Tauri/Rust/React 工程、共享契约、worker 传输与回收、只读目标探针及 schema v1 存储。E07 已在本机验证真实文本/链接复制、多格式保存、暂停、内部写回不自录及同目录重启；E09 已验证真实桌面宿主中的正文搜索、按需预览和长文续读。快捷面板与回贴尚未开放，IME 关卡、完整兼容矩阵及性能验收仍待完成。启动和人工验收步骤见[运行指南](rumo_clipboard_handoff/docs/pinfeather_development.md)，范围与证据边界见[交接文档](rumo_clipboard_handoff/docs/pinfeather_project_handoff.md)，界面方向见[原型说明](design/prototype/README.md)。
 
 ## 提 issue
 
@@ -34,7 +34,7 @@ New-Item -ItemType Directory -Path $env:TEMP | Out-Null
 npm ci
 npm test
 npm run build
-cargo test --locked --manifest-path src-tauri/Cargo.toml --features test-fixtures --lib --bins --test worker_protocol --test store_contract --test capture_contract --test internal_write_contract --test list_recent_contract --test runtime_storage_contract --test capture_windows -- --test-threads=1
+cargo test --locked --manifest-path src-tauri/Cargo.toml --features test-fixtures --lib --bins --test worker_protocol --test store_contract --test capture_contract --test internal_write_contract --test list_recent_contract --test runtime_storage_contract --test search_contract --test e09_restart_search_contract --test capture_windows -- --test-threads=1
 cargo test --locked --manifest-path src-tauri/Cargo.toml --doc
 npm run tauri -- build --no-bundle
 ```
