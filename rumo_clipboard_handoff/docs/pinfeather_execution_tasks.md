@@ -1,6 +1,6 @@
 # 片羽首轮执行任务卡
 
-版本：v1，更新于 2026-10-24。当前Codex唯一负责首轮实现及review，E00–E06已有相应自动证据。E03b三目标外部IMM方法不可用，IME子关卡needs_plan_revision；用户已批准独立W1/W2先行，W3自动回贴继续阻塞。E07/T2待人工，不把W0或首轮标为完成。
+版本：v1，更新于 2026-10-24。当前Codex唯一负责首轮实现及review，E00–E06已有相应自动证据，E07/T2基础链路已通过本机人工验收，下一包为E08。E03b三目标外部IMM方法不可用，IME子关卡needs_plan_revision；用户已批准独立W1/W2先行，W3自动回贴继续阻塞。不把W0或首轮标为完成。
 
 总设计：[完整方案](pinfeather_implementation_plan.md)。结果判定：[验证与验收](pinfeather_acceptance_plan.md)。产品契约：[MVP](rumo_clipboard_mvp_specification.md)。当前已有最小工程壳、锁文件、E02 契约与 E03a fixture supervisor。F2/F3 修复后检查为 npm 28 项、Rust lib 34 项、worker 集成 37 项、typecheck 和正常 release 构建通过；本会话自审和复跑记录见 archive/runs/20261023-e03a-codex-owner-fixes，不冒称独立模型 review。真实剪贴板运行未验收。
 
@@ -262,4 +262,5 @@ $env:PATH = (Join-Path $env:USERPROFILE '.cargo\bin') + ';' + $env:PATH
 - rustfmt/clippy 缺组件，未安装，保留检查缺口。复制草稿、现有数据与外部发布边界不变。
 - E04 F2 WAL 补修已由当前 Codex 独立复审通过，见 archive/runs/20261023-e04-f2-wal-review。Mimo 的 red-store-contract.txt 实际为筛选1项、0过1败、17 filtered；全量18项通过来自green日志，不能把red描述成17项通过。
 - E05 当前由 Codex 实现：只读抓取规则、独立快照协议、同exe产品worker、消息线程及有界通知/快照队列。入口与自动/人工证据边界见方案5.2.2；执行记录在 archive/runs/20261023-e05-codex-owner。存储线程、内部写回登记、commit gate和列表IPC仍属E06，T2不勾选。
-- E06：Codex实现内部来源登记与多格式写入所有权、只保留标记/owner的禁止历史响应、独立存储线程、提交gate与历史预留、真实状态/最近列表IPC及React列表。SQL失败保留待提交快照，显式重试后才继续；普通浏览器提示需要桌面宿主。源码、自动检查、自审及错误实现反证见 archive/runs/20261024-e06-codex-owner。原生手动入口使用Cargo定位的产品exe，保持ignored；未运行真实剪贴板写入，E07/T2待人工。
+- E06：Codex实现内部来源登记与多格式写入所有权、只保留标记/owner的禁止历史响应、独立存储线程、提交gate与历史预留、真实状态/最近列表IPC及React列表。SQL失败保留待提交快照，显式重试后才继续；普通浏览器提示需要桌面宿主。源码、自动检查、自审及错误实现反证见 archive/runs/20261024-e06-codex-owner。原生手动入口使用Cargo定位的产品exe，常规测试仍保持ignored；E06交付时的人工待验已由下述E07补齐。
+- E07/T2：用户在本机完成文本/链接、同文外部再次复制、暂停、Edge文本＋HTML、PNG及正常关闭；Codex只读核对真实界面/SQLite并以同目录重启，两轮共5条历史、7份载荷的id/时间/哈希保持一致，PNG解码像素与源样本相同。用户另行手动启动capture_windows，实际1项通过、0 ignored；种子库仍1条，无自录。证据见 archive/runs/20261024-095055-e07-user-acceptance，运行步骤见[指南](pinfeather_development.md)。复用源码/产物校验一致的E06自动与release构建证据，本包仅补文档与人工记录；无实现改动。两次关闭出现Chrome_WidgetWin_0注销错误1412，未观察到数据损坏或自有进程残留，原因未知，留作E13复查。快速复制、占用、隐私标记等扩展真机矩阵未覆盖，R2/R3与首轮仍不整体勾选。
