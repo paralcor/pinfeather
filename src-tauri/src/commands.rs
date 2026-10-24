@@ -22,6 +22,10 @@ pub async fn list_clips(window:tauri::WebviewWindow,runtime:tauri::State<'_,Arc<
     authorize(&window)?;let request=parse_list_clips_request(&request)?;let runtime=runtime.inner().clone();tauri::async_runtime::spawn_blocking(move||runtime.list(request)).await.map_err(|_|join_failed())?
 }
 #[tauri::command]
+pub async fn get_clip_text(window:tauri::WebviewWindow,runtime:tauri::State<'_,Arc<HostRuntime>>,request:serde_json::Value)->ContractResult<GetClipTextResult>{
+    authorize(&window)?;let request=parse_get_clip_text_request(&request)?;let runtime=runtime.inner().clone();tauri::async_runtime::spawn_blocking(move||runtime.get_clip_text(request)).await.map_err(|_|join_failed())?
+}
+#[tauri::command]
 pub async fn set_capture_enabled(window:tauri::WebviewWindow,runtime:tauri::State<'_,Arc<HostRuntime>>,request:serde_json::Value)->ContractResult<StatusResult>{
     authorize(&window)?;let enabled=parse_set_capture_enabled_request(&request)?;let runtime=runtime.inner().clone();tauri::async_runtime::spawn_blocking(move||runtime.set_enabled(enabled)).await.map_err(|_|join_failed())?
 }

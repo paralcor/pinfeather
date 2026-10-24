@@ -9,5 +9,5 @@ fn recent_summaries_are_real_bounded_and_cursor_stable_without_payload_data(){
 }
 #[test]
 fn empty_database_and_nonempty_query_have_explicit_results(){
-    let store=Store::open_in_memory().unwrap();let empty=parse_list_clips_request(&json!({"request_id":"empty","query":""})).unwrap();assert!(store.list_recent(&empty).unwrap().summaries.is_empty());let search=parse_list_clips_request(&json!({"request_id":"search","query":"future"})).unwrap();assert_eq!(store.list_recent(&search).unwrap_err().code,ErrorCode::InvalidInput);
+    let store=Store::open_in_memory().unwrap();let empty=parse_list_clips_request(&json!({"request_id":"empty","query":""})).unwrap();assert!(store.list_recent(&empty).unwrap().summaries.is_empty());let search=parse_list_clips_request(&json!({"request_id":"search","query":"future"})).unwrap();let hits=store.list_recent(&search).unwrap();assert!(hits.summaries.is_empty());assert!(hits.next_cursor.is_none());assert_eq!(hits.normalized_query,"future");parse_list_clips_result(&serde_json::to_value(&hits).unwrap()).unwrap();let invalid=ListClipsRequest{request_id:"bad".into(),query:"future".into(),limit:0,cursor:None};assert_eq!(store.list_recent(&invalid).unwrap_err().code,ErrorCode::InvalidInput);
 }

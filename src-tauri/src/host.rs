@@ -21,6 +21,7 @@ enum Target {File(PathBuf),#[cfg(feature="test-fixtures")] Memory,#[cfg(feature=
 enum Query {
     List(ListClipsRequest,SyncSender<ContractResult<ListClipsResult>>),
     Copy(i64,Instant,SyncSender<ContractResult<u64>>),
+    Text(GetClipTextRequest,SyncSender<ContractResult<GetClipTextResult>>),
     #[cfg(feature="test-fixtures")]
     Fault(bool,SyncSender<ContractResult<()>>),
 }
@@ -184,6 +185,11 @@ impl HostRuntime {
         if self.shared.state.lock().unwrap_or_else(|e|e.into_inner()).stopping{return Err(ContractError::new(ErrorCode::Busy,"runtime is stopping"));}
         let(tx,rx)=mpsc::sync_channel(1);self.queries.try_send(Query::List(request,tx)).map_err(|_|ContractError::new(ErrorCode::Busy,"history query queue is full"))?;self.shared.wake.notify_all();rx.recv_timeout(Duration::from_secs(5)).map_err(|_|ContractError::new(ErrorCode::Timeout,"history query timed out"))?
     }
+    pub fn get_clip_text(&self,request:GetClipTextRequest)->ContractResult<GetClipTextResult>{
+        let request=parse_get_clip_text_request(&serde_json::json!({"request_id":request.request_id,"clip_id":request.clip_id,"offset":request.offset}))?;
+        if self.shared.state.lock().unwrap_or_else(|e|e.into_inner()).stopping{return Err(ContractError::new(ErrorCode::Busy,"runtime is stopping"));}
+        let(tx,rx)=mpsc::sync_channel(1);self.queries.try_send(Query::Text(request,tx)).map_err(|_|ContractError::new(ErrorCode::Busy,"history query queue is full"))?;self.shared.wake.notify_all();rx.recv_timeout(Duration::from_secs(5)).map_err(|_|ContractError::new(ErrorCode::Timeout,"history query timed out"))?
+    }
     /// Internal Rust entry only; the WebView has no arbitrary write command.
     pub fn write_stored_text(&self,clip_id:i64)->ContractResult<u64>{
         if clip_id<=0{return Err(ContractError::invalid_input("invalid clip id"));}
@@ -193,6 +199,8 @@ impl HostRuntime {
     pub fn set_exclusions(&self,paths:Vec<String>)->ContractResult<StatusResult>{let paths=parse_set_excluded_apps_request(&serde_json::json!({"paths":paths}))?;let gate=self.shared.gate.lock().unwrap_or_else(|e|e.into_inner());let mut s=self.shared.state.lock().unwrap_or_else(|e|e.into_inner());if s.stopping{return Err(ContractError::new(ErrorCode::Busy,"runtime is stopping"));}s.set_exclusions(paths);drop(s);drop(gate);self.shared.notify_status();Ok(self.status())}
     #[cfg(feature="test-fixtures")]
     pub fn queue_test_query(&self,request:ListClipsRequest)->ContractResult<Receiver<ContractResult<ListClipsResult>>>{let(tx,rx)=mpsc::sync_channel(1);self.queries.try_send(Query::List(request,tx)).map_err(|_|ContractError::new(ErrorCode::Busy,"history query queue is full"))?;self.shared.wake.notify_all();Ok(rx)}
+    #[cfg(feature="test-fixtures")]
+    pub fn queue_test_text_query(&self,request:GetClipTextRequest)->ContractResult<Receiver<ContractResult<GetClipTextResult>>>{let(tx,rx)=mpsc::sync_channel(1);self.queries.try_send(Query::Text(request,tx)).map_err(|_|ContractError::new(ErrorCode::Busy,"history query queue is full"))?;self.shared.wake.notify_all();Ok(rx)}
     #[cfg(feature="test-fixtures")]
     pub fn expired_test_copy(&self,id:i64)->ContractResult<u64>{let(tx,rx)=mpsc::sync_channel(1);self.queries.try_send(Query::Copy(id,Instant::now()-Duration::from_secs(1),tx)).map_err(|_|unavailable())?;self.shared.wake.notify_all();rx.recv_timeout(Duration::from_secs(2)).map_err(|_|unavailable())?}
     #[cfg(feature="test-fixtures")]
@@ -222,6 +230,7 @@ fn storage_loop(shared:&SharedRuntime,store:&mut Option<Store>,queries:Receiver<
     loop {
         for _ in 0..4 {match queries.try_recv(){
             Ok(Query::List(request,reply))=>{let _=reply.send(store.as_ref().ok_or_else(unavailable).and_then(|s|s.list_recent(&request)));}
+            Ok(Query::Text(request,reply))=>{let _=reply.send(store.as_ref().ok_or_else(unavailable).and_then(|s|s.get_clip_text(&request)));}
             Ok(Query::Copy(id,deadline,reply))=>{
                 let result=(||{
                     if Instant::now()>=deadline{return Err(ContractError::new(ErrorCode::Timeout,"clipboard write expired"));}

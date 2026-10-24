@@ -72,7 +72,7 @@ pub fn run(args: HostArgs) {
     let webview_dir = prepared.webview_dir;
 
     tauri::Builder::default()
-        .invoke_handler(tauri::generate_handler![commands::get_status,commands::list_clips,commands::set_capture_enabled])
+        .invoke_handler(tauri::generate_handler![commands::get_status,commands::list_clips,commands::get_clip_text,commands::set_capture_enabled])
         .setup(move |app| {
             let handle=app.handle().clone();
             let runtime=std::sync::Arc::new(host::HostRuntime::start(data_dir.clone(),std::sync::Arc::new(move|name,revision|{let _=handle.emit(name,serde_json::json!({"revision":revision.to_string()}));})).map_err(|e|std::io::Error::other(e.message))?);

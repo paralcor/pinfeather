@@ -392,19 +392,19 @@ impl Store {
     pub fn list_recent(&self,request:&crate::contracts::ListClipsRequest)->ContractResult<crate::contracts::ListClipsResult>{
         use crate::contracts::{parse_list_clips_request,parse_list_clips_result,ClipSummary,ListCursor,ListClipsResult,positive_id_as_i64,MAX_PAGE_JSON_BYTES};
         let request=parse_list_clips_request(&serde_json::json!({"request_id":request.request_id,"query":request.query,"limit":request.limit,"cursor":request.cursor}))?;
-        if !request.query.is_empty(){return Err(ContractError::invalid_input("query must be empty"));}
         let tx=self.conn.unchecked_transaction().map_err(sql_error)?;
         let upper=if let Some(c)=&request.cursor{positive_id_as_i64(&c.upper_id)}else{tx.query_row("SELECT coalesce(max(id),0) FROM clips",[],|r|r.get(0)).map_err(sql_error)?};
         let time=request.cursor.as_ref().map(|c|c.last_captured_at_ms);
         let last=request.cursor.as_ref().map(|c|positive_id_as_i64(&c.last_id)).unwrap_or(0);
-        let mut result=ListClipsResult{request_id:request.request_id,normalized_query:String::new(),summaries:vec![],next_cursor:None};
+        let mut result=ListClipsResult{request_id:request.request_id,normalized_query:request.query.clone(),summaries:vec![],next_cursor:None};
         let mut statement=tx.prepare("SELECT c.id,c.captured_at_ms,c.preview,c.source_process,c.source_confidence,c.omitted_formats_json,c.payload_bytes,
             (SELECT group_concat(format_name,char(31)) FROM (SELECT format_name FROM payloads WHERE clip_id=c.id ORDER BY format_name)),
             c.text_full IS NOT NULL,
             CASE WHEN lower(substr(c.text_full,1,7))='http://' OR lower(substr(c.text_full,1,8))='https://' THEN c.text_full ELSE NULL END
             FROM clips c WHERE c.id<=?1 AND (?2 IS NULL OR c.captured_at_ms<?2 OR (c.captured_at_ms=?2 AND c.id<?3))
+            AND (?5='' OR instr(lower(c.text_full),lower(?5))>0)
             ORDER BY c.captured_at_ms DESC,c.id DESC LIMIT ?4").map_err(sql_error)?;
-        let mut rows=statement.query(params![upper,time,last,request.limit+1]).map_err(sql_error)?;
+        let mut rows=statement.query(params![upper,time,last,request.limit+1,request.query]).map_err(sql_error)?;
         while let Some(row)=rows.next().map_err(sql_error)? {
             if result.summaries.len()>=request.limit as usize {break;}
             let id:i64=row.get(0).map_err(sql_error)?;let at:i64=row.get(1).map_err(sql_error)?;
@@ -419,7 +419,7 @@ impl Store {
             let summary=ClipSummary{id:id.to_string(),captured_at_ms:at,kind:if link{"link"}else if !has_text&&formats.iter().any(|n|n=="PNG"){"png"}else{"text"}.into(),preview:row.get(2).map_err(sql_error)?,format_names:formats,omitted_format_count:omitted.len() as u64,payload_bytes:u64::try_from(bytes).map_err(|_|unavailable())?,source_process:row.get(3).map_err(sql_error)?,source_confidence:row.get(4).map_err(sql_error)?};
             result.summaries.push(summary);
             let current=result.summaries.last().unwrap();
-            result.next_cursor=Some(ListCursor{normalized_query:String::new(),upper_id:upper.to_string(),last_captured_at_ms:current.captured_at_ms,last_id:current.id.clone()});
+            result.next_cursor=Some(ListCursor{normalized_query:request.query.clone(),upper_id:upper.to_string(),last_captured_at_ms:current.captured_at_ms,last_id:current.id.clone()});
             if serde_json::to_vec(&result).map_err(|_|unavailable())?.len()>MAX_PAGE_JSON_BYTES {
                 result.summaries.pop();
                 if result.summaries.is_empty(){return Err(unavailable());}
@@ -428,8 +428,8 @@ impl Store {
         }
         // Probe one row beyond the last emitted key, including budget truncation.
         result.next_cursor=if let Some(last)=result.summaries.last(){
-            let more:bool=tx.query_row("SELECT EXISTS(SELECT 1 FROM clips WHERE id<=?1 AND (captured_at_ms<?2 OR (captured_at_ms=?2 AND id<?3)))",params![upper,last.captured_at_ms,positive_id_as_i64(&last.id)],|r|r.get(0)).map_err(sql_error)?;
-            if more{Some(ListCursor{normalized_query:String::new(),upper_id:upper.to_string(),last_captured_at_ms:last.captured_at_ms,last_id:last.id.clone()})}else{None}
+            let more:bool=tx.query_row("SELECT EXISTS(SELECT 1 FROM clips WHERE id<=?1 AND (captured_at_ms<?2 OR (captured_at_ms=?2 AND id<?3)) AND (?4='' OR instr(lower(text_full),lower(?4))>0))",params![upper,last.captured_at_ms,positive_id_as_i64(&last.id),request.query],|r|r.get(0)).map_err(sql_error)?;
+            if more{Some(ListCursor{normalized_query:request.query.clone(),upper_id:upper.to_string(),last_captured_at_ms:last.captured_at_ms,last_id:last.id.clone()})}else{None}
         }else{None};
         drop(rows);drop(statement);tx.commit().map_err(sql_error)?;
         parse_list_clips_result(&serde_json::to_value(&result).map_err(|_|unavailable())?).map_err(|_|unavailable())
@@ -457,6 +457,30 @@ impl Store {
         };
         tx.commit().map_err(sql_error)?;
         Ok(Some(StoredClip { clip_id, snapshot: Snapshot { capture_id,captured_at_ms,source_process,source_confidence,omitted_formats,payloads },text_full,preview,payload_bytes }))
+    }
+
+    /// E08.2 bounded UTF-8 text frames over text_full; raw payloads never cross
+    /// this boundary.
+    pub fn get_clip_text(&self, request: &crate::contracts::GetClipTextRequest) -> ContractResult<crate::contracts::GetClipTextResult> {
+        use crate::contracts::{parse_get_clip_text_request,parse_get_clip_text_result,GetClipTextResult,MAX_TEXT_FRAME_BYTES,positive_id_as_i64};
+        let request=parse_get_clip_text_request(&serde_json::json!({"request_id":request.request_id,"clip_id":request.clip_id,"offset":request.offset}))?;
+        let stored:Option<Option<String>>=self.conn.query_row("SELECT text_full FROM clips WHERE id=?1",[positive_id_as_i64(&request.clip_id)],|r|r.get(0)).optional().map_err(sql_error)?;
+        let Some(stored)=stored else{return Err(ContractError::new(ErrorCode::NotFound,"clip text not found"));};
+        // A present row without Unicode text is zero-length, never derived from HTML/PNG.
+        let full=stored.unwrap_or_default();
+        if request.offset>full.len() as i64||!full.is_char_boundary(request.offset as usize){
+            return Err(ContractError::invalid_input("clip text offset is invalid"));
+        }
+        let start=request.offset as usize;
+        let mut end=usize::min(start.saturating_add(MAX_TEXT_FRAME_BYTES),full.len());
+        while !full.is_char_boundary(end){end-=1;}
+        let result=GetClipTextResult{
+            request_id:request.request_id.clone(),
+            clip_id:request.clip_id.clone(),
+            text:full[start..end].to_string(),
+            next_offset:if end==full.len(){None}else{Some(i64::try_from(end).map_err(|_|unavailable())?)},
+        };
+        parse_get_clip_text_result(&serde_json::to_value(&result).map_err(|_|unavailable())?,&request).map_err(|_|unavailable())
     }
 
     /// Called only for explicitly selected test records in the first iteration.
