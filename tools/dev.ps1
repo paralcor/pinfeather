@@ -12,9 +12,13 @@ $ErrorActionPreference = 'Stop'
 
 # 1) 在规范化、建目录、启动 npm 之前，校验原始 DataDir 为完整绝对路径。
 #    完整绝对路径 = 盘符+\（如 C:\data）或 UNC（\\server\share）。拒绝空值、相对路径、
-#    驱动相对（C:foo）、根相对（\foo）。
+#    驱动相对（C:foo）、根相对（\foo），以及宿主同样拒绝的设备命名空间（\\?\、\\.\）。
 if ([string]::IsNullOrWhiteSpace($DataDir)) {
     Write-Host 'DataDir 不能为空。用法：powershell -File tools\dev.ps1 -DataDir <完整绝对路径>'
+    exit 1
+}
+if ($DataDir -match '^[\\/]{2}[?.][\\/]') {
+    Write-Host "DataDir 不能使用设备命名空间路径（\\?\、\\.\）：$DataDir"
     exit 1
 }
 if (-not ($DataDir -match '^[A-Za-z]:[\\/]' -or $DataDir -match '^\\\\')) {
