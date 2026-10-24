@@ -222,6 +222,32 @@ fn crash_reaped() {
 }
 
 #[test]
+fn idle_worker_exit_rebuilds_before_next_capture() {
+    // delay-0：ACK 后干净退出；crash-after-ack：ACK 后崩溃。两者都在空闲期失去 worker。
+    for mode in ["delay-0", "crash-after-ack"] {
+        let mut s = fixture(mode);
+        s.capture(&msg("IDLE-1")).expect("first ACK");
+        assert!(
+            s.wait_for_test_reader_stop(Duration::from_secs(2)),
+            "{mode}: worker exited while idle"
+        );
+        let ack = s
+            .capture(&msg("IDLE-2"))
+            .unwrap_or_else(|e| panic!("{mode}: idle exit must not lose the next capture: {e:?}"));
+        assert_eq!(ack.capture_id, "IDLE-2");
+        assert_eq!(s.spawn_count(), 2, "{mode}: exactly one rebuild");
+        assert_eq!(
+            s.consecutive_timeouts(),
+            0,
+            "{mode}: idle exit is not a timeout"
+        );
+        assert_eq!(s.state(), WorkerState::Ready);
+        s.close();
+        assert_reaped(s.last_reap().expect("reap recorded"), mode);
+    }
+}
+
+#[test]
 fn late_response_never_accepted() {
     let mut s = fixture("late");
     let started = Instant::now();

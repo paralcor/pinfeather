@@ -257,7 +257,17 @@ impl WorkerSupervisor {
         self.ensure_worker()?;
 
         // 发送前排空迟到帧（有界）；不得吞掉已停止事实。
-        if let Some(status) = self.drain_stale() {
+        let mut stale = self.drain_stale();
+        if matches!(stale, Some(None)) {
+            // 空闲期 worker 已退出（干净 EOF 或崩溃断管），本次请求尚未发出：
+            // 确认回收后重建一次再发送，不丢这次抓取；空闲期协议错误仍按失败处理。
+            self.state = WorkerState::Reaping;
+            self.reap();
+            self.state = self.state_after_reap();
+            self.ensure_worker()?;
+            stale = self.drain_stale();
+        }
+        if let Some(status) = stale {
             return Err(self.fail_request(request, stopped_error(status), false));
         }
 
