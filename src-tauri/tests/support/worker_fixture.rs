@@ -163,6 +163,12 @@ fn main() {
             "crash" => {
                 process::abort();
             }
+            "crash-after-ack" => {
+                // 正常回 ACK 后在空闲期崩溃：下一次请求到来前 worker 已不存在。
+                let body = ack_body(&request, &request.capture_id, request.policy_epoch);
+                write_frame(body.as_bytes());
+                process::abort();
+            }
             "late" => {
                 thread::sleep(Duration::from_millis(3000));
                 let body = ack_body(&request, &request.capture_id, request.policy_epoch);
