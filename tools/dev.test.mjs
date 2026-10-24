@@ -122,6 +122,20 @@ describe.skipIf(Boolean(unavailable))(`Windows development launcher (${unavailab
     expectInvocation(launch(dataDir), dataDir);
   });
 
+  it("passes an explicit directory with a trailing separator for the host to normalize", () => {
+    const dataDir = join(testRoot, "trailing-separator") + "\\";
+    expectInvocation(launch(dataDir), dataDir);
+  });
+
+  it.each(["\\\\?\\", "\\\\.\\"])("rejects device namespace prefix %j before creating data", (prefix) => {
+    const target = join(testRoot, "device-namespace");
+    const child = launch(prefix + target);
+    expect(child.status, child.stdout + child.stderr).toBe(1);
+    expect(child.invocation).toBeNull();
+    expect(child.stdout).toContain("DataDir");
+    expect(existsSync(target)).toBe(false);
+  });
+
   it.each(["", "relative-data", "C:relative-data", "\\root-relative"])(
     "rejects invalid directory %j before invoking npm",
     (dataDir) => {

@@ -32,10 +32,7 @@ pub fn parse_args<I: IntoIterator<Item = String>>(args: I) -> Result<LaunchMode,
                 if value.is_empty() {
                     return Err(String::from("--data-dir 路径参数为空"));
                 }
-                if !Path::new(value).is_absolute() {
-                    return Err(format!("--data-dir 必须是绝对路径，收到：{value}"));
-                }
-                data_dir = Some(PathBuf::from(value));
+                data_dir = Some(normalize_data_dir(value)?);
                 index += 2;
             }
             "--start-paused" => {
@@ -52,6 +49,25 @@ pub fn parse_args<I: IntoIterator<Item = String>>(args: I) -> Result<LaunchMode,
         data_dir,
         start_paused,
     }))
+}
+
+/// 按状态契约的 data_dir 规则规范化；末尾分隔符先去掉（盘根除外），其余不合规一律拒绝。
+fn normalize_data_dir(value: &str) -> Result<PathBuf, String> {
+    let trimmed = value.trim_end_matches(['\\', '/']);
+    let is_drive = trimmed.len() == 2 && trimmed.ends_with(':');
+    let candidate = if trimmed.is_empty() || is_drive {
+        value
+    } else {
+        trimmed
+    };
+    crate::contracts::normalize_windows_dir_path(candidate)
+        .map(PathBuf::from)
+        .map_err(|e| {
+            format!(
+                "--data-dir 必须是规范的 Windows 完整目录路径（{}），收到：{value}",
+                e.message
+            )
+        })
 }
 
 pub struct PreparedDataDir {
@@ -75,4 +91,51 @@ pub fn prepare_data_dir(data_dir: &Path) -> Result<PreparedDataDir, String> {
         data_dir: data_dir.to_path_buf(),
         webview_dir,
     })
+}
+
+#[cfg(test)]
+mod tests {
+    use super::{parse_args, LaunchMode};
+    use std::path::PathBuf;
+
+    fn data_dir(value: &str) -> Result<PathBuf, String> {
+        match parse_args(["--data-dir", value].map(String::from))? {
+            LaunchMode::Host(args) => Ok(args.data_dir),
+            LaunchMode::Worker => Err(String::from("unexpected worker mode")),
+        }
+    }
+
+    #[test]
+    fn data_dir_is_stored_in_contract_canonical_form() {
+        for (input, expected) in [
+            (r"D:\pf\run1\", r"D:\pf\run1"),
+            ("d:/pf/run1/", r"D:\pf\run1"),
+            (r"D:\pf\old\..\run1", r"D:\pf\run1"),
+            (r"D:\", r"D:\"),
+            (r"\\server\share\", r"\\server\share\"),
+            (r"\\server\share\pf", r"\\server\share\pf"),
+        ] {
+            // 按字符串比较：PathBuf 相等忽略末尾分隔符，而状态契约不忽略。
+            assert_eq!(
+                data_dir(input).unwrap().to_str(),
+                Some(expected),
+                "input {input}"
+            );
+        }
+    }
+
+    #[test]
+    fn data_dir_rejects_paths_the_status_contract_rejects() {
+        for input in [
+            r"\\?\D:\pf",
+            r"\\.\pipe\pf",
+            "C:pf",
+            r"\pf",
+            r"pf\run1",
+            r"D:\..\pf",
+            r"D:\pf\a*b",
+        ] {
+            assert!(data_dir(input).is_err(), "must reject {input}");
+        }
+    }
 }
