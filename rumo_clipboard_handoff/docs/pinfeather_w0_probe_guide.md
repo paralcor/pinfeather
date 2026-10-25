@@ -69,3 +69,7 @@ label 描述计划场景，不能替代用户实际操作。`process_machine=0` 
 当前外部 IMM 链路不能满足自动回贴预检，不把 unknown 当作未组合。微软明确[输入上下文的创建线程限制](https://learn.microsoft.com/en-us/windows/win32/intl/developing-ime-aware-multiple-thread-applications)；本次没有证据证明所有替代 provider 都不成立。用户已选择先做 W1/W2、W3 仍阻塞，只调整依赖顺序，未知 IME 禁自动回贴与首轮最终验收标准不变。
 
 管理员/权限未知/关闭目标及另列的人工目视/点击仍未覆盖。所有真实候选输入由用户完成；助手没有输入注入、强切前台或读写剪贴板。rustfmt/clippy 缺组件，仍为检查缺口，未安装。
+
+## UIA 研究进展（2026-10-25）
+
+独立诊断器在 Edge＋微软拼音上取得空白/组词对照，但用户确认提交后两个组合范围对象仍存在，不能把对象存在性直接用作当前组词标志。该研究未接入产品，也不解除 W0/W3；结果、冻结证据和下一步版本/缓存定位见[IME UIA 研究结果](pinfeather_ime_uia_findings.md)。新的真实采样必须重新取得准备确认、固定目标身份，保留 8 秒手动准备与 5 秒单次监督；旧 PID、旧准备和历史焦点 true 均不可复用。

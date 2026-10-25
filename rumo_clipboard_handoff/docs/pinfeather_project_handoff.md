@@ -1,6 +1,6 @@
 # 片羽 Pinfeather：项目定位、规划与技术评审交接
 
-更新日期：2026-10-24（UTC+08:00）
+更新日期：2026-10-25（UTC+08:00）
 
 状态：MVP 基线已确认，宿主已有抓取/监听、schema v1 存储线程、暂停/收录、历史正文搜索、稳定分页及按需分帧预览。E07/T2基础收录和E09/T3基础搜索/预览已通过本机人工验收，结果见[验收计划6.2节](pinfeather_acceptance_plan.md#62-e09-本机搜索与正文预览)，顶层基础进度4/7。当前Codex唯一负责协调、独立审查和验收；实现按明确任务交给Mimo，同一范围仅一个写者。历史报告保留原执行身份。E03a的F1–F4、E04的F1/F2已关闭；E03b/W0的IME、T4–T6、扩展真机矩阵与性能仍待验收，W3回贴继续阻塞。两份issue草稿保留不发布。
 
@@ -39,6 +39,8 @@ MVP 规格已修订，当前重点是验证并实现关键技术路径。原有 
 E03b 最新运行入口见[W0 只读探针说明](pinfeather_w0_probe_guide.md)。Rust lib 38、worker 37、诊断 CLI 2 项通过，普通 release 已完成 6 次相同单次 WM_CLOSE 退出复验（无 UIA/只读 UIA 各 3 次），后者核对隔离目录与暂停状态；未复现旧滞留，根因仍未知。三目标真实 IME 结果与用户已批准的推进例外见下段，W0 不标整体通过。
 
 后续真实 IME 结果：用户已完成并确认 Edge/VS Code/Terminal 的候选输入，529 条稳定/普通权限目标记录均不能读取外部 IMM context，IME 子关卡 needs_plan_revision。用户选择独立 W1/W2 先行、W3 继续阻塞；W0 整体与首轮不标通过，未知 IME 禁自动回贴规则保持。证据及提案见 archive/runs/20261023-180555-ime-live。
+
+2026-10-25 UIA 研究在 Edge＋微软拼音取得空白范围为空、受控未提交候选范围对象存在的真实对照；用户确认按空格提交后，对象仍然存在，提交恢复预期未通过。范围对象存在性尚不能直接分类当前 IME 状态，W0/W3 不解除；基础收录与搜索不受影响。离线审查、真实证据、上游缓存假设及版本边界见[IME UIA 研究结果](pinfeather_ime_uia_findings.md)。
 
 E04 已有独立 schema v1 存储模块及真实 SQLite 测试：同库多格式事务、capture 幂等、容量、级联删除、正常重开及已提交 WAL 读取。未知/高版本/模式漂移被拒绝且保留原文件；中途/提交失败整体回滚。Codex 复审定位 F1/P1（缺主库/零字节主库侧车被吞删重建）与 F2/P2（非空未知空 schema 库被接管初始化；其 WAL 分支拒绝晚于 RW 打开、关闭时 checkpoint 改写现场），均源自原交付 store.rs；Mimo 失败回归先行后修复：侧车守卫 + InitPermit（写锁下新鲜长度重核）+ 只读预检确认 Current 才进 RW。容量/身份契约未改。补测各格式尺寸上界±1及 capture_id/时间戳上界，3 项错误实现反证被捕获。Mimo 实跑库 43、存储集成 18、worker 37、探针 CLI 2、doc 1 项通过。Codex 实现证据见 archive/runs/20261023-192601-e04-store-resume，Mimo 复核见 archive/runs/20261023-195513-mimo-implementation-transfer/e04-takeover/，F1/F2 修复见同 transfer 目录 e04-f1-f2-fix/ 与 e04-f2-wal-fix/。E04交付时未装配宿主业务；后续装配和T2基础验收见E06/E07，R3完整矩阵仍待验收。
 
