@@ -55,6 +55,75 @@ struct WorkerConfig {
     exe: PathBuf,
     args: Vec<String>,
     snapshot: bool,
+    #[cfg(all(test, feature = "test-fixtures"))]
+    mock_spawn: Option<std::sync::Arc<r3_spawn_tests::Effects>>,
+}
+
+impl WorkerConfig {
+    fn cleanup_pending(&self) -> bool {
+        #[cfg(all(test, feature = "test-fixtures"))]
+        if let Some(effects) = &self.mock_spawn {
+            return effects.pending.load(std::sync::atomic::Ordering::Acquire) != 0;
+        }
+        PENDING_SPAWN_CLEANUPS.load(std::sync::atomic::Ordering::Acquire) != 0
+            || !FAILED_WORKERS.lock().unwrap_or_else(|e| e.into_inner()).is_empty()
+    }
+}
+
+// Failed startup must retain its process and any borrowed IO handles. This guard
+// follows that owner, including retained Drop resources, and blocks replacement.
+static PENDING_SPAWN_CLEANUPS: std::sync::atomic::AtomicUsize = std::sync::atomic::AtomicUsize::new(0);
+struct SpawnCleanupGuard {
+    #[cfg(all(test, feature = "test-fixtures"))]
+    mock: Option<std::sync::Arc<r3_spawn_tests::Effects>>,
+}
+impl SpawnCleanupGuard {
+    fn new(process: &WorkerHandle) -> Self {
+        #[cfg(all(test, feature = "test-fixtures"))]
+        if let WorkerHandle::Mock(handle) = process {
+            handle.effects.pending.fetch_add(1, std::sync::atomic::Ordering::AcqRel);
+            return Self { mock: Some(handle.effects.clone()) };
+        }
+        #[cfg(not(all(test, feature = "test-fixtures")))]
+        let _ = process;
+        PENDING_SPAWN_CLEANUPS.fetch_add(1, std::sync::atomic::Ordering::AcqRel);
+        Self { #[cfg(all(test, feature = "test-fixtures"))] mock: None }
+    }
+}
+impl Drop for SpawnCleanupGuard {
+    fn drop(&mut self) {
+        #[cfg(all(test, feature = "test-fixtures"))]
+        if let Some(effects) = &self.mock {
+            effects.pending.fetch_sub(1, std::sync::atomic::Ordering::AcqRel);
+            return;
+        }
+        PENDING_SPAWN_CLEANUPS.fetch_sub(1, std::sync::atomic::Ordering::AcqRel);
+    }
+}
+
+struct SpawnFailure {
+    error: ContractError,
+    worker: Option<WorkerProcess>,
+}
+impl From<ContractError> for SpawnFailure {
+    fn from(error: ContractError) -> Self { Self { error, worker: None } }
+}
+
+// Test handles never acquire or expose a fabricated native handle.
+enum WorkerHandle {
+    Native(OwnedHandle),
+    #[cfg(all(test, feature = "test-fixtures"))]
+    Mock(r3_spawn_tests::MockHandle),
+}
+
+impl AsRawHandle for WorkerHandle {
+    fn as_raw_handle(&self) -> std::os::windows::io::RawHandle {
+        match self {
+            Self::Native(handle) => handle.as_raw_handle(),
+            #[cfg(all(test, feature = "test-fixtures"))]
+            Self::Mock(_) => panic!("mock handle must not reach native IO"),
+        }
+    }
 }
 
 enum PumpEvent {
@@ -63,11 +132,11 @@ enum PumpEvent {
 }
 
 struct WorkerProcess {
-    _job: OwnedHandle,
-    process: OwnedHandle,
-    stdin_write: OwnedHandle,
-    _stdout_read: OwnedHandle,
-    _stderr_read: OwnedHandle,
+    _job: WorkerHandle,
+    process: WorkerHandle,
+    stdin_write: WorkerHandle,
+    _stdout_read: WorkerHandle,
+    _stderr_read: WorkerHandle,
     identity: WorkerIdentity,
     reader: Option<JoinHandle<()>>,
     writer: Option<JoinHandle<()>>,
@@ -78,6 +147,8 @@ struct WorkerProcess {
     /// 终止/失败通知：独立于帧队列容量，读者绝不阻塞在此发送上。
     status: Receiver<Option<ContractError>>,
     reader_status: Option<Option<ContractError>>,
+    // Drop last, after the native handles have been released upon confirmed exit.
+    spawn_cleanup: Option<SpawnCleanupGuard>,
 }
 
 // Drop 也不能丢掉未确认线程及其借用的句柄。不可恢复的清理失败保留至进程退出，
@@ -109,6 +180,8 @@ impl WorkerSupervisor {
             exe: std::env::current_exe().unwrap_or_else(|_| PathBuf::from("pinfeather.exe")),
             args: vec![String::from("--capture-worker-v1")],
             snapshot: true,
+            #[cfg(all(test, feature = "test-fixtures"))]
+            mock_spawn: None,
         })
     }
 
@@ -119,24 +192,27 @@ impl WorkerSupervisor {
             exe,
             args: vec![format!("--mode={mode}")],
             snapshot: false,
+            #[cfg(all(test, feature = "test-fixtures"))]
+            mock_spawn: None,
         })
     }
 
     #[cfg(feature = "test-fixtures")]
     pub fn for_snapshot_fixture(exe: PathBuf, mode: &str) -> Self {
-        Self::with_config(WorkerConfig{exe,args:vec![format!("--mode={mode}")],snapshot:true})
+        Self::with_config(WorkerConfig{exe,args:vec![format!("--mode={mode}")],snapshot:true,#[cfg(all(test, feature="test-fixtures"))]mock_spawn:None})
     }
     #[cfg(feature="test-fixtures")]
-    pub fn for_test_product(exe:PathBuf)->Self{Self::with_config(WorkerConfig{exe,args:vec!["--capture-worker-v1".into()],snapshot:true})}
+    pub fn for_test_product(exe:PathBuf)->Self{Self::with_config(WorkerConfig{exe,args:vec!["--capture-worker-v1".into()],snapshot:true,#[cfg(all(test, feature="test-fixtures"))]mock_spawn:None})}
 
     fn with_config(config: WorkerConfig) -> Self {
-        WorkerSupervisor {
-            config,
-            state: if FAILED_WORKERS.lock().unwrap_or_else(|e| e.into_inner()).is_empty() {
+        let state = if !config.cleanup_pending() {
                 WorkerState::Ready
             } else {
                 WorkerState::FailedPaused
-            },
+            };
+        WorkerSupervisor {
+            config,
+            state,
             closed: false,
             consecutive_timeouts: 0,
             spawn_count: 0,
@@ -349,7 +425,8 @@ impl WorkerSupervisor {
 
     /// 幂等关闭：仅在线程确认结束后释放句柄；失败保留资源，后续 close 可重试。
     pub fn close(&mut self) {
-        if self.closed && self.worker.is_none() {
+        if self.closed && self.worker.is_none() && !self.config.cleanup_pending()
+            && !self.last_reap.as_ref().is_some_and(|r| r.cleanup_failed) {
             return;
         }
         self.closed = true;
@@ -492,8 +569,7 @@ impl WorkerSupervisor {
     }
 
     fn ensure_worker(&mut self) -> ContractResult<()> {
-        if self.closed || self.state == WorkerState::FailedPaused ||
-            !FAILED_WORKERS.lock().unwrap_or_else(|e| e.into_inner()).is_empty() {
+        if self.closed || self.state == WorkerState::FailedPaused || self.config.cleanup_pending() {
             self.state = WorkerState::FailedPaused;
             return Err(ContractError::new(ErrorCode::Busy, "supervisor paused"));
         }
@@ -513,8 +589,16 @@ impl WorkerSupervisor {
                 self.worker = Some(process);
             }
             Err(e) => {
-                self.state = WorkerState::Ready;
-                return Err(e);
+                self.worker = e.worker;
+                if self.worker.is_some() {
+                    self.state = WorkerState::Reaping;
+                    // Preserve the partial-startup branch's original wait budget.
+                    self.reap_with_budget(Duration::from_millis(1000));
+                    self.state = self.state_after_reap();
+                } else {
+                    self.state = WorkerState::Ready;
+                }
+                return Err(e.error);
             }
         }
 
@@ -564,8 +648,12 @@ impl WorkerSupervisor {
     }
 
     fn reap(&mut self) {
+        self.reap_with_budget(CLEANUP_TIMEOUT);
+    }
+
+    fn reap_with_budget(&mut self, budget: Duration) {
         let start = Instant::now();
-        let deadline = start + CLEANUP_TIMEOUT;
+        let deadline = start + budget;
         let mut report = ReapReport {
             identity: None,
             exited: true,
@@ -578,12 +666,12 @@ impl WorkerSupervisor {
 
         if let Some(mut wp) = self.worker.take() {
             report.identity = Some(wp.identity);
-            win::terminate(wp.process.as_raw_handle());
+            win::terminate_owned(&wp.process);
             // writer、reader 与 stderr 排空共用同一个清理截止；循环取消覆盖取消早于 IO 的竞态。
             report.writer_stopped = win::finish_thread(&mut wp.writer, deadline);
             report.reader_stopped = win::finish_thread(&mut wp.reader, deadline);
             report.stderr_stopped = win::finish_thread(&mut wp.stderr, deadline);
-            report.exited = win::wait_exit(wp.process.as_raw_handle(), deadline);
+            report.exited = win::wait_owned(&wp.process, deadline);
             for _ in 0..READER_QUEUE_FRAMES {
                 if wp.frames.try_recv().is_err() {
                     break;
@@ -601,6 +689,9 @@ impl WorkerSupervisor {
             // 全部确认后 wp 的 OwnedHandle 才释放 Job/进程/管道。
         }
 
+        // A replacement supervisor must also report globally retained cleanup
+        // through the existing runtime close/reset result consumer.
+        report.cleanup_failed |= self.config.cleanup_pending();
         report.cleanup_elapsed = start.elapsed();
         self.last_reap = Some(report);
     }
@@ -623,6 +714,12 @@ impl Drop for WorkerSupervisor {
         self.close();
         if let Some(worker) = self.worker.take() {
             eprintln!("pinfeather: worker cleanup_failed; resources retained, worker creation disabled");
+            #[cfg(all(test, feature = "test-fixtures"))]
+            if let WorkerHandle::Mock(handle) = &worker.process {
+                let effects = handle.effects.clone();
+                effects.retained.lock().unwrap().push(worker);
+                return;
+            }
             FAILED_WORKERS.lock().unwrap_or_else(|e| e.into_inner()).push(worker);
         }
     }
@@ -648,6 +745,8 @@ mod tests {
             exe: PathBuf::from("unused.exe"),
             args: vec![],
             snapshot: false,
+            #[cfg(all(test, feature = "test-fixtures"))]
+            mock_spawn: None,
         });
         s.close();
         s.close();
@@ -677,8 +776,310 @@ mod tests {
     }
 }
 
+#[cfg(all(test, feature = "test-fixtures"))]
+mod r3_spawn_tests {
+    use super::*;
+    use std::sync::{Arc, atomic::{AtomicUsize, Ordering}};
+
+    pub(super) struct Effects {
+        pub assigned: bool,
+        created: bool,
+        terminate_ok: bool,
+        waits: Mutex<VecDeque<u32>>,
+        pub spawns: AtomicUsize,
+        pub pending: AtomicUsize,
+        pub retained: Mutex<Vec<WorkerProcess>>,
+        terminations: Mutex<Vec<bool>>,
+        budgets: Mutex<Vec<Duration>>,
+        released: Mutex<Vec<&'static str>>,
+        pub io_fail_at: AtomicUsize,
+        pub io_attempts: AtomicUsize,
+        reader_gate: Mutex<Option<Receiver<()>>>,
+        reader_entered: Mutex<Option<std::sync::mpsc::SyncSender<()>>>,
+        pub reader_started: Mutex<Option<Receiver<()>>>,
+        reader_done: Mutex<Option<std::sync::mpsc::SyncSender<()>>>,
+        borrowing: std::sync::atomic::AtomicBool,
+    }
+    pub(super) struct MockHandle {
+        pub effects: Arc<Effects>,
+        name: &'static str,
+    }
+    impl Drop for MockHandle {
+        fn drop(&mut self) { self.effects.released.lock().unwrap().push(self.name); }
+    }
+    impl Effects {
+        fn new(created: bool, assigned: bool, terminate_ok: bool, waits: &[u32]) -> Arc<Self> {
+            Arc::new(Self { created, assigned, terminate_ok, waits: Mutex::new(waits.iter().copied().collect()),
+                spawns: AtomicUsize::new(0), pending: AtomicUsize::new(0), retained: Mutex::new(vec![]),
+                terminations: Mutex::new(vec![]), budgets: Mutex::new(vec![]), released: Mutex::new(vec![]),
+                io_fail_at: AtomicUsize::new(usize::MAX), io_attempts: AtomicUsize::new(0),
+                reader_gate: Mutex::new(None), reader_entered: Mutex::new(None), reader_started: Mutex::new(None),
+                reader_done: Mutex::new(None), borrowing: std::sync::atomic::AtomicBool::new(false) })
+        }
+        pub fn terminate(&self) { self.terminations.lock().unwrap().push(self.terminate_ok); }
+        pub fn reader_task(self: &Arc<Self>) -> impl FnOnce() + Send + 'static {
+            let effects = self.clone();
+            move || {
+                effects.borrowing.store(true, Ordering::Release);
+                if let Some(entered) = effects.reader_entered.lock().unwrap().take() { let _ = entered.send(()); }
+                if let Some(gate) = effects.reader_gate.lock().unwrap().take() { let _ = gate.recv(); }
+                effects.borrowing.store(false, Ordering::Release);
+                if let Some(done) = effects.reader_done.lock().unwrap().take() { let _ = done.send(()); }
+            }
+        }
+        fn block_reader(&self) -> (std::sync::mpsc::Sender<()>, Receiver<()>) {
+            let (release, gate) = std::sync::mpsc::channel();
+            let (entered, started) = std::sync::mpsc::sync_channel(1);
+            let (done, stopped) = std::sync::mpsc::sync_channel(1);
+            *self.reader_gate.lock().unwrap() = Some(gate);
+            *self.reader_entered.lock().unwrap() = Some(entered);
+            *self.reader_started.lock().unwrap() = Some(started);
+            *self.reader_done.lock().unwrap() = Some(done);
+            (release, stopped)
+        }
+        pub fn wait(&self, deadline: Instant) -> u32 {
+            self.budgets.lock().unwrap().push(deadline.saturating_duration_since(Instant::now()));
+            self.waits.lock().unwrap().pop_front().unwrap_or(258)
+        }
+        pub fn spawn(self: &Arc<Self>) -> ContractResult<WorkerProcess> {
+            self.spawns.fetch_add(1, Ordering::SeqCst);
+            if !self.created { return Err(ContractError::new(ErrorCode::CleanupFailed, "worker spawn failed")); }
+            let handle = |name| WorkerHandle::Mock(MockHandle { effects: self.clone(), name });
+            let (frames_tx, frames) = std::sync::mpsc::channel();
+            frames_tx.send(crate::clipboard::protocol::HELLO_BODY.as_bytes().to_vec()).unwrap();
+            let (_, status) = std::sync::mpsc::channel();
+            Ok(WorkerProcess { _job: handle("job"), process: handle("process"), stdin_write: handle("stdin"),
+                _stdout_read: handle("stdout"), _stderr_read: handle("stderr"), identity: WorkerIdentity { pid: 7, create_time: 11 },
+                reader: None, writer: None, stderr: None, frames, status, reader_status: None, spawn_cleanup: None })
+        }
+        fn supervisor(self: &Arc<Self>) -> WorkerSupervisor {
+            WorkerSupervisor::with_config(WorkerConfig { exe: PathBuf::from("must-not-launch.exe"), args: vec![], snapshot: true, mock_spawn: Some(self.clone()) })
+        }
+        fn assert_released_once(&self) {
+            let mut released = self.released.lock().unwrap().clone(); released.sort();
+            assert_eq!(released, ["job", "process", "stderr", "stdin", "stdout"]);
+        }
+    }
+
+    fn unconfirmed(terminate_ok: bool, wait: u32) {
+        let effects = Effects::new(true, false, terminate_ok, &[wait, 0]);
+        let mut supervisor = effects.supervisor();
+        let error = supervisor.ensure_worker().unwrap_err();
+        // Finish cleanup even on the unfixed revision, before assertions unwind.
+        let state = supervisor.state();
+        let owned = supervisor.worker.is_some();
+        let report = supervisor.last_reap().cloned();
+        let released = effects.released.lock().unwrap().clone();
+        supervisor.close();
+        assert_eq!(error.message, "job assign failed", "preserve original error");
+        assert_eq!(state, WorkerState::FailedPaused, "unconfirmed child cannot become Ready");
+        assert!(owned, "supervisor must retain partial child");
+        assert!(report.is_some_and(|r| r.cleanup_failed && !r.exited && r.reader_stopped && r.writer_stopped && r.stderr_stopped));
+        assert!(released.is_empty(), "last process handle must not close before confirmed exit");
+        effects.assert_released_once();
+        assert!(effects.budgets.lock().unwrap()[0] <= Duration::from_millis(1000));
+    }
+
+    #[test] fn r3_spawn_cleanup_terminate_failed_timeout() { unconfirmed(false, 258); }
+    #[test] fn r3_spawn_cleanup_terminate_success_timeout() { unconfirmed(true, 258); }
+    #[test] fn r3_spawn_cleanup_wait_failed() { unconfirmed(true, u32::MAX); }
+    #[test] fn r3_spawn_cleanup_wait_unknown() { unconfirmed(true, 0x80); }
+    #[test]
+    fn r3_spawn_cleanup_confirmed_exit_after_terminate_failure() {
+        let effects = Effects::new(true, false, false, &[0]);
+        let mut supervisor = effects.supervisor();
+        assert_eq!(supervisor.ensure_worker().unwrap_err().message, "job assign failed");
+        assert_eq!(supervisor.state(), WorkerState::Ready);
+        assert!(supervisor.worker.is_none()); effects.assert_released_once();
+    }
+    #[test]
+    fn r3_spawn_cleanup_no_child_is_retryable() {
+        let effects = Effects::new(false, false, false, &[]);
+        let mut supervisor = effects.supervisor();
+        for _ in 0..2 { assert_eq!(supervisor.ensure_worker().unwrap_err().message, "worker spawn failed"); }
+        assert_eq!(supervisor.state(), WorkerState::Ready);
+        assert_eq!(effects.spawns.load(Ordering::SeqCst), 2);
+        assert!(supervisor.worker.is_none()); assert!(effects.released.lock().unwrap().is_empty());
+        assert!(effects.terminations.lock().unwrap().is_empty());
+    }
+    #[test]
+    fn r3_spawn_cleanup_successful_assignment_keeps_handshake() {
+        let effects = Effects::new(true, true, true, &[0]);
+        let mut supervisor = effects.supervisor(); supervisor.ensure_worker().unwrap();
+        assert_eq!(supervisor.state(), WorkerState::Ready); assert_eq!(supervisor.spawn_count(), 1);
+        supervisor.ensure_worker().unwrap(); assert_eq!(effects.spawns.load(Ordering::SeqCst), 1);
+        supervisor.close(); effects.assert_released_once();
+    }
+    #[test]
+    fn r3_spawn_cleanup_capture_error_and_repeated_close_preserve_owner() {
+        let effects = Effects::new(true, false, true, &[258, u32::MAX, 258, 0]);
+        let mut supervisor = effects.supervisor();
+        let request = WorkerMessage { version: 1, capture_id: "r3-capture".into(), policy_epoch: 0 };
+        let error = supervisor.capture_snapshot(&request).unwrap_err();
+        assert_eq!(error.message, "job assign failed");
+        assert_eq!(supervisor.state(), WorkerState::FailedPaused);
+        assert_eq!(supervisor.capture_snapshot(&request).unwrap_err().code, ErrorCode::Busy);
+        assert_eq!(effects.spawns.load(Ordering::SeqCst), 1, "no replacement on request retry");
+        for _ in 0..2 {
+            supervisor.close();
+            assert!(supervisor.last_reap().unwrap().cleanup_failed, "runtime close/reset must see unresolved cleanup");
+            assert!(supervisor.worker.is_some());
+            assert_eq!(supervisor.state(), WorkerState::FailedPaused);
+            assert!(effects.released.lock().unwrap().is_empty());
+        }
+        supervisor.close(); supervisor.close();
+        assert!(!supervisor.last_reap().unwrap().cleanup_failed);
+        assert!(supervisor.last_reap().unwrap().exited);
+        assert!(supervisor.worker.is_none()); effects.assert_released_once();
+        assert_eq!(effects.pending.load(Ordering::Acquire), 0);
+        assert!(effects.budgets.lock().unwrap().iter().skip(1).all(|budget| *budget <= CLEANUP_TIMEOUT));
+    }
+    #[test]
+    fn r3_spawn_cleanup_replacement_supervisor_cannot_bypass_live_owner() {
+        let effects = Effects::new(true, false, false, &[258, 0]);
+        let mut owner = effects.supervisor(); owner.ensure_worker().unwrap_err();
+        let mut replacement = effects.supervisor();
+        assert_eq!(replacement.state(), WorkerState::FailedPaused);
+        assert_eq!(replacement.ensure_worker().unwrap_err().code, ErrorCode::Busy);
+        replacement.close();
+        assert!(replacement.last_reap().unwrap().cleanup_failed, "replacement close cannot falsely report clean");
+        assert_eq!(effects.spawns.load(Ordering::SeqCst), 1);
+        owner.close(); effects.assert_released_once();
+        // Retrying close reevaluates the external cleanup gate after confirmed recovery.
+        replacement.close(); assert!(!replacement.last_reap().unwrap().cleanup_failed);
+        assert_eq!(effects.supervisor().state(), WorkerState::Ready);
+    }
+    #[test]
+    fn r3_spawn_cleanup_drop_retains_owner_and_replacement_gate() {
+        let effects = Effects::new(true, false, true, &[258, 258, 0]);
+        {
+            let mut owner = effects.supervisor(); owner.ensure_worker().unwrap_err();
+        }
+        let retained = effects.retained.lock().unwrap().len();
+        let released = effects.released.lock().unwrap().clone();
+        let mut replacement = effects.supervisor();
+        let state = replacement.state(); let error = replacement.ensure_worker().unwrap_err();
+        replacement.close(); let cleanup_failed = replacement.last_reap().unwrap().cleanup_failed;
+        // Test-only drain of its local retained registry, using the real reaper;
+        // production retains these resources until host-process exit.
+        replacement.worker = effects.retained.lock().unwrap().pop();
+        replacement.close(); effects.assert_released_once();
+        assert_eq!(retained, 1); assert!(released.is_empty());
+        assert_eq!(state, WorkerState::FailedPaused); assert_eq!(error.code, ErrorCode::Busy);
+        assert!(cleanup_failed); assert_eq!(effects.spawns.load(Ordering::SeqCst), 1);
+        assert_eq!(effects.pending.load(Ordering::Acquire), 0);
+    }
+
+    #[test]
+    fn r3_spawn_cleanup_second_io_start_failure_retains_borrowed_handles() {
+        let effects = Effects::new(true, true, true, &[0, 258, 0]);
+        effects.io_fail_at.store(2, Ordering::SeqCst);
+        let (release, stopped) = effects.block_reader();
+        let mut supervisor = effects.supervisor();
+        // Catch only the real shared startup/consumer call on the unfixed revision.
+        let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| supervisor.ensure_worker()));
+        let released_while_borrowed = effects.released.lock().unwrap().clone();
+        let borrowing = effects.borrowing.load(Ordering::Acquire);
+        let owned = supervisor.worker.as_ref().is_some_and(|worker| worker.reader.is_some());
+        let report = supervisor.last_reap().cloned();
+        let state = supervisor.state();
+        eprintln!("second IO failure: borrowing={borrowing}, owned={owned}, released={released_while_borrowed:?}");
+        // Drain the synthetic borrower even when the failing assertion will unwind.
+        release.send(()).unwrap(); stopped.recv_timeout(Duration::from_secs(3)).unwrap();
+        supervisor.close();
+        let stopped_reader_report = supervisor.last_reap().cloned();
+        let retained_after_reader = supervisor.worker.is_some();
+        let released_after_reader = effects.released.lock().unwrap().clone();
+        supervisor.close();
+        assert!(result.is_ok(), "thread creation failure must return its partial owner, not unwind");
+        assert_eq!(result.unwrap().unwrap_err().message, "worker IO thread start failed");
+        assert!(released_while_borrowed.is_empty(), "no handle may close under the running reader: {released_while_borrowed:?}");
+        assert!(borrowing && owned); assert_eq!(state, WorkerState::FailedPaused);
+        assert!(report.is_some_and(|r| r.cleanup_failed && r.exited && !r.reader_stopped));
+        assert!(stopped_reader_report.is_some_and(|r| r.cleanup_failed && !r.exited && r.reader_stopped));
+        assert!(retained_after_reader && released_after_reader.is_empty(), "reader completion alone cannot release process ownership");
+        assert!(!supervisor.last_reap().unwrap().cleanup_failed);
+        effects.assert_released_once();
+    }
+
+    #[test]
+    fn r3_spawn_cleanup_first_io_start_failure_retains_process_and_gate() {
+        let effects = Effects::new(true, true, true, &[258, 0]);
+        effects.io_fail_at.store(1, Ordering::SeqCst);
+        let mut supervisor = effects.supervisor();
+        let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| supervisor.ensure_worker()));
+        let owned = supervisor.worker.is_some();
+        let state = supervisor.state();
+        let report = supervisor.last_reap().cloned();
+        let released = effects.released.lock().unwrap().clone();
+        let mut replacement = effects.supervisor();
+        let replacement_state = replacement.state();
+        // Do not allow an unfixed Ready replacement to execute another injected spawn.
+        if replacement_state == WorkerState::FailedPaused {
+            assert_eq!(replacement.ensure_worker().unwrap_err().code, ErrorCode::Busy);
+            replacement.close(); assert!(replacement.last_reap().unwrap().cleanup_failed);
+        }
+        supervisor.close();
+        assert!(result.is_ok(), "first IO creation failure must not unwind");
+        assert_eq!(result.unwrap().unwrap_err().message, "worker IO thread start failed");
+        assert!(owned && released.is_empty()); assert_eq!(state, WorkerState::FailedPaused);
+        assert_eq!(replacement_state, WorkerState::FailedPaused);
+        assert!(report.is_some_and(|r| r.cleanup_failed && !r.exited && r.reader_stopped && r.stderr_stopped));
+        assert_eq!(effects.io_attempts.load(Ordering::SeqCst), 1);
+        assert_eq!(effects.spawns.load(Ordering::SeqCst), 1);
+        assert!(!supervisor.last_reap().unwrap().cleanup_failed);
+        effects.assert_released_once(); assert_eq!(effects.pending.load(Ordering::Acquire), 0);
+    }
+
+    #[test]
+    fn r3_spawn_cleanup_partial_io_drop_retains_reader_then_recovers() {
+        let effects = Effects::new(true, true, true, &[258, 258, 258, 0]);
+        effects.io_fail_at.store(2, Ordering::SeqCst);
+        let (release, stopped) = effects.block_reader();
+        let mut owner = effects.supervisor();
+        let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| owner.ensure_worker()));
+        owner.close();
+        let report = owner.last_reap().cloned();
+        drop(owner);
+        let retained = effects.retained.lock().unwrap().len();
+        let released = effects.released.lock().unwrap().clone();
+        let borrowing = effects.borrowing.load(Ordering::Acquire);
+        let mut replacement = effects.supervisor();
+        let state = replacement.state();
+        replacement.close(); let cleanup_failed = replacement.last_reap().unwrap().cleanup_failed;
+        release.send(()).unwrap(); stopped.recv_timeout(Duration::from_secs(3)).unwrap();
+        // Test-local recovery only; production retention remains process lifetime.
+        replacement.worker = effects.retained.lock().unwrap().pop();
+        replacement.close();
+        assert!(result.is_ok(), "partial startup must reach the reaper and Drop owner");
+        assert!(report.is_some_and(|r| r.cleanup_failed && !r.exited && !r.reader_stopped));
+        assert_eq!(retained, 1); assert!(borrowing && released.is_empty());
+        assert_eq!(state, WorkerState::FailedPaused); assert!(cleanup_failed);
+        assert!(!replacement.last_reap().unwrap().cleanup_failed);
+        effects.assert_released_once(); assert_eq!(effects.pending.load(Ordering::Acquire), 0);
+        let budgets = effects.budgets.lock().unwrap();
+        assert!(budgets[0] <= Duration::from_millis(1000));
+        assert!(budgets.iter().skip(1).all(|budget| *budget <= CLEANUP_TIMEOUT));
+        assert_eq!(effects.supervisor().state(), WorkerState::Ready);
+    }
+
+    #[test]
+    fn r3_spawn_cleanup_normal_io_start_keeps_handshake_and_joins() {
+        let effects = Effects::new(true, true, true, &[0]);
+        effects.io_fail_at.store(0, Ordering::SeqCst);
+        let mut supervisor = effects.supervisor(); supervisor.ensure_worker().unwrap();
+        assert_eq!(supervisor.state(), WorkerState::Ready);
+        assert_eq!(supervisor.spawn_count(), 1);
+        assert_eq!(effects.io_attempts.load(Ordering::SeqCst), 2);
+        assert!(supervisor.worker.as_ref().is_some_and(|w| w.reader.is_some() && w.stderr.is_some()));
+        supervisor.close();
+        assert!(supervisor.last_reap().is_some_and(|r| !r.cleanup_failed && r.exited && r.reader_stopped && r.stderr_stopped));
+        effects.assert_released_once(); assert_eq!(effects.pending.load(Ordering::Acquire), 0);
+    }
+}
+
 mod win {
-    use super::{WorkerConfig, WorkerIdentity, WorkerProcess};
+    use super::{SpawnCleanupGuard, SpawnFailure, WorkerConfig, WorkerHandle, WorkerIdentity, WorkerProcess};
     use crate::clipboard::protocol::{parse_frame_prefix, CONTROL_FRAME_MAX_BYTES, FRAME_LENGTH_BYTES};
     use crate::contracts::{ContractError, ContractResult, ErrorCode};
     use std::sync::mpsc::{self, Sender, SyncSender, TrySendError};
@@ -732,6 +1133,75 @@ mod win {
             (deadline - now).as_millis() as u32
         };
         unsafe { WaitForSingleObject(process, budget) == WAIT_OBJECT_0 }
+    }
+
+    pub fn terminate_owned(process: &WorkerHandle) {
+        #[cfg(all(test, feature = "test-fixtures"))]
+        if let WorkerHandle::Mock(handle) = process {
+            handle.effects.terminate();
+            return;
+        }
+        terminate(process.as_raw_handle());
+    }
+
+    pub fn wait_owned(process: &WorkerHandle, deadline: Instant) -> bool {
+        #[cfg(all(test, feature = "test-fixtures"))]
+        if let WorkerHandle::Mock(handle) = process {
+            return handle.effects.wait(deadline) == WAIT_OBJECT_0;
+        }
+        wait_exit(process.as_raw_handle(), deadline)
+    }
+
+    fn assign_worker(mut worker: WorkerProcess) -> Result<WorkerProcess, SpawnFailure> {
+        #[cfg(all(test, feature = "test-fixtures"))]
+        let assigned = if let WorkerHandle::Mock(handle) = &worker.process {
+            handle.effects.assigned
+        } else {
+            unsafe { AssignProcessToJobObject(worker._job.as_raw_handle(), worker.process.as_raw_handle()) != 0 }
+        };
+        #[cfg(not(all(test, feature = "test-fixtures")))]
+        let assigned = unsafe { AssignProcessToJobObject(worker._job.as_raw_handle(), worker.process.as_raw_handle()) != 0 };
+        if !assigned {
+            worker.spawn_cleanup = Some(SpawnCleanupGuard::new(&worker.process));
+            return Err(SpawnFailure { error: last_error("job assign failed"), worker: Some(worker) });
+        }
+        Ok(worker)
+    }
+
+    fn spawn_io_thread(process: &WorkerHandle, task: impl FnOnce() + Send + 'static) -> std::io::Result<JoinHandle<()>> {
+        #[cfg(all(test, feature = "test-fixtures"))]
+        if let WorkerHandle::Mock(handle) = process {
+            let attempt = handle.effects.io_attempts.fetch_add(1, std::sync::atomic::Ordering::SeqCst) + 1;
+            if attempt == 2 {
+                if let Some(started) = handle.effects.reader_started.lock().unwrap().take() {
+                    started.recv_timeout(Duration::from_secs(3)).expect("synthetic reader must start before second IO creation");
+                }
+            }
+            if attempt == handle.effects.io_fail_at.load(std::sync::atomic::Ordering::SeqCst) {
+                return Err(std::io::Error::other("injected IO thread creation failure"));
+            }
+        }
+        #[cfg(not(all(test, feature = "test-fixtures")))]
+        let _ = process;
+        thread::Builder::new().spawn(task)
+    }
+
+    fn start_io_threads(
+        mut worker: WorkerProcess,
+        reader: impl FnOnce() + Send + 'static,
+        stderr: impl FnOnce() + Send + 'static,
+    ) -> Result<WorkerProcess, SpawnFailure> {
+        if let Ok(reader) = spawn_io_thread(&worker.process, reader) {
+            worker.reader = Some(reader);
+            if let Ok(stderr) = spawn_io_thread(&worker.process, stderr) {
+                worker.stderr = Some(stderr);
+                return Ok(worker);
+            }
+        }
+        // A started reader still borrows stdout even when the next spawn fails.
+        // Publish the partial owner through the same bounded cleanup as assign failure.
+        worker.spawn_cleanup = Some(SpawnCleanupGuard::new(&worker.process));
+        Err(SpawnFailure { error: last_error("worker IO thread start failed"), worker: Some(worker) })
     }
 
     /// 仅在确认线程完成后 join；取消是请求，不能当作退出确认。
@@ -918,11 +1388,19 @@ mod win {
         out.push(b' ' as u16);
     }
 
-    pub fn spawn_worker(config: &WorkerConfig) -> ContractResult<WorkerProcess> {
+    pub(super) fn spawn_worker(config: &WorkerConfig) -> Result<WorkerProcess, SpawnFailure> {
+        #[cfg(all(test, feature = "test-fixtures"))]
+        if let Some(effects) = &config.mock_spawn {
+            let worker = effects.spawn().map_err(SpawnFailure::from).and_then(assign_worker)?;
+            if effects.io_fail_at.load(std::sync::atomic::Ordering::SeqCst) != usize::MAX {
+                return start_io_threads(worker, effects.reader_task(), || {});
+            }
+            return Ok(worker);
+        }
         unsafe { spawn_worker_inner(config) }
     }
 
-    unsafe fn spawn_worker_inner(config: &WorkerConfig) -> ContractResult<WorkerProcess> {
+    unsafe fn spawn_worker_inner(config: &WorkerConfig) -> Result<WorkerProcess, SpawnFailure> {
         use std::os::windows::ffi::OsStrExt;
 
         let mut cmdline: Vec<u16> = Vec::new();
@@ -947,20 +1425,20 @@ mod win {
             || CreatePipe(&mut stderr_read, &mut stderr_write, std::ptr::null(), 0) == 0
         {
             close_all(&[stdin_read, stdin_write, stdout_read, stdout_write, stderr_read, stderr_write]);
-            return Err(last_error("worker spawn failed"));
+            return Err(last_error("worker spawn failed").into());
         }
         // 仅子进程端点可继承。
         for child_end in [stdin_read, stdout_write, stderr_write] {
             if SetHandleInformation(child_end, HANDLE_FLAG_INHERIT, HANDLE_FLAG_INHERIT) == 0 {
                 close_all(&[stdin_read, stdin_write, stdout_read, stdout_write, stderr_read, stderr_write]);
-                return Err(last_error("worker spawn failed"));
+                return Err(last_error("worker spawn failed").into());
             }
         }
 
         let job = CreateJobObjectW(std::ptr::null(), std::ptr::null());
         if job.is_null() {
             close_all(&[stdin_read, stdin_write, stdout_read, stdout_write, stderr_read, stderr_write]);
-            return Err(last_error("worker spawn failed"));
+            return Err(last_error("worker spawn failed").into());
         }
         let mut limits: JOBOBJECT_EXTENDED_LIMIT_INFORMATION = std::mem::zeroed();
         limits.BasicLimitInformation.LimitFlags = JOB_OBJECT_LIMIT_KILL_ON_JOB_CLOSE;
@@ -973,7 +1451,7 @@ mod win {
         {
             close_handle(job);
             close_all(&[stdin_read, stdin_write, stdout_read, stdout_write, stderr_read, stderr_write]);
-            return Err(last_error("worker spawn failed"));
+            return Err(last_error("worker spawn failed").into());
         }
 
         // 仅继承三根子进程端点。
@@ -985,7 +1463,7 @@ mod win {
         if InitializeProcThreadAttributeList(attr_list, 1, 0, &mut attr_size) == 0 {
             close_handle(job);
             close_all(&[stdin_read, stdin_write, stdout_read, stdout_write, stderr_read, stderr_write]);
-            return Err(last_error("worker spawn failed"));
+            return Err(last_error("worker spawn failed").into());
         }
         if UpdateProcThreadAttribute(
             attr_list,
@@ -1000,7 +1478,7 @@ mod win {
             DeleteProcThreadAttributeList(attr_list);
             close_handle(job);
             close_all(&[stdin_read, stdin_write, stdout_read, stdout_write, stderr_read, stderr_write]);
-            return Err(last_error("worker spawn failed"));
+            return Err(last_error("worker spawn failed").into());
         }
 
         let mut siex: STARTUPINFOEXW = std::mem::zeroed();
@@ -1032,18 +1510,9 @@ mod win {
         if created == 0 {
             close_handle(job);
             close_all(&[stdin_write, stdout_read, stderr_read]);
-            return Err(last_error("worker spawn failed"));
+            return Err(last_error("worker spawn failed").into());
         }
         close_handle(pi.hThread);
-
-        // 处理任何请求前归入专属 Job；失败立即清理，不无 Job 运行。
-        if AssignProcessToJobObject(job, pi.hProcess) == 0 {
-            TerminateProcess(pi.hProcess, 1);
-            WaitForSingleObject(pi.hProcess, 1000);
-            close_handle(job);
-            close_all(&[stdin_write, stdout_read, stderr_read, pi.hProcess]);
-            return Err(last_error("job assign failed"));
-        }
 
         let mut creation = std::mem::zeroed();
         let mut exit_t = std::mem::zeroed();
@@ -1060,28 +1529,28 @@ mod win {
 
         let (frame_tx, frame_rx) = mpsc::sync_channel(super::READER_QUEUE_FRAMES);
         let (status_tx, status_rx) = mpsc::channel();
-        let reader_handle = stdout_read as usize;
-        let snapshot = config.snapshot;
-        let reader = thread::spawn(move || {
-            reader_loop(reader_handle as HANDLE, frame_tx, status_tx, snapshot);
-        });
-        let stderr_handle = stderr_read as usize;
-        let stderr = thread::spawn(move || drain_loop(stderr_handle as HANDLE));
-
-        Ok(WorkerProcess {
-            _job: OwnedHandle::from_raw_handle(job),
-            process: OwnedHandle::from_raw_handle(pi.hProcess),
-            stdin_write: OwnedHandle::from_raw_handle(stdin_write),
-            _stdout_read: OwnedHandle::from_raw_handle(stdout_read),
-            _stderr_read: OwnedHandle::from_raw_handle(stderr_read),
+        let worker = assign_worker(WorkerProcess {
+            _job: WorkerHandle::Native(OwnedHandle::from_raw_handle(job)),
+            process: WorkerHandle::Native(OwnedHandle::from_raw_handle(pi.hProcess)),
+            stdin_write: WorkerHandle::Native(OwnedHandle::from_raw_handle(stdin_write)),
+            _stdout_read: WorkerHandle::Native(OwnedHandle::from_raw_handle(stdout_read)),
+            _stderr_read: WorkerHandle::Native(OwnedHandle::from_raw_handle(stderr_read)),
             identity,
-            reader: Some(reader),
+            reader: None,
             writer: None,
-            stderr: Some(stderr),
+            stderr: None,
             frames: frame_rx,
             status: status_rx,
             reader_status: None,
-        })
+            spawn_cleanup: None,
+        })?;
+        // Both native and synthetic startup use the same partial-owner path.
+        let reader_handle = stdout_read as usize;
+        let snapshot = config.snapshot;
+        let stderr_handle = stderr_read as usize;
+        start_io_threads(worker, move || {
+            reader_loop(reader_handle as HANDLE, frame_tx, status_tx, snapshot);
+        }, move || drain_loop(stderr_handle as HANDLE))
     }
 
     fn close_all(handles: &[HANDLE]) {
