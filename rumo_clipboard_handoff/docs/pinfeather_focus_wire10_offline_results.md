@@ -1,4 +1,4 @@
-# 焦点补读 wire10 离线结果
+# 焦点补读 wire10 与 F00 离线结果
 
 更新：2026-11-01。F2 仍为 partial，首轮基础 4/7，自动回贴关闭。本次验证限独立诊断源码与协议消费者，没有新现场采样，也未集成产品。
 
@@ -28,9 +28,9 @@
 
 ## 未完成范围
 
-下一步离线补齐独立 focus-only 单次 owned 父流程、预算/取消/退出结算、raw/SHA 绑定、同元素引用与逆序释放对照，再封完整包。焦点诊断中合法但 unattributed 的记录只能保留诊断证据，不能沿用 I00 的接受状态或产生 IME/回贴许可。
+wire10 阶段之后需要补齐独立 focus-only 单次 owned 父流程、预算/取消/退出结算、raw/SHA 绑定并封包；后续 F00 的完成范围见下节。焦点诊断中合法但 unattributed 的记录只能保留诊断证据，不能沿用 I00 的接受状态或产生 IME/回贴许可。同元素引用与逆序释放的本轮证明仍限实际源码和编译，没有真实 COM 验证。
 
-当前没有完整新现场执行包、批准或“已准备”。未来仍须先冻结确切包与读取范围，再单独取得新批准和独立新准备确认；不自动重复 I00 或更换目标。目标历史 PID/创建时间不代表当前存活。
+wire10 检查点没有完整执行包；后续已封存默认关闭的 F00 包，仍没有新批准或“已准备”。未来须对确切新包与读取范围单独取得批准和独立准备确认；不自动重复 I00 或更换目标。目标历史 PID/创建时间不代表当前存活。
 
 ## 本地证据
 
@@ -42,3 +42,21 @@
 - `SOURCE-PINS.json`、`CHANGES.diff`、`PROVENANCE-VERIFIED.json`、`CHECKSUMS.json`：来源、差异及冻结摘要。
 
 本轮重新核对原交接 426 项和 v14 冻结 2901 项的字节数/SHA256，全部匹配，原 ACK 保持不变。实验源码与二进制仅在归档，正式文档提交不代表诊断实现已进入产品。
+
+## F00：独立父流程与封包
+
+后续在新归档副本复用 v14 的许可、独占 claim、launch intent、持有进程、退出结算和未结算阻止重启机制，绑定独立 case `F00`、scope `pinfeather-f2-focus-F00-v1`、round `922dfa01-805f-4648-a0c6-b51d4c39c9e6`。R2f10 严格消费者、decoder、实际诊断器和父流程共同绑定摘要，没有继承 I00 许可。
+
+父流程现在分别记录 `focus_diagnostic_recorded_attributed` 和 `focus_diagnostic_recorded_unattributed`。后者保留首次归属 false，仅用于诊断，不能通过 I00 或形成 IME/回贴判断。两者均要求协议有效、正常 owned 退出、父子非零身份匹配，以及基线前后、补读前后的窗口稳定；第三快照漂移时拒绝，即使原生最终状态因优先级仍为 unattributed。
+
+取消前未启动子进程时释放目标并记录取消；启动期间取消或退出不明保留审计标记并阻止再次启动。ready 事件 UUID 必须区别于批准 UUID。合法 skip 的空锚点不再被误写成“进程退出不明”，同时仍拒绝成为焦点观测；可记录状态的身份条件没有放宽。目标释放或摘要写入失败会撤销两种可记录状态。
+
+实际最终验证为 133 项离线方法，0 失败、错误、跳过；包含 29 种真实 PS bridge/消费者与假进程场景、6 个隔离变异、15 项默认/拒绝入口检查及 6 种坏绑定文件拒绝。first false→同 first 补读 true、second 不同、未知/失败 getter、第三快照漂移和空锚点 skip 均有完整假链对照。上述数量分别计证据，不能累加为现场通过数。
+
+新实际诊断 EXE 已重新编译/链接，静态 PE 为 x64；从未运行，包括 help/default。实际采集主体沿用固定 wire10 路径，same-first 持有及逆序释放的证据仍是实际源码和编译。进程退出/释放账本不替代正常 COM 清理证明，`normal_native_cleanup_verified=false`。
+
+首包检查发现默认 Python 入口会生成缓存，且首版审计未在入口后复核成员。已关闭入口的字节码缓存写入，在新的 `delivery-sealed` 根重建；最终包检查前后均保持精确成员集合。首包和失败记录保留，不作为最终交付物。
+
+最终 ZIP 为 23 成员、22 内部摘要、20 runtime、7 native/source 资产，只含一个实际诊断 EXE；独立提取与逐字节对照通过。包名 `pinfeather-focus-f00-922dfa01-sealed.zip`，170070 字节，SHA256 `6F3D781690C1F10AE4B5592C70C449E1F95F3B22CA71B86245A34EAB333C43D0`。
+
+归档：`D:\Develop\Misc Workspace\archive\pinfeather-focus-parent-package\run-20261101-094210-codex-01a19233`，详见 `REPORT.md`、`OFFLINE-SUITE.json`、`MUTATIONS.json`、`PACKAGE-AUDIT.json` 和冻结清单。当前 gate 关闭，无批准、ready 或 claim；本轮现场查询和探针运行均为 0，无外模型评审。F2 partial、首轮 4/7、自动回贴关闭。下一步须单独审阅并批准确切 F00 范围，或另行授权更新目标身份后重封；不能复用历史许可或自动重复 I00。
