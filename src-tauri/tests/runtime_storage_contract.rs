@@ -20,15 +20,21 @@ fn commit_failure_preserves_pending_snapshot_and_requires_explicit_retry(){
 
 #[test]
 fn pause_confirmation_waits_for_in_progress_commit_and_then_cancels_old_work(){
-    use std::sync::Barrier;
     let runtime=Arc::new(HostRuntime::for_test_memory(Arc::new(|_,_|{})).unwrap());runtime.set_enabled(true).unwrap();
-    let entered=Arc::new(Barrier::new(2));let release=Arc::new(Barrier::new(2));let (a,b)=(entered.clone(),release.clone());
-    *runtime.shared.before_commit.lock().unwrap()=Some(Arc::new(move||{a.wait();b.wait();}));
-    runtime.inject_response(1,response()).unwrap();entered.wait();assert_eq!(runtime.status().queue.items,1,"in-flight DB snapshot remains reserved");
-    let(attempt_tx,attempt_rx)=mpsc::channel();*runtime.shared.before_policy.lock().unwrap()=Some(Arc::new(move||{let _=attempt_tx.send(());}));
-    let(tx,rx)=mpsc::channel();let handle=runtime.clone();let pause=std::thread::spawn(move||{let _=tx.send(handle.set_enabled(false));});attempt_rx.recv_timeout(Duration::from_secs(2)).unwrap();assert!(rx.recv_timeout(Duration::from_millis(100)).is_err(),"pause cannot acknowledge before the gate's commit");
-    release.wait();let status=rx.recv_timeout(Duration::from_secs(2)).unwrap().unwrap();assert!(!status.capture.user_enabled);assert_eq!(status.history.items,1);pause.join().unwrap();
-    *runtime.shared.before_commit.lock().unwrap()=None;*runtime.shared.before_policy.lock().unwrap()=None;
+    std::thread::scope(|scope|{
+        let pause=PauseCommit::install(&runtime);
+        runtime.inject_response(1,response()).unwrap();pause.entered();
+        let reserved=runtime.status().queue.items;
+        let(attempt_tx,attempt_rx)=mpsc::channel();*runtime.shared.before_policy.lock().unwrap()=Some(Arc::new(move||{let _=attempt_tx.send(());}));
+        let(tx,rx)=mpsc::channel();let handle=runtime.clone();let pausing=scope.spawn(move||{let _=tx.send(handle.set_enabled(false));});
+        let attempted=attempt_rx.recv_timeout(Duration::from_secs(2));
+        let premature=rx.recv_timeout(Duration::from_millis(100));
+        pause.release();let result=rx.recv_timeout(Duration::from_secs(2));let joined=pausing.join();
+        *runtime.shared.before_policy.lock().unwrap()=None;
+        assert_eq!(reserved,1,"in-flight DB snapshot remains reserved");attempted.unwrap();
+        assert!(premature.is_err(),"pause cannot acknowledge before the gate's commit");
+        let status=result.unwrap().unwrap();assert!(!status.capture.user_enabled);assert_eq!(status.history.items,1);joined.unwrap();
+    });
     assert!(runtime.inject_response(2,response()).is_err());assert_eq!(runtime.list(request()).unwrap().summaries.len(),1);runtime.shutdown(Duration::from_secs(2)).unwrap();
 }
 
@@ -50,20 +56,20 @@ fn file_storage_thread_reopens_only_its_owned_isolated_database(){
 
 #[test]
 fn pending_query_limit_is_sixteen_and_queued_snapshots_keep_their_reservation(){
-    use std::sync::Barrier;
     let runtime=HostRuntime::for_test_memory(Arc::new(|_,_|{})).unwrap();runtime.set_enabled(true).unwrap();
-    let entered=Arc::new(Barrier::new(2));let release=Arc::new(Barrier::new(2));let(a,b)=(entered.clone(),release.clone());*runtime.shared.before_commit.lock().unwrap()=Some(Arc::new(move||{a.wait();b.wait();}));
-    runtime.inject_response(1,response()).unwrap();entered.wait();
-    let mut reads=Vec::new();for _ in 0..16{reads.push(runtime.queue_test_query(request()).unwrap());}assert_eq!(runtime.queue_test_query(request()).unwrap_err().code,ErrorCode::Busy);assert_eq!(runtime.status().queue.items,1);
-    release.wait();for read in reads{assert_eq!(read.recv_timeout(Duration::from_secs(2)).unwrap().unwrap().summaries.len(),1);}*runtime.shared.before_commit.lock().unwrap()=None;runtime.shutdown(Duration::from_secs(2)).unwrap();
+    let pause=PauseCommit::install(&runtime);
+    runtime.inject_response(1,response()).unwrap();pause.entered();
+    let mut reads=Vec::new();for _ in 0..16{reads.push(runtime.queue_test_query(request()).unwrap());}let seventeenth=runtime.queue_test_query(request());let reserved=runtime.status().queue.items;
+    pause.release();assert_eq!(seventeenth.unwrap_err().code,ErrorCode::Busy);assert_eq!(reserved,1);
+    for read in reads{assert_eq!(read.recv_timeout(Duration::from_secs(2)).unwrap().unwrap().summaries.len(),1);}runtime.shutdown(Duration::from_secs(2)).unwrap();
 }
 
 #[test]
 fn history_admission_counts_the_snapshot_currently_being_committed(){
-    use std::sync::Barrier;
     let runtime=HostRuntime::for_test_memory(Arc::new(|_,_|{})).unwrap();runtime.set_enabled(true).unwrap();runtime.shared.state.lock().unwrap().history.items=MAX_HISTORY_ITEMS as i64-1;
-    let entered=Arc::new(Barrier::new(2));let release=Arc::new(Barrier::new(2));let(a,b)=(entered.clone(),release.clone());*runtime.shared.before_commit.lock().unwrap()=Some(Arc::new(move||{a.wait();b.wait();}));
-    runtime.inject_response(1,response()).unwrap();entered.wait();runtime.inject_response(2,response()).unwrap();let s=runtime.status();assert_eq!(s.queue.items,1);assert_eq!(s.state,"overloaded");assert_eq!(s.counters.overloaded,"1");release.wait();*runtime.shared.before_commit.lock().unwrap()=None;runtime.shutdown(Duration::from_secs(2)).unwrap();
+    let pause=PauseCommit::install(&runtime);
+    runtime.inject_response(1,response()).unwrap();pause.entered();runtime.inject_response(2,response()).unwrap();let s=runtime.status();pause.release();
+    assert_eq!(s.queue.items,1);assert_eq!(s.state,"overloaded");assert_eq!(s.counters.overloaded,"1");runtime.shutdown(Duration::from_secs(2)).unwrap();
 }
 
 #[test]
