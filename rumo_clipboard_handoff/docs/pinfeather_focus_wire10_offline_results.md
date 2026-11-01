@@ -59,4 +59,16 @@ wire10 检查点没有完整执行包；后续已封存默认关闭的 F00 包�
 
 最终 ZIP 为 23 成员、22 内部摘要、20 runtime、7 native/source 资产，只含一个实际诊断 EXE；独立提取与逐字节对照通过。包名 `pinfeather-focus-f00-922dfa01-sealed.zip`，170070 字节，SHA256 `6F3D781690C1F10AE4B5592C70C449E1F95F3B22CA71B86245A34EAB333C43D0`。
 
-归档：`D:\Develop\Misc Workspace\archive\pinfeather-focus-parent-package\run-20261101-094210-codex-01a19233`，详见 `REPORT.md`、`OFFLINE-SUITE.json`、`MUTATIONS.json`、`PACKAGE-AUDIT.json` 和冻结清单。当前 gate 关闭，无批准、ready 或 claim；本轮现场查询和探针运行均为 0，无外模型评审。F2 partial、首轮 4/7、自动回贴关闭。下一步须单独审阅并批准确切 F00 范围，或另行授权更新目标身份后重封；不能复用历史许可或自动重复 I00。
+归档：`D:\Develop\Misc Workspace\archive\pinfeather-focus-parent-package\run-20261101-094210-codex-01a19233`，详见 `REPORT.md`、`OFFLINE-SUITE.json`、`MUTATIONS.json`、`PACKAGE-AUDIT.json` 和冻结清单。离线封存时 gate 关闭，无批准、ready 或 claim；离线阶段现场查询和探针运行均为 0，无外模型评审。F2 partial、首轮 4/7、自动回贴关闭。后续单次事务见下节，不能复用历史许可或自动重复 I00。
+
+## F00 v1 单次事务：目标打开失败
+
+用户随后批准确切 F00 v1 包，并另发独立“已准备”。批准首次本地接收观察时间为 `2026-11-01T02:10:18.047556+00:00`，准备为 `2026-11-01T02:12:54.970694+00:00`；记录没有伪装为平台消息时间或续期。scope/round/包/目标绑定保持原样。
+
+controller 在 `target_access` 阶段打开固定历史 PID `41124` 时，`OpenProcess` 返回 Win32 错误 `87`。目标打开调用 1 次，诊断探针启动 0 次，焦点/UIA 查询 0 次；尚未进入 8 秒人工准备阶段，没有新的焦点或 IME 样本。失败未证明该进程当时是否存活，也不能确定进程退出原因。
+
+本次返回码为 2，事务状态 `stopped_target_access_no_diagnostic`。批准、ready、arming 和 scope claim 已消耗，controller 终结记录为 `consumed_closed`。原始 approved gate 字节保留作摘要证据，其表面 `field_authorized=true` 不能重新授权执行。没有自动重试或更换目标。
+
+封存 11561 项中，11560 项保持原字节/SHA256，仅执行目录 gate 发生严格匹配批准的预期转换；原 ZIP 不变。`FIELD-RESULT.json`、`FIELD-REPORT.md`、`FIELD-SNAPSHOT/` 与 `FIELD-EVIDENCE-CHECKSUMS.json` 保存 42 项证据，清单 SHA256 为 `B11E17829C7F82065BF0F89BBBB4C7ED80D78CBDD1CECAB3B1D04D6A58E4B081`。原交接 426 项重新匹配。
+
+下次应先在另行授权的只读范围内更新目标身份，再依据新证据重封新的焦点诊断范围；本次许可不复用，不继续对历史 PID 尝试。F2 仍 partial、首轮 4/7、自动回贴关闭。
