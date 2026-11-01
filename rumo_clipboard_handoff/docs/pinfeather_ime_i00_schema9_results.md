@@ -69,8 +69,22 @@ v13 目录中的 `FIELD-RESULT.json` 和 `FIELD-EVIDENCE-CHECKSUMS.json` 封存�
 | v13 原生 result.json | `C5F51095F56F0AF2DD4CE4E98F2F330948EF92242F0DFF499CBEE7D0C71743A0` |
 | v13 现场证据清单 | `1D60A055804734EA51DD977CE74A74139B94E13B4F28477478E9E221A31ECD1C` |
 
+## 最终状态接受修复：v14 离线候选
+
+离线对照发现父流程的接受缺口：首次焦点归属成功、随后 UIA 元素改变时，严格消费者正确给出 `protocol_valid=true`、`attributed=true`、原生最终状态 `stale`，旧父流程仍返回 `metadata_recorded_awaiting_human_phase`。协议合法只表示字段与派生事实自洽，不能替代最终观测状态。此问题由合成夹具通过真实 PS 消费者、Python adapter 和父流程复现，不是新增现场样本；v13 实采因首次归属失败提前拒绝，没有触发该接受路径，自动回贴始终关闭。
+
+v14 在同一 Python 模块内传递并检查最终状态：`check_projection` 从同一份已核对 SHA 的原始字节中读取状态，校验枚举，返回内部 `native_state`；adapter 保留该字段，父流程仅在其为 `metadata_recorded` 时接受。合法 `stale` 仍保留协议合法、归属和已确认退出等事实，结果为 `recorded_without_valid_observation`，不误报进程失控。缺失或未知状态不能成为有效观测。
+
+此内部字段不加入外部 bridge JSON，外部注入同名字段仍因固定形状被拒绝。原生 wire 9、PS bridge wire 2、controller 和 15 个原生资产不变；adapter 与父流程位于同一文件，由整包摘要约束原子更新。旧内部 adapter 缺失状态时拒绝，不混装旧父流程。未放宽归属、身份、所有权、4KiB、32 层、IME unknown 或回贴否决规则。
+
+新增 8 项离线检查中，修复前 5 项在接受边界断言失败；修复后完整 168 方法通过，0 失败、错误或跳过。检查覆盖正常观测、元素变化、属性变化、v13 保存 raw 的拒绝重放、状态取自绑定字节、外部字段注入、未知枚举和内部漏字段。实际 ZIP 的 31 成员、30 内部摘要、28 runtime 以及提取、默认与拒绝路径校验通过。v14 没有新增现场查询、IME 探针或外部模型评审，不代表原焦点问题已修复，也不代表产品已集成诊断代码。
+
+v14 目录为 `pinfeather-ime-observation-state-fix/run-20261101-082009-codex-01a19233/`。最终 ZIP SHA256 为 `D0C43AD5A44B5881C26F74B527D429F10548188FF4E363127405F54113500AC3`；`RED-REPRODUCER.json`、`RED-OBSERVATION-STATE.log`、`OFFLINE-SUITE.json`、`PACKAGE-AUDIT.json` 和 `CHANGES.diff` 保留复现、修复和包证据。新 gate 关闭，没有批准、准备或 claim。
+
 ## 后续边界
 
 三次事务均有终结记录，批准、准备和 claim 均已消耗；批准 gate 原字节作为摘要证据保留，不能复用其表面状态重开执行。没有自动重试、换目标、输入、剪贴板操作或产品集成。
 
-下一步先分析已有证据中的焦点归属失败。若需要新的现场样本，须另行冻结确切 scope、round、目录、包与读取范围，再取得新批准及另一条独立准备消息；不继续盲目重复同一采样，不解除 IME 未知时禁止自动回贴的规则。
+下一步复用历史 R2f 的同元素补读设计，并评估外部观察路线能支持的范围。已只读核对其在持有首次元素期间补读 ControlType、IsKeyboardFocusable 和该对象的键盘焦点，并冻结补读前后 Win32 快照；补读不覆盖首次读数，也不产生 TextEdit 或范围调用。其 schema9/experiment/mode 与当前 R2e wire 不同，不能直接混装。新候选的 4KiB 最坏边界、消费者及所有权尚待离线验证，旧 R2f EXE 和批准均不能直接使用。
+
+具体对照和执行前检查记于 v14 目录的 `FOCUS-DISCRIMINATION-PLAN.md`。现有证据不能区分用户操作、provider/cache 状态或采样时序，不足以支持通过延长等待或只采用第二个元素解除拒绝。若需要新的现场样本，须另行冻结确切 scope、round、目录、包与读取范围，再取得新批准及另一条独立准备消息；不继续盲目重复同一采样，不解除 IME 未知时禁止自动回贴的规则。
