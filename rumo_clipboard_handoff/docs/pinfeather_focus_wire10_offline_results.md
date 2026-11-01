@@ -94,3 +94,25 @@ controller 在 `target_access` 阶段打开固定历史 PID `41124` 时，`OpenP
 新包通过137项离线方法、29种假进程/PS场景、7项隔离变异、15入口和6坏绑定拒绝；ZIP23成员/22内部摘要/20runtime及独立提取字节校验通过。包括旧v1 proof在target access前拒绝、新目标与metadata绑定、同原时的单条消息两角色路径。现有归属、三段稳定、4KiB/32层、持有进程与否决条件保持，自动回贴关闭。
 
 最终包 `pinfeather-focus-f00-v2-5446d8e0-sealed.zip`，170607字节，SHA256 `8E092DD8BEFB24FB08584E1BF2868899859AC069108A5AD1792D510E468FC616`。归档为 `D:\Develop\Misc Workspace\archive\pinfeather-focus-rebound-v2\run-20261101-104714-codex-01a19233`，详见REPORT、PACKAGE-AUDIT、原始metadata与冻结清单。该新F00范围gate关闭，无批准/ready/claim或现场采样；metadata那条“已准备”不复用为本范围许可。说明新范围后再等新“已准备”，不会自动执行。没有外模型评审，F2partial、首轮4/7。
+
+## F00 v2 单次结果：同一对象始终无键盘焦点
+
+用户在新范围说明后另发“已准备”，首次本地接收观察时间为 `2026-11-01T03:00:45.299243+00:00`。该单条消息同时批准并确认准备，两个内部角色保留同源原时。父流程实际等待8000ms，启动一个native探针；controller返回0，结果为 `focus_diagnostic_recorded_unattributed`。这是可记录的焦点诊断，首次归属仍为false，不是I00或IME验收通过。
+
+| 实测字段 | 结果 |
+| --- | --- |
+| 目标PID/birth与Win32前后匹配 | 38152 / 134379716295803792，三份快照一致 |
+| 两次GetFocusedElement及CompareElements | 均成功，同一对象，属性一致 |
+| 首次、第二次HasKeyboardFocus | false、false，均成功且已知 |
+| 同一个first补读 | ControlType=50033，IsKeyboardFocusable=false，HasKeyboardFocus=false，均HRESULT=0 |
+| 父链与时间 | 9层到达窗口锚点；first/second时间字段15/47ms，native总47ms |
+| 原生进程 | PID17692，birth134379756543774213；owned退出确认，退出码0，未强制终止 |
+| IME与清理边界 | 此focus实验无TextEdit/IME方法；ime_judgement=none、normal_native_cleanup_verified=false、自动回贴false |
+
+ControlType50033对应Pane（窗格），50004对应Edit，见[Microsoft类型定义](https://learn.microsoft.com/en-us/windows/win32/winauto/uiauto-controltype-ids)。类型只在同first补读阶段测量，不能声称在两次GetFocusedElement瞬间均分别读过ControlType。采集源码保持first独立持有，父链使用另一个current指针，补读没有改用父节点。
+
+用户随后人工确认：等待期间看到了空白输入框内的闪烁文字光标。该观察单独保存在 `OPERATOR-OBSERVATION.json`，不覆盖raw，也不是自动DOM或精确到47ms的对时证明。现有证据同时包含可见光标的人工观察和UIA的非可聚焦Pane；不能据此认定用户未点输入框、Edge/provider缺陷或缓存/时序根因。本样本没有观察到false恢复true或两次对象变化。
+
+原始wire10结果1716字节，SHA256 `D515C957C58E7342D46CF00131BCEEC24AC4C61E2DD84D12C843105D0099EFD5`。`FIELD-RESULT.json`、`FIELD-REPORT.md`、`FIELD-SNAPSHOT/`与63项 `FIELD-EVIDENCE-CHECKSUMS.json` 封存原始结果、投影、持有进程/claim/终结及人工观察。证据清单SHA256 `17B2807FF80324957D7FCBA514DDBC742164A569851620B0F2046ED502504AC0`。原5478项中5477项不变，唯一gate变更严格匹配批准，原ZIP不变；许可已消耗，无自动重试。
+
+后续先离线分析UIA焦点暴露与页面输入焦点的区分办法，不重复相同采样、不放宽首次否决。假设边界和D2状态见归档 `ELEMENT-INTERPRETATION.md`、`FOCUS-FAILURE-ANALYSIS.md`。尚未形成可靠IME安全判定，F2partial、首轮4/7、自动回贴关闭。
