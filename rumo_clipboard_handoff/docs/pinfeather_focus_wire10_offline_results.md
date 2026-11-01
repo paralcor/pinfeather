@@ -82,3 +82,15 @@ controller 在 `target_access` 阶段打开固定历史 PID `41124` 时，`OpenP
 候选包为 `pinfeather-f2-edge-target-refresh-7a781bff-v3.zip`，13711 字节，SHA256 `A7FB14FA37EE63D1189C5A061794270E8A9144AD74F8411BF15C712FA7A44E6D`。本地归档为 `D:\Develop\Misc Workspace\archive\pinfeather-target-refresh-v3\run-20261101-101832-codex-01a19233`，详见 `REPORT.md`、`APPROVAL-PROPOSAL.json`、`PACKAGE-AUDIT.json` 和冻结清单。
 
 当前待批准，无新目标查询、ready、claim或外模型评审。未来获批后最多一次 `Get-Process -Name msedge`，筛选具主窗口的唯一进程，只读身份/版本/架构等元数据；同进程内窗口/页面不额外区分，不读焦点/UIA/正文/活跃IME，不启动目标或诊断器。成功只产候选身份，随后须另封新的焦点范围并另收批准和准备，不自动衔接。批准15分钟、独立准备60秒、metadata宿主10秒加最多2秒结算的边界不变。
+
+## 新目标身份与 F00 v2
+
+用户随后明确变更确认方式：在确切包与范围已说明后，“已准备”同时表示批准该范围并确认准备，不再另索批准消息。此最新指令覆盖上文历史“两条独立消息”的要求；仍不允许跨范围复用、自动衔接、续期或重试。内部不同的approval/ready角色记录必须保留同一条用户原文及首次接收时间，不冒充两条独立人类消息。
+
+按此规则，metadata v3在 `2026-11-01T02:44:42.332910+00:00` 首次本地接收观察到单条“已准备”，完成一次只读查询，记录新目标 Edge156.0.4314.58 x64、PID38152、创建时间134379716295803792、OS报告10.0.26200.0。原始response426字节，SHA256 `AF8211F9E2F70E54651D72295013B2CC3B5A1373C77D0C4EFB799B4DFD825CCF`；当次alive_at_end=true不代表未来存活。provider/活跃IME未查询。metadata进程PID43116/birth134379746824748409；成功路径要求持有对象退出和句柄关闭，不能替代原生IME清理证明。31项事务证据封存，1166项原冻结记录中仅APPROVAL发生预期转换，其余1165项不变，原ZIP不变。该scope已消耗，没有接着采焦点。
+
+随后仅离线将新证据绑定独立 `pinfeather-f2-focus-F00-v2`，round `5446d8e0-efa2-4cfd-af57-d97c1277f03a`。METADATA-FIELD-RESULT精确摘要为 `A7A77C8EE5E4CB13CC2C2CE941635823881BFC9FB521B78BBB32AE1B93C113C5`。runner/candidate/profile及派生摘要同步，合成fixture仅重绑目标；原始raw未改。7native/source资产逐字节相同，未构建或运行实际诊断器。
+
+新包通过137项离线方法、29种假进程/PS场景、7项隔离变异、15入口和6坏绑定拒绝；ZIP23成员/22内部摘要/20runtime及独立提取字节校验通过。包括旧v1 proof在target access前拒绝、新目标与metadata绑定、同原时的单条消息两角色路径。现有归属、三段稳定、4KiB/32层、持有进程与否决条件保持，自动回贴关闭。
+
+最终包 `pinfeather-focus-f00-v2-5446d8e0-sealed.zip`，170607字节，SHA256 `8E092DD8BEFB24FB08584E1BF2868899859AC069108A5AD1792D510E468FC616`。归档为 `D:\Develop\Misc Workspace\archive\pinfeather-focus-rebound-v2\run-20261101-104714-codex-01a19233`，详见REPORT、PACKAGE-AUDIT、原始metadata与冻结清单。该新F00范围gate关闭，无批准/ready/claim或现场采样；metadata那条“已准备”不复用为本范围许可。说明新范围后再等新“已准备”，不会自动执行。没有外模型评审，F2partial、首轮4/7。
