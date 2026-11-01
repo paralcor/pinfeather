@@ -72,3 +72,13 @@ controller 在 `target_access` 阶段打开固定历史 PID `41124` 时，`OpenP
 封存 11561 项中，11560 项保持原字节/SHA256，仅执行目录 gate 发生严格匹配批准的预期转换；原 ZIP 不变。`FIELD-RESULT.json`、`FIELD-REPORT.md`、`FIELD-SNAPSHOT/` 与 `FIELD-EVIDENCE-CHECKSUMS.json` 保存 42 项证据，清单 SHA256 为 `B11E17829C7F82065BF0F89BBBB4C7ED80D78CBDD1CECAB3B1D04D6A58E4B081`。原交接 426 项重新匹配。
 
 下次应先在另行授权的只读范围内更新目标身份，再依据新证据重封新的焦点诊断范围；本次许可不复用，不继续对历史 PID 尝试。F2 仍 partial、首轮 4/7、自动回贴关闭。
+
+## 目标身份更新 v3：离线候选
+
+后续冻结独立 scope `pinfeather-f2-edge-target-refresh-v3`、round `7a781bff-89c4-4113-8010-93b26c7696b4`，只准备一次 Edge 进程元数据更新。查询 PS 与旧 v2 逐字节相同；新入口绑定新范围，拒绝批准/ready共用事件 ID，并将 PID 限于后续 focus 消费者的 signed31 正整数范围。所有旧许可继续消耗/失效。
+
+42 项离线方法、10 种纯假进程 PS 场景、25 个隔离变异通过；新绑定与两项新增约束的修复前失败记录保留。实际 ZIP 的 11 成员、10 内部摘要及独立提取校验通过，另有 6 种坏绑定拒绝。包内无 EXE，提取副本默认校验后仍保持精确成员集合。
+
+候选包为 `pinfeather-f2-edge-target-refresh-7a781bff-v3.zip`，13711 字节，SHA256 `A7FB14FA37EE63D1189C5A061794270E8A9144AD74F8411BF15C712FA7A44E6D`。本地归档为 `D:\Develop\Misc Workspace\archive\pinfeather-target-refresh-v3\run-20261101-101832-codex-01a19233`，详见 `REPORT.md`、`APPROVAL-PROPOSAL.json`、`PACKAGE-AUDIT.json` 和冻结清单。
+
+当前待批准，无新目标查询、ready、claim或外模型评审。未来获批后最多一次 `Get-Process -Name msedge`，筛选具主窗口的唯一进程，只读身份/版本/架构等元数据；同进程内窗口/页面不额外区分，不读焦点/UIA/正文/活跃IME，不启动目标或诊断器。成功只产候选身份，随后须另封新的焦点范围并另收批准和准备，不自动衔接。批准15分钟、独立准备60秒、metadata宿主10秒加最多2秒结算的边界不变。
