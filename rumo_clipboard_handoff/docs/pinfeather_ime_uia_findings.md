@@ -57,3 +57,5 @@ R2f 的单次真实焦点诊断取得 ControlType=50004、IsKeyboardFocusable=tr
 离线修复、目标更新、实际观测、摘要及消耗状态见 [schema9 I00 结果记录](pinfeather_ime_i00_schema9_results.md)。该记录不代表诊断代码已集成产品，F2 仍为 partial、首轮基础 4/7、自动回贴关闭。
 
 后续离线对照发现，旧父流程会误收协议合法、首次归属成功但最终状态为 stale 的记录。v14 候选补上最终状态检查，168 项离线测试及封包校验通过；没有新增现场采样，原焦点原因仍未知。具体复现、兼容边界及证据索引见上述记录。
+
+独立焦点补读路线随后完成 [wire10 离线大小与消费者验证](pinfeather_focus_wire10_offline_results.md)：原 R2f 的 32 层有效模型超过 4KiB，新编码保留原始字段并拒绝超限、混版和矛盾 skip。单次 owned 父流程与完整新包仍待离线闭合，没有新增现场许可或 IME 结论。
