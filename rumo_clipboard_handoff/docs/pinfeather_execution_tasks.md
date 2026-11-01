@@ -1,13 +1,15 @@
 # 片羽首轮执行任务卡
 
-版本：v1，更新于2026-10-24。E07/T2基础收录、E08查询契约及E09/T3基础搜索/预览已验收，真实宿主结果见[验收计划6.2节](pinfeather_acceptance_plan.md#62-e09-本机搜索与正文预览)。当前Codex唯一负责协调、独立审查和验收，实现按明确任务交给Mimo。E03b三目标外部IMM方法不可用，IME子关卡needs_plan_revision；用户已批准独立W1/W2先行，W3自动回贴继续阻塞。不把W0、完整R6或首轮标为完成。
+> 2026-11-01 阶段状态：[显式复制历史纯文本](pinfeather_explicit_copy_stage.md)作为 W2 之后、不依赖 W3 的独立增量，已完成实现、负责人独立离线验收及一次最小人工现场验收，范围见[验收计划6.4节](pinfeather_acceptance_plan.md#64-显式复制最小人工现场)。W1/T2与W2/T3基础链路已验收；原T0–T3顶层基础进度仍为4/7，显式复制不计为T4完成。W0/W3的IME/焦点阻塞保留，T4–T6及W4/W5完整范围仍待完成；本轮现场授权已消费，automatic_paste_allowed=false。
+
+版本：v1，更新于2026-11-01。E07/W1/T2基础收录、E08查询契约及E09/W2/T3基础搜索/预览已验收，真实宿主结果见[验收计划6.2节](pinfeather_acceptance_plan.md#62-e09-本机搜索与正文预览)。当前负责人为 Codex gpt-6-astra/high，负责协调、独立审查与验收；执行者为 Codex gpt-6.1-sol/high，仅在明确任务范围内写入，交回后停写。同一范围仅一个写者；带日期的历史角色与执行证据保持原样。E03b三目标外部IMM方法不可用，IME子关卡needs_plan_revision；用户已批准独立W1/W2先行，W3自动回贴继续阻塞。不把W0、完整R6或首轮标为完成。
 
 总设计：[完整方案](pinfeather_implementation_plan.md)。结果判定：[验证与验收](pinfeather_acceptance_plan.md)。产品契约：[MVP](rumo_clipboard_mvp_specification.md)。E03a历史F2/F3修复记录见archive/runs/20261023-e03a-codex-owner-fixes；当时的npm 28项、Rust lib 34项及worker 37项仅是该阶段计数。当前状态以本页顶部及验收结果为准，后续E07真实复制和E09真实宿主搜索已有独立证据。
 
 ## 1. 角色、权限与推进规则
 
-- 当前Codex：唯一负责首轮协调、分工、独立审查、验收与状态维护；按用户明确授权执行提交或推送。
-- Mimo：仅按当前Codex明确分配的范围实现，完成后停写等待独立审查；Gemini负责明确分配的合成夹具任务。空闲会话不自行恢复旧任务，同一范围只允许一个写者。
+- 当前负责人 Codex gpt-6-astra/high：负责协调、分工、独立审查、验收与状态维护；本次获本地提交授权，推送、PR与发布不在范围。
+- 当前执行者 Codex gpt-6.1-sol/high：仅按负责人明确分配的范围实现或整理文档，完成后停写等待独立审查。Mimo/Gemini属于历史安排，空闲会话不自行恢复旧任务，同一范围只允许一个写者。
 - 此前Codex：正式交接后停止派工和修改；历史报告保留实际执行身份，不改写为当前会话结果。
 - 用户：审阅重要方案变化、确认所需项目依赖安装、完成真实桌面验收、决定提交/发布及重要产品变化。常规包由新 Codex 按依赖持续推进。
 - 以实际会话权限及用户对具体agent、范围的明确授权为准；不默认提权、不改系统策略、不读取凭据定位模型。可见模型身份不明确时只核实身份，不默默切模型。
@@ -106,7 +108,7 @@ $env:PATH = (Join-Path $env:USERPROFILE '.cargo\bin') + ';' + $env:PATH
 - E03a 完成即停写交回 review。E03b 另行交付：目标/权限/IME只读探针、用户参与步骤和此前宿主关闭滞留复验。E03b 完成前 W0 不标通过。
 - 本次白名单：clipboard/worker.rs、clipboard/protocol.rs、clipboard/mod.rs、Cargo.toml/Cargo.lock、tests/worker_protocol.rs、tests/support/worker_fixture.rs，以及对应正式合成测试；其他源码只读。
 - Windows API 可复用已锁定且本机缓存存在的 windows-sys 0.61.2；若增加直接依赖，只能启用实际使用的 Win32 features 并离线更新 lock，不能升级其他版本或联网安装缺失依赖。缺依赖则记录精确清单交回。
-- 当前新 Codex 是唯一写者，串行完成修复和验证，不自动恢复 Mimo 或派发子agent。
+- 执行按本文当前角色与明确任务范围进行，不自动恢复历史 Mimo 任务或派发子agent。
 
 ### E03 · 先证worker可回收与目标/IME可判定边界
 
@@ -233,7 +235,7 @@ $env:PATH = (Join-Path $env:USERPROFILE '.cargo\bin') + ';' + $env:PATH
 
 ## 11. 子agent的实际派工模板
 
-下表保留可选只读分工的上下文要求。当前移交为单 Codex 写者，不自动启用子agent；需要时先有明确的用户或适用指令授权，再确认工具、身份和权限，不能凭 CLI 版本声称支持。
+下表保留可选只读分工的上下文要求。当前由Astra/high负责、6.1-sol/high按任务执行，不自动启用额外子agent；需要时先有明确的用户或适用指令授权，再确认工具、身份和权限，不能凭 CLI 版本声称支持。
 
 | 子任务 | 给它的上下文 | 要它返回 | 明确禁止 |
 | --- | --- | --- | --- |

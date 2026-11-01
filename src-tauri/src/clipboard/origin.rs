@@ -11,6 +11,7 @@ pub struct OriginRegistry {instance:[u8;16],owner:usize,next:u64,operations:VecD
 impl OriginRegistry {
     pub fn new(instance:[u8;16],owner:usize)->Self{Self{instance,owner,next:0,operations:VecDeque::new(),current:None}}
     pub fn set_owner(&mut self,owner:usize){self.owner=owner;}
+    pub(crate) fn owner(&self)->usize{self.owner}
     pub fn begin(&mut self)->ContractResult<(u64,[u8;28])>{
         if self.owner==0{return Err(ContractError::new(ErrorCode::InjectionFailed,"clipboard owner unavailable"));}
         if self.operations.len()>=MAX_OPERATIONS {
@@ -48,21 +49,40 @@ pub trait WriteApi {
     fn sequence(&mut self)->u32;
 }
 
+#[derive(Debug)]
+pub struct WriteFailure { pub error:ContractError, pub may_have_written:bool }
+impl From<ContractError> for WriteFailure {
+    fn from(error:ContractError)->Self{Self{error,may_have_written:false}}
+}
+
+/// Registration remains pending while OS calls run without the capture-state lock.
+pub(crate) struct WriteAttempt { pub result:Result<u64,WriteFailure>,pub sequence:Option<u32> }
+pub(crate) fn write_registered_text(api:&mut (impl WriteApi+?Sized),owner:usize,counter:u64,marker:&[u8;28],text:&[u8],before_empty:impl FnOnce()->ContractResult<()>)->WriteAttempt {
+    let mut marker_set=false;
+    let mut may_have_written=false;
+    let result=(||{
+        api.open(owner)?;
+        let result=(||{
+            before_empty()?;
+            may_have_written=true;
+            api.empty()?;
+            for (name,bytes) in [(super::capture::INTERNAL,marker.as_slice()),(super::capture::HISTORY,&[0u8;4]),(super::capture::CLOUD,&[0u8;4]),("CF_UNICODETEXT",text)] {
+                let handle=api.allocate(bytes)?;
+                if let Err(error)=api.set(name,handle){api.free(handle);return Err(error);}
+                if name==super::capture::INTERNAL{marker_set=true;}
+            }
+            Ok(())
+        })();
+        let closed=api.close();
+        result?;closed?;Ok(counter)
+    })();
+    WriteAttempt{result:result.map_err(|error|WriteFailure{error,may_have_written}),sequence:if marker_set{Some(api.sequence())}else{None}}
+}
+
 pub fn write_text(api:&mut impl WriteApi,registry:&mut OriginRegistry,text:&[u8])->ContractResult<u64>{
     super::capture::validate_payloads(&[crate::store::Payload{format_name:"CF_UNICODETEXT".into(),data:text.to_vec()}]).map_err(|_|ContractError::invalid_input("invalid clipboard text"))?;
     let(counter,marker)=registry.begin()?;
-    if let Err(error)=api.open(registry.owner){registry.finish(counter,None);return Err(error);}
-    let mut marker_set=false;
-    let result=(||{
-        api.empty()?;
-        for (name,bytes) in [(super::capture::INTERNAL,marker.as_slice()),(super::capture::HISTORY,&[0u8;4]),(super::capture::CLOUD,&[0u8;4]),("CF_UNICODETEXT",text)] {
-            let handle=api.allocate(bytes)?;
-            if let Err(error)=api.set(name,handle){api.free(handle);return Err(error);}
-            if name==super::capture::INTERNAL{marker_set=true;}
-        }
-        Ok(())
-    })();
-    let closed=api.close();
-    registry.finish(counter,if marker_set{Some(api.sequence())}else{None});
-    result?;closed?;Ok(counter)
+    let attempt=write_registered_text(api,registry.owner,counter,&marker,text,||Ok(()));
+    registry.finish(counter,attempt.sequence);
+    attempt.result.map_err(|failure|failure.error)
 }

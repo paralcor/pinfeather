@@ -2,6 +2,17 @@
 //! the storage thread creates and owns its SQLite connection.
 use std::{path::PathBuf,sync::{Arc,Mutex,Condvar,mpsc::{self,SyncSender,Receiver}},thread::JoinHandle,time::{Duration,Instant}};
 use crate::{contracts::*,runtime::{CaptureState,CapturePipeline,Admission},store::Store};
+use crate::clipboard::origin::{WriteApi,WriteFailure};
+use std::sync::atomic::{AtomicBool,Ordering};
+
+struct WritePermit(Arc<AtomicBool>);
+impl Drop for WritePermit {fn drop(&mut self){self.0.store(false,Ordering::Release);}}
+type WriteReply=Result<u64,WriteFailure>;
+struct CopyOwner {owner:Option<usize>,borrowers:usize}
+struct CopyOwnerLease<'a> {shared:&'a SharedRuntime,owner:usize}
+impl Drop for CopyOwnerLease<'_> {
+    fn drop(&mut self){let mut owner=self.shared.copy_owner.lock().unwrap_or_else(|e|e.into_inner());owner.borrowers-=1;self.shared.owner_idle.notify_all();}
+}
 
 pub type Events=Arc<dyn Fn(&str,u64)+Send+Sync>;
 pub struct SharedRuntime {
@@ -11,7 +22,16 @@ pub struct SharedRuntime {
     events:Events,
     _instance:Option<std::os::windows::io::OwnedHandle>,
     listener_failed:std::sync::atomic::AtomicBool,
+    // A completed failed cleanup cannot be cleared by consuming its thread handle.
+    cleanup_failed:std::sync::atomic::AtomicBool,
     native_writes:bool,
+    copy_busy:Arc<AtomicBool>,
+    copy_stopping:AtomicBool,
+    // Live resource authority; OriginRegistry also retains historical attribution.
+    copy_owner:Mutex<CopyOwner>,
+    owner_idle:Condvar,
+    #[cfg(feature="test-fixtures")]
+    test_writer:Mutex<Option<Arc<dyn Fn()->ContractResult<Box<dyn WriteApi+Send>>+Send+Sync>>>,
     #[cfg(feature="test-fixtures")]
     pub before_commit:Mutex<Option<Arc<dyn Fn()+Send+Sync>>>,
     #[cfg(feature="test-fixtures")]
@@ -20,7 +40,7 @@ pub struct SharedRuntime {
 enum Target {File(PathBuf),#[cfg(feature="test-fixtures")] Memory,#[cfg(feature="test-fixtures")] Manual{path:PathBuf,product:PathBuf}}
 enum Query {
     List(ListClipsRequest,SyncSender<ContractResult<ListClipsResult>>),
-    Copy(i64,Instant,SyncSender<ContractResult<u64>>),
+    Copy(i64,Instant,WritePermit,SyncSender<WriteReply>),
     Text(GetClipTextRequest,SyncSender<ContractResult<GetClipTextResult>>),
     #[cfg(feature="test-fixtures")]
     Fault(bool,SyncSender<ContractResult<()>>),
@@ -50,6 +70,31 @@ fn single_instance()->ContractResult<std::os::windows::io::OwnedHandle>{
 }
 
 impl SharedRuntime {
+    fn publish_copy_owner(&self,owner:usize){
+        let mut lifetime=self.copy_owner.lock().unwrap_or_else(|e|e.into_inner());
+        assert!(owner!=0&&lifetime.owner.is_none()&&lifetime.borrowers==0);
+        if !self.copy_stopping.load(Ordering::Acquire){lifetime.owner=Some(owner);}
+    }
+    fn borrow_copy_owner(&self)->ContractResult<CopyOwnerLease<'_>>{
+        let mut lifetime=self.copy_owner.lock().unwrap_or_else(|e|e.into_inner());
+        let owner=lifetime.owner.filter(|_|!self.copy_stopping.load(Ordering::Acquire)).ok_or_else(||ContractError::new(ErrorCode::InjectionFailed,"clipboard owner unavailable"))?;
+        lifetime.borrowers+=1;Ok(CopyOwnerLease{shared:self,owner})
+    }
+    fn revoke_copy_owner(&self){
+        self.copy_stopping.store(true,Ordering::Release);
+        self.copy_owner.lock().unwrap_or_else(|e|e.into_inner()).owner=None;
+    }
+    fn close_capture(&self,close:impl FnOnce()->ContractResult<()>){
+        self.revoke_copy_owner();
+        let mut owner=self.copy_owner.lock().unwrap_or_else(|e|e.into_inner());
+        // The listener has its own pump thread; waiting here must not stop it.
+        while owner.borrowers!=0{owner=self.owner_idle.wait(owner).unwrap_or_else(|e|e.into_inner());}
+        drop(owner);self.capture_closed(close());
+    }
+    fn capture_closed(&self,result:ContractResult<()>){
+        if result.is_err(){self.cleanup_failed.store(true,std::sync::atomic::Ordering::Release);}
+        let mut s=self.state.lock().unwrap_or_else(|e|e.into_inner());s.listener_ready=false;s.worker_service=if result.is_ok(){"stopped"}else{"failed"}.into();drop(s);self.notify_status();
+    }
     fn notify_status(&self){let revision={let mut s=self.state.lock().unwrap_or_else(|e|e.into_inner());s.revision+=1;s.revision};(self.events)("status_changed",revision);self.wake.notify_all();}
     fn commit_one(&self,store:&mut Store)->bool{
         let gate=self.gate.lock().unwrap_or_else(|e|e.into_inner());
@@ -114,7 +159,10 @@ impl HostRuntime {
     fn create(target:Target,data_dir:String,events:Events,production:bool,instance:Option<std::os::windows::io::OwnedHandle>)->ContractResult<Self>{
         if !RETAINED.lock().unwrap_or_else(|e|e.into_inner()).is_empty(){return Err(cleanup());}
         let state=Arc::new(Mutex::new(CaptureState::new(&uuid::Uuid::new_v4().simple().to_string())));
-        let shared=Arc::new(SharedRuntime{state,gate:Mutex::new(()),wake:Condvar::new(),events,_instance:instance,listener_failed:std::sync::atomic::AtomicBool::new(false),native_writes:production,
+        let shared=Arc::new(SharedRuntime{state,gate:Mutex::new(()),wake:Condvar::new(),events,_instance:instance,listener_failed:std::sync::atomic::AtomicBool::new(false),cleanup_failed:std::sync::atomic::AtomicBool::new(false),native_writes:production,
+            copy_busy:Arc::new(AtomicBool::new(false)),copy_stopping:AtomicBool::new(false),
+            copy_owner:Mutex::new(CopyOwner{owner:None,borrowers:0}),owner_idle:Condvar::new(),
+            #[cfg(feature="test-fixtures")]test_writer:Mutex::new(None),
             #[cfg(feature="test-fixtures")]before_commit:Mutex::new(None),
             #[cfg(feature="test-fixtures")]before_policy:Mutex::new(None),
         });
@@ -139,7 +187,9 @@ impl HostRuntime {
                     Ok(pipeline)=>pipeline,Err(_)=>{shared.listener_failed.store(true,std::sync::atomic::Ordering::Release);let mut s=shared.state.lock().unwrap_or_else(|e|e.into_inner());s.admission=Admission::Failed;drop(s);let _=ready_tx.send(());shared.notify_status();return;}
                 };
                 #[cfg(feature="test-fixtures")]if let Some(exe)=test_product{pipeline.use_test_product(exe);}
+                let owner=shared.state.lock().unwrap_or_else(|e|e.into_inner()).origins.owner();shared.publish_copy_owner(owner);
                 let _=ready_tx.send(());shared.notify_status();
+                let capture_result=std::panic::catch_unwind(std::panic::AssertUnwindSafe(||{
                 let mut last_status=0;
                 loop {
                     if shared.state.lock().unwrap_or_else(|e|e.into_inner()).stopping{break;}
@@ -154,7 +204,9 @@ impl HostRuntime {
                     if s.stopping{break;}
                     let _=shared.wake.wait_timeout(s,Duration::from_millis(20));
                 }
-                let result=pipeline.close();let mut s=shared.state.lock().unwrap_or_else(|e|e.into_inner());s.listener_ready=false;s.worker_service=if result.is_ok(){"stopped"}else{"failed"}.into();drop(s);shared.notify_status();
+                }));
+                shared.close_capture(||pipeline.close());
+                if let Err(panic)=capture_result{std::panic::resume_unwind(panic);}
             }).map_err(|_|cleanup())?;
             *runtime.capture.lock().unwrap_or_else(|e|e.into_inner())=Some(capture);
             if ready_rx.recv_timeout(Duration::from_secs(3)).is_err(){return Err(cleanup());}
@@ -193,8 +245,23 @@ impl HostRuntime {
     /// Internal Rust entry only; the WebView has no arbitrary write command.
     pub fn write_stored_text(&self,clip_id:i64)->ContractResult<u64>{
         if clip_id<=0{return Err(ContractError::invalid_input("invalid clip id"));}
-        if self.shared.state.lock().unwrap_or_else(|e|e.into_inner()).stopping{return Err(ContractError::new(ErrorCode::Busy,"runtime is stopping"));}
-        let(tx,rx)=mpsc::sync_channel(1);self.queries.try_send(Query::Copy(clip_id,Instant::now()+Duration::from_secs(3),tx)).map_err(|_|ContractError::new(ErrorCode::Busy,"history query queue is full"))?;self.shared.wake.notify_all();rx.recv_timeout(Duration::from_secs(3)).map_err(|_|ContractError::new(ErrorCode::Timeout,"clipboard write result is unknown"))?
+        self.copy_with_budget(clip_id,Instant::now()+Duration::from_secs(3),Duration::from_secs(3)).map_err(|failure|failure.error)
+    }
+    fn queue_copy(&self,id:i64,deadline:Instant)->Result<Receiver<WriteReply>,WriteFailure>{
+        if self.shared.copy_stopping.load(Ordering::Acquire){return Err(ContractError::new(ErrorCode::Busy,"runtime is stopping").into());}
+        if self.shared.copy_busy.compare_exchange(false,true,Ordering::AcqRel,Ordering::Acquire).is_err(){return Err(ContractError::new(ErrorCode::Busy,"clipboard write is pending").into());}
+        let permit=WritePermit(self.shared.copy_busy.clone());
+        let(tx,rx)=mpsc::sync_channel(1);
+        self.queries.try_send(Query::Copy(id,deadline,permit,tx)).map_err(|_|WriteFailure::from(ContractError::new(ErrorCode::Busy,"history query queue is full")))?;
+        self.shared.wake.notify_all();Ok(rx)
+    }
+    fn copy_with_budget(&self,id:i64,deadline:Instant,wait:Duration)->WriteReply{
+        self.queue_copy(id,deadline)?.recv_timeout(wait).unwrap_or_else(|_|Err(WriteFailure{error:ContractError::new(ErrorCode::Timeout,"clipboard write result is unknown"),may_have_written:true}))
+    }
+    pub fn copy_clip_text(&self,request:CopyClipTextRequest)->ContractResult<CopyClipTextResult>{
+        let request=parse_copy_clip_text_request(&serde_json::json!({"request_id":request.request_id,"clip_id":request.clip_id}))?;
+        let result=self.copy_with_budget(positive_id_as_i64(&request.clip_id),Instant::now()+Duration::from_secs(3),Duration::from_secs(3));
+        Ok(copy_result(&request,result))
     }
     pub fn set_exclusions(&self,paths:Vec<String>)->ContractResult<StatusResult>{let paths=parse_set_excluded_apps_request(&serde_json::json!({"paths":paths}))?;let gate=self.shared.gate.lock().unwrap_or_else(|e|e.into_inner());let mut s=self.shared.state.lock().unwrap_or_else(|e|e.into_inner());if s.stopping{return Err(ContractError::new(ErrorCode::Busy,"runtime is stopping"));}s.set_exclusions(paths);drop(s);drop(gate);self.shared.notify_status();Ok(self.status())}
     #[cfg(feature="test-fixtures")]
@@ -202,7 +269,7 @@ impl HostRuntime {
     #[cfg(feature="test-fixtures")]
     pub fn queue_test_text_query(&self,request:GetClipTextRequest)->ContractResult<Receiver<ContractResult<GetClipTextResult>>>{let(tx,rx)=mpsc::sync_channel(1);self.queries.try_send(Query::Text(request,tx)).map_err(|_|ContractError::new(ErrorCode::Busy,"history query queue is full"))?;self.shared.wake.notify_all();Ok(rx)}
     #[cfg(feature="test-fixtures")]
-    pub fn expired_test_copy(&self,id:i64)->ContractResult<u64>{let(tx,rx)=mpsc::sync_channel(1);self.queries.try_send(Query::Copy(id,Instant::now()-Duration::from_secs(1),tx)).map_err(|_|unavailable())?;self.shared.wake.notify_all();rx.recv_timeout(Duration::from_secs(2)).map_err(|_|unavailable())?}
+    pub fn expired_test_copy(&self,id:i64)->ContractResult<u64>{self.copy_with_budget(id,Instant::now()-Duration::from_secs(1),Duration::from_secs(2)).map_err(|failure|failure.error)}
     #[cfg(feature="test-fixtures")]
     pub fn inject_response(&self,sequence:u32,mut response:crate::clipboard::capture::CaptureResponse)->ContractResult<()> {
         let mut s=self.shared.state.lock().unwrap_or_else(|e|e.into_inner());s.observe(sequence,0);let ticket=s.begin_current(sequence).ok_or_else(||ContractError::new(ErrorCode::Busy,"capture admission closed"))?;response.capture_id=ticket.message.capture_id.clone();response.policy_epoch=ticket.message.policy_epoch;let decoded=crate::clipboard::protocol::decode_snapshot(&serde_json::to_vec(&response).map_err(|_|unavailable())?,&ticket.message)?;s.complete(ticket,decoded);drop(s);self.shared.notify_status();Ok(())
@@ -210,19 +277,72 @@ impl HostRuntime {
     #[cfg(feature="test-fixtures")]
     pub fn set_test_fault(&self,enabled:bool)->ContractResult<()> {let(tx,rx)=mpsc::sync_channel(1);self.queries.try_send(Query::Fault(enabled,tx)).map_err(|_|unavailable())?;self.shared.wake.notify_all();rx.recv_timeout(Duration::from_secs(3)).map_err(|_|unavailable())?}
     pub fn shutdown(&self,budget:Duration)->ContractResult<()> {
+        self.shared.revoke_copy_owner();
         self.shared.state.lock().unwrap_or_else(|e|e.into_inner()).stop_observing();self.shared.wake.notify_all();
         let deadline=Instant::now()+budget;
-        finish_thread(&self.capture,deadline)?;finish_thread(&self.storage,deadline)?;self.exit_ready.store(true,std::sync::atomic::Ordering::Release);Ok(())
+        let capture=finish_thread(&self.capture,deadline,&self.shared.cleanup_failed);
+        let storage=finish_thread(&self.storage,deadline,&self.shared.cleanup_failed);
+        capture?;storage?;
+        if self.shared.cleanup_failed.load(std::sync::atomic::Ordering::Acquire){return Err(cleanup());}
+        self.exit_ready.store(true,std::sync::atomic::Ordering::Release);Ok(())
     }
     pub fn exit_failed(&self){self.shared.state.lock().unwrap_or_else(|e|e.into_inner()).admission=Admission::Failed;self.shared.notify_status();}
 }
-fn finish_thread(slot:&Mutex<Option<JoinHandle<()>>>,deadline:Instant)->ContractResult<()> {
+fn copy_result(request:&CopyClipTextRequest,result:WriteReply)->CopyClipTextResult{
+    match result{
+        Ok(_)=>CopyClipTextResult::new(request,CopyOutcome::Copied,None),
+        Err(failure)=>CopyClipTextResult::new(request,if failure.may_have_written{CopyOutcome::Unknown}else{CopyOutcome::NotWritten},Some(failure.error.code)),
+    }
+}
+
+fn execute_copy(shared:&SharedRuntime,store:&Option<Store>,id:i64,deadline:Instant)->WriteReply{
+    let before_write=||{
+        if shared.copy_stopping.load(Ordering::Acquire){return Err(ContractError::new(ErrorCode::Busy,"runtime is stopping"));}
+        if Instant::now()>=deadline{return Err(ContractError::new(ErrorCode::Timeout,"clipboard write expired"));}
+        Ok(())
+    };
+    before_write()?;
+    #[cfg(feature="test-fixtures")]
+    let test_writer=shared.test_writer.lock().unwrap_or_else(|e|e.into_inner()).clone();
+    #[cfg(feature="test-fixtures")]
+    let synthetic=test_writer.is_some();
+    #[cfg(not(feature="test-fixtures"))]
+    let synthetic=false;
+    if !shared.native_writes&&!synthetic{return Err(ContractError::new(ErrorCode::PermissionUnknown,"native clipboard writes are disabled in synthetic tests").into());}
+    let clip=store.as_ref().ok_or_else(unavailable)?.get(id)?.ok_or_else(||ContractError::new(ErrorCode::NotFound,"clip not found"))?;
+    let text=clip.snapshot.payloads.iter().find(|p|p.format_name=="CF_UNICODETEXT").ok_or_else(||ContractError::invalid_input("clip has no Unicode text"))?;
+    crate::clipboard::capture::validate_payloads(&[text.clone()]).map_err(|_|ContractError::invalid_input("invalid clipboard text"))?;
+    before_write()?;
+    let owner=shared.borrow_copy_owner()?;
+    let mut writer:Box<dyn WriteApi>= {
+        #[cfg(feature="test-fixtures")]
+        if let Some(factory)=test_writer {factory()?}else{Box::new(crate::clipboard::windows::WindowsWriter::new()?)}
+        #[cfg(not(feature="test-fixtures"))]
+        {Box::new(crate::clipboard::windows::WindowsWriter::new()?)}
+    };
+    let(counter,marker)={
+        let mut s=shared.state.lock().unwrap_or_else(|e|e.into_inner());
+        before_write()?;
+        if s.stopping{return Err(ContractError::new(ErrorCode::Busy,"runtime is stopping").into());}
+        if s.origins.owner()!=owner.owner{return Err(ContractError::new(ErrorCode::InjectionFailed,"clipboard owner unavailable").into());}
+        s.origins.begin()?
+    };
+    let attempt=crate::clipboard::origin::write_registered_text(writer.as_mut(),owner.owner,counter,&marker,&text.data,before_write);
+    // Native writer Drop may finish a failed close. Keep the listener borrowed
+    // through that cleanup and the final origin-registry transition.
+    drop(writer);
+    shared.state.lock().unwrap_or_else(|e|e.into_inner()).origins.finish(counter,attempt.sequence);
+    drop(owner);
+    attempt.result
+}
+fn finish_thread(slot:&Mutex<Option<JoinHandle<()>>>,deadline:Instant,cleanup_failed:&std::sync::atomic::AtomicBool)->ContractResult<()> {
     use std::os::windows::io::AsRawHandle;
     use windows_sys::Win32::{Foundation::WAIT_OBJECT_0,System::Threading::WaitForSingleObject};
     let mut slot=slot.lock().unwrap_or_else(|e|e.into_inner());let Some(thread)=slot.as_ref() else{return Ok(());};
     let timeout=deadline.saturating_duration_since(Instant::now()).as_millis().min(u32::MAX as u128) as u32;
     if unsafe{WaitForSingleObject(thread.as_raw_handle(),timeout)}!=WAIT_OBJECT_0{return Err(cleanup());}
-    slot.take().unwrap().join().map_err(|_|cleanup())
+    // A consumed failed join must not become success on the next shutdown call.
+    slot.take().unwrap().join().map_err(|_|{cleanup_failed.store(true,std::sync::atomic::Ordering::Release);cleanup()})
 }
 impl Drop for HostRuntime {fn drop(&mut self){let _=self.shutdown(Duration::from_secs(3));for slot in [&self.capture,&self.storage]{if let Some(thread)=slot.lock().unwrap_or_else(|e|e.into_inner()).take(){RETAINED.lock().unwrap_or_else(|e|e.into_inner()).push(thread);}}}}
 
@@ -231,18 +351,9 @@ fn storage_loop(shared:&SharedRuntime,store:&mut Option<Store>,queries:Receiver<
         for _ in 0..4 {match queries.try_recv(){
             Ok(Query::List(request,reply))=>{let _=reply.send(store.as_ref().ok_or_else(unavailable).and_then(|s|s.list_recent(&request)));}
             Ok(Query::Text(request,reply))=>{let _=reply.send(store.as_ref().ok_or_else(unavailable).and_then(|s|s.get_clip_text(&request)));}
-            Ok(Query::Copy(id,deadline,reply))=>{
-                let result=(||{
-                    if Instant::now()>=deadline{return Err(ContractError::new(ErrorCode::Timeout,"clipboard write expired"));}
-                    if !shared.native_writes{return Err(ContractError::new(ErrorCode::PermissionUnknown,"native clipboard writes are disabled in synthetic tests"));}
-                    let clip=store.as_ref().ok_or_else(unavailable)?.get(id)?.ok_or_else(||ContractError::new(ErrorCode::NotFound,"clip not found"))?;
-                    let text=clip.snapshot.payloads.iter().find(|p|p.format_name=="CF_UNICODETEXT").ok_or_else(||ContractError::invalid_input("clip has no Unicode text"))?;
-                    let mut s=shared.state.lock().unwrap_or_else(|e|e.into_inner());if s.stopping{return Err(ContractError::new(ErrorCode::Busy,"runtime is stopping"));}
-                    if Instant::now()>=deadline{return Err(ContractError::new(ErrorCode::Timeout,"clipboard write expired"));}
-                    let mut writer=crate::clipboard::windows::WindowsWriter::new()?;
-                    if Instant::now()>=deadline{return Err(ContractError::new(ErrorCode::Timeout,"clipboard write expired"));}
-                    crate::clipboard::origin::write_text(&mut writer,&mut s.origins,&text.data)
-                })();let _=reply.send(result);shared.wake.notify_all();
+            Ok(Query::Copy(id,deadline,permit,reply))=>{
+                let result=execute_copy(shared,store,id,deadline);
+                drop(permit);let _=reply.send(result);shared.wake.notify_all();
             }
             #[cfg(feature="test-fixtures")]
             Ok(Query::Fault(enabled,reply))=>{let _=reply.send(store.as_mut().ok_or_else(unavailable).and_then(|s|s.set_test_commit_fault(enabled)));}
@@ -253,5 +364,88 @@ fn storage_loop(shared:&SharedRuntime,store:&mut Option<Store>,queries:Receiver<
         if state.stopping&&state.queue_usage().0==0{state.storage_ready=false;break;}
         if wrote{continue;}
         let _=shared.wake.wait_timeout(state,Duration::from_millis(20));
+    }
+}
+
+#[cfg(all(test,feature="test-fixtures"))]
+#[path="host_explicit_copy_tests.rs"]
+mod explicit_copy_tests;
+
+#[cfg(all(test,feature="test-fixtures"))]
+mod shutdown_tests {
+    use super::*;
+    use std::sync::atomic::Ordering;
+
+    // Inject only the close-result boundary; never construct native capture resources.
+    fn capture(runtime:&HostRuntime,result:ContractResult<()>,panic:bool)->mpsc::Sender<()> {
+        let shared=runtime.shared.clone();let(tx,rx)=mpsc::channel();let(ready_tx,ready_rx)=mpsc::channel();
+        let thread=std::thread::spawn(move||{
+            ready_tx.send(()).unwrap();let _=rx.recv_timeout(Duration::from_secs(5));
+            assert!(!panic,"synthetic capture shutdown panic");
+            shared.capture_closed(result);
+        });
+        *runtime.capture.lock().unwrap()=Some(thread);
+        ready_rx.recv_timeout(Duration::from_secs(2)).unwrap();tx
+    }
+    fn memory()->HostRuntime{HostRuntime::for_test_memory(Arc::new(|_,_|{})).unwrap()}
+    fn assert_failed(runtime:&HostRuntime,result:ContractResult<()>){
+        assert_eq!(result.unwrap_err().code,ErrorCode::CleanupFailed);
+        assert!(!runtime.exit_ready.load(Ordering::Acquire));
+    }
+    fn assert_joined(runtime:&HostRuntime){
+        assert!(runtime.capture.lock().unwrap().is_none());
+        assert!(runtime.storage.lock().unwrap().is_none(),"storage must be joined despite capture failure");
+        assert_eq!(runtime.status().services.storage,"stopped");
+    }
+
+    #[test]
+    fn r1_shutdown_cleanup_success_is_repeatable(){
+        let runtime=memory();capture(&runtime,Ok(()),false).send(()).unwrap();
+        runtime.shutdown(Duration::from_secs(2)).unwrap();runtime.shutdown(Duration::ZERO).unwrap();
+        assert!(runtime.exit_ready.load(Ordering::Acquire));assert_joined(&runtime);
+    }
+    #[test]
+    fn r1_shutdown_operational_failure_does_not_mean_cleanup_failure(){
+        let runtime=memory();runtime.shared.state.lock().unwrap().worker_service="failed".into();
+        runtime.shutdown(Duration::from_secs(2)).unwrap();
+        assert!(runtime.exit_ready.load(Ordering::Acquire));assert_joined(&runtime);
+    }
+    #[test]
+    fn r1_shutdown_cleanup_error_survives_repeated_shutdown(){
+        let runtime=memory();capture(&runtime,Err(cleanup()),false).send(()).unwrap();
+        assert_failed(&runtime,runtime.shutdown(Duration::from_secs(2)));assert_joined(&runtime);
+        assert_failed(&runtime,runtime.shutdown(Duration::ZERO));
+        assert_eq!(runtime.status().services.worker,"failed");
+    }
+    #[test]
+    fn r1_shutdown_capture_panic_survives_consumed_handle(){
+        let runtime=memory();capture(&runtime,Ok(()),true).send(()).unwrap();
+        assert_failed(&runtime,runtime.shutdown(Duration::from_secs(2)));assert_joined(&runtime);
+        assert_failed(&runtime,runtime.shutdown(Duration::ZERO));
+    }
+    #[test]
+    fn r1_shutdown_storage_panic_survives_consumed_handle(){
+        let runtime=HostRuntime::for_test_memory(Arc::new(|_,_|{
+            assert_ne!(std::thread::current().name(),Some("history-storage"),"synthetic storage shutdown panic");
+        })).unwrap();
+        assert_failed(&runtime,runtime.shutdown(Duration::from_secs(2)));assert_joined(&runtime);
+        assert_failed(&runtime,runtime.shutdown(Duration::ZERO));
+    }
+    #[test]
+    fn r1_shutdown_timeout_retains_capture_until_success(){
+        let runtime=memory();let release=capture(&runtime,Ok(()),false);
+        let timed_out=runtime.shutdown(Duration::ZERO);let retained=runtime.capture.lock().unwrap().is_some();
+        let ready=runtime.exit_ready.load(Ordering::Acquire);release.send(()).unwrap();
+        let completed=runtime.shutdown(Duration::from_secs(2));
+        assert_eq!(timed_out.unwrap_err().code,ErrorCode::CleanupFailed);assert!(retained);assert!(!ready);
+        completed.unwrap();assert!(runtime.exit_ready.load(Ordering::Acquire));assert_joined(&runtime);
+    }
+    #[test]
+    fn r1_shutdown_timeout_then_cleanup_error_stays_failed(){
+        let runtime=memory();let release=capture(&runtime,Err(cleanup()),false);
+        let timed_out=runtime.shutdown(Duration::ZERO);release.send(()).unwrap();
+        assert_eq!(timed_out.unwrap_err().code,ErrorCode::CleanupFailed);
+        assert_failed(&runtime,runtime.shutdown(Duration::from_secs(2)));assert_joined(&runtime);
+        assert_failed(&runtime,runtime.shutdown(Duration::ZERO));
     }
 }

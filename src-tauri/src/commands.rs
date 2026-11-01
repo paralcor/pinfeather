@@ -26,6 +26,12 @@ pub async fn get_clip_text(window:tauri::WebviewWindow,runtime:tauri::State<'_,A
     authorize(&window)?;let request=parse_get_clip_text_request(&request)?;let runtime=runtime.inner().clone();tauri::async_runtime::spawn_blocking(move||runtime.get_clip_text(request)).await.map_err(|_|join_failed())?
 }
 #[tauri::command]
+pub async fn copy_clip_text(window:tauri::WebviewWindow,runtime:tauri::State<'_,Arc<HostRuntime>>,request:serde_json::Value)->ContractResult<CopyClipTextResult>{
+    authorize(&window)?;let request=parse_copy_clip_text_request(&request)?;let runtime=runtime.inner().clone();
+    let uncertain=CopyClipTextResult::new(&request,CopyOutcome::Unknown,Some(ErrorCode::CleanupFailed));
+    tauri::async_runtime::spawn_blocking(move||runtime.copy_clip_text(request)).await.unwrap_or(Ok(uncertain))
+}
+#[tauri::command]
 pub async fn set_capture_enabled(window:tauri::WebviewWindow,runtime:tauri::State<'_,Arc<HostRuntime>>,request:serde_json::Value)->ContractResult<StatusResult>{
     authorize(&window)?;let enabled=parse_set_capture_enabled_request(&request)?;let runtime=runtime.inner().clone();tauri::async_runtime::spawn_blocking(move||runtime.set_enabled(enabled)).await.map_err(|_|join_failed())?
 }

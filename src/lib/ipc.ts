@@ -306,6 +306,36 @@ export interface GetClipTextRequest {
   offset: number;
 }
 
+export interface CopyClipTextRequest { request_id: string; clip_id: string; }
+export interface CopyClipTextResult extends CopyClipTextRequest {
+  outcome: "copied" | "not_written" | "unknown";
+  reason: ErrorCode | null;
+}
+export function parseCopyClipTextRequest(value: unknown): ContractResult<CopyClipTextRequest> {
+  if (!isPlainObject(value)) return err(invalid("request must be an object"));
+  const bad = rejectUnknownFields(value, ["request_id", "clip_id"]);
+  if (bad) return err(bad);
+  const requestId = validateRequestId(value.request_id);
+  if (!requestId.ok) return requestId;
+  const clipId = parsePositiveId(value.clip_id);
+  if (!clipId.ok) return clipId;
+  return ok({ request_id: requestId.value, clip_id: clipId.value });
+}
+export function parseCopyClipTextResult(value: unknown, request: CopyClipTextRequest): ContractResult<CopyClipTextResult> {
+  if (!isPlainObject(value)) return err(invalid("result must be an object"));
+  const bad = rejectUnknownFields(value, ["request_id", "clip_id", "outcome", "reason"]);
+  if (bad) return err(bad);
+  const ids = parseCopyClipTextRequest({ request_id: value.request_id, clip_id: value.clip_id });
+  if (!ids.ok) return ids;
+  if (ids.value.request_id !== request.request_id || ids.value.clip_id !== request.clip_id) return err(invalid("copy correlation mismatch"));
+  const outcome = value.outcome;
+  if (outcome !== "copied" && outcome !== "not_written" && outcome !== "unknown") return err(invalid("invalid copy outcome"));
+  const reason = value.reason;
+  if (reason !== null && (typeof reason !== "string" || !ERROR_CODES.includes(reason as ErrorCode))) return err(invalid("invalid copy reason"));
+  if ((outcome === "copied") !== (reason === null)) return err(invalid("invalid copy reason for outcome"));
+  return ok({ ...ids.value, outcome, reason: reason as ErrorCode | null });
+}
+
 export function parseGetClipTextRequest(value: unknown): ContractResult<GetClipTextRequest> {
   if (!isPlainObject(value)) return err(invalid("request must be an object"));
   const bad = rejectUnknownFields(value, ["request_id", "clip_id", "offset"]);

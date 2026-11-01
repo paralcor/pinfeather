@@ -1,8 +1,8 @@
 # 片羽首轮验证、真机验收与测量计划
 
-版本：v1，更新于2026-10-24。本文规定验收要求；E07/T2基础收录与E09/T3基础搜索/预览已有本机人工证据，范围见第6.1、6.2节。E03a的F1–F4已关闭；W0 release在相同单次WM_CLOSE方式下完成无UIA/只读UIA各3次退出复验。三类真实应用的候选已由用户确认，外部IMM方法均返回unknown，IME子关卡needs_plan_revision。用户已批准独立W1/W2先行、W3继续阻塞；W0整体与完整真机矩阵不能由编译或契约测试推断通过。
+版本：v1，更新于2026-11-01。本文规定验收要求；E07/W1/T2基础收录与E09/W2/T3基础搜索/预览已有本机人工证据，范围见第6.1、6.2节。[显式复制独立增量](pinfeather_explicit_copy_stage.md)已完成实现、负责人独立离线及一次最小人工现场验收，见[6.4节](#64-显式复制最小人工现场)。原T0–T3顶层基础进度仍为4/7，不计为T4完成；T4–T6及W4/W5完整范围仍待完成。E03a的F1–F4已关闭；W0 release在相同单次WM_CLOSE方式下完成无UIA/只读UIA各3次退出复验。三类真实应用的候选已由用户确认，外部IMM方法均返回unknown，IME子关卡needs_plan_revision。用户已批准独立W1/W2先行、W3继续阻塞；W0整体与完整真机矩阵不能由编译或契约测试推断通过。
 
-设计见[完整方案](pinfeather_implementation_plan.md)，任务及文件边界见[任务卡](pinfeather_execution_tasks.md)。新 Codex 负责执行报告、逐项 review 和状态维护；历史 Mimo 报告保留实际身份，不改写为 Codex 结果。
+设计见[完整方案](pinfeather_implementation_plan.md)，任务及文件边界见[任务卡](pinfeather_execution_tasks.md)。当前负责人为 Codex gpt-6-astra/high，负责协调、独立审查与验收；执行者为 Codex gpt-6.1-sol/high，仅在明确任务范围内写入，交回后停写。同一范围仅一个写者；带日期的历史角色与执行证据保持原样。
 
 ## 1. 证据层次与完成状态
 
@@ -152,6 +152,37 @@ R2建议本轮审阅采用的初始最低收录标准为：100ms间隔、100条�
 一次性原始证据留在本机归档`pinfeather-e09-desktop-acceptance/run-20261024-ed1585f1/`：`run.json`、`release-build.log`、`manual-results.json`、`checks.json`和`manual/*.json`；数据库、exe、临时脚本和日志不随Git源码分发。复验使用新隔离目录和`--start-paused`，仅由用户复制合成内容；不要复用该归档库作为新一轮空库。
 
 T3基础搜索/预览通过，顶层基础进度4/7。真实列表本轮仅6条，超过50条的UI分页、主动故障、完整跨应用矩阵及1k/10k/100k规模与性能未实测；R6规模/耗时、T4–T6、W0与首轮整体仍待完成，W3保持IME阻塞。
+
+### 6.3 显式复制离线交付
+
+2026-11-01，[显式复制阶段](pinfeather_explicit_copy_stage.md)实现及负责人独立离线验收完成；后续最小人工现场结果见6.4节。正式测试覆盖共享请求/响应、授权纯函数边界、实际内存存储队列与完整Unicode多格式文本、来源/隐私标记及自过滤、每步写入故障和句柄转移、排队过期、3s调用超时后仍保留写入所有权、并发/重复请求、退出、前端切换选择/查询/刷新/卸载与缺失能力。前端使用mock bridge和jsdom；宿主仅注入WriteApi，不调用真实剪贴板。
+
+以下命令可从项目根复验，不需要已有数据库或真实桌面业务：
+
+```powershell
+cargo test --offline --manifest-path src-tauri/Cargo.toml --features test-fixtures --lib explicit_copy -- --nocapture
+cargo test --offline --manifest-path src-tauri/Cargo.toml --test internal_write_contract -- --nocapture
+cargo test --offline --manifest-path src-tauri/Cargo.toml --features test-fixtures --lib r1_shutdown -- --nocapture
+cargo test --offline --manifest-path src-tauri/Cargo.toml --features test-fixtures --lib r3_spawn_cleanup -- --nocapture
+cargo check --offline --manifest-path src-tauri/Cargo.toml --lib
+npm test -- --run
+npm run build
+git diff --check
+```
+
+`runtime_storage_contract`仅运行本次报告列明的安全内存用例；不要直接运行整个Cargo测试集，其中存在原生/子进程测试。完整命令、计数、受控错误实现的失败输出、R1原有改动与R3/九个未跟踪文件字节保护证据保留在本机任务归档的`executor/RESULT.md`和`CHECKS.json`。
+
+第一次负责人复核要求补齐监听窗口的在途写入借用。`host_explicit_copy_tests.rs`增加合成采集线程与资源销毁屏障，经同一宿主关闭路径验证：写入关闭/析构及来源登记结束前资源保持有效，有界退出保留线程；采集失败或窗口借用已撤销后，新请求不得使用旧窗口值。修复前实际失败日志、精确未修复版本、修复后的完整命令和字节保护证据位于同一归档的`repair1/RESULT.md`和`CHECKS.json`。原14个复制用例及R1/R3检查保留；原宿主测试先后顺序的偏离仍按原报告记录，不因本次失败先行而改写。
+
+上述离线检查未执行真实Tauri命令、系统剪贴板、worker/listener、GUI、目标焦点/IME/UIA或已有数据库操作；构建/合成测试不能代替现场结果。后续最小人工现场见6.4节，仍不代表W0/W3、T4–T6、其他W4/W5工作或首轮整体验收通过。
+
+### 6.4 显式复制最小人工现场
+
+2026-11-01，在用户新授权下，以冻结普通Release和新隔离数据运行一次。短文本177字节、长文本113749字节以及开启收录时再次复制的长文本，三份用户粘贴保存输出均与样本逐字节一致。用户确认长文本未加载后续预览页；暂停下复制完整正文通过。
+
+用户复制助手说明曾新增第三条外部历史，原两条基线记为受干扰。保留记录并重新确认三条基线后，用户报告显式复制成功、历史3不变、队列0、忽略0→1、覆盖0→0、无重复；结合第三份完整输出，只接受本轮正常自过滤观察。正常关闭后，本轮宿主及关闭前记录的worker/WebView2直接子进程身份均已消失；未采集退出码或精确关闭耗时，不外推所有进程和故障清理路径。
+
+原始用户报告、授权、包hash、输出和进程记录位于`archive/pinfeather-explicit-copy/run-20261101-astra-01a19617/field-prep/field-output-v1/`，总结为`FIELD-REPORT.md`。最小现场通过不代替完整原生故障、可访问性、Windows/应用/IME兼容性矩阵或自动回贴验收；本轮授权已消费，不包含重启复测。现场验收收口时尚未提交、推送或发布，该记录不预判后续Git状态。
 
 ## 7. R1可控阶段测试与真实边界
 

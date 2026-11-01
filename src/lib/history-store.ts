@@ -1,16 +1,17 @@
 import { createStore } from "zustand/vanilla";
 import type { ClipSummary, ListCursor, StatusResult } from "./ipc";
-import { normalizeQuery, parseGetClipTextRequest, parseGetClipTextResult } from "./ipc";
+import { normalizeQuery, parseGetClipTextRequest, parseGetClipTextResult, parseCopyClipTextResult } from "./ipc";
 import { readableError, type DesktopBridge } from "./desktop";
-export interface HistoryState { status: StatusResult | null; summaries: ClipSummary[]; cursor: ListCursor | null; loading: boolean; changing: boolean; error: string | null; hostMissing: boolean; query: string; selectedId: string | null; previewText: string; previewLoading: boolean; previewError: string | null; previewNextOffset: number | null; }
+export interface HistoryState { status: StatusResult | null; summaries: ClipSummary[]; cursor: ListCursor | null; loading: boolean; changing: boolean; error: string | null; hostMissing: boolean; query: string; selectedId: string | null; previewText: string; previewLoading: boolean; previewError: string | null; previewNextOffset: number | null; copyBusy: boolean; copyMessage: string | null; copyAvailable: boolean; }
 const QUERY_DEBOUNCE_MS = 50;
 const MAX_LIST_CALLS = 2;
 const MAX_PREVIEW_CALLS = 2;
 export function createHistoryModel(bridge: DesktopBridge) {
-  const store = createStore<HistoryState>(() => ({ status: null, summaries: [], cursor: null, loading: false, changing: false, error: null, hostMissing: !bridge.available, query: "", selectedId: null, previewText: "", previewLoading: false, previewError: null, previewNextOffset: null }));
+  const store = createStore<HistoryState>(() => ({ status: null, summaries: [], cursor: null, loading: false, changing: false, error: null, hostMissing: !bridge.available, query: "", selectedId: null, previewText: "", previewLoading: false, previewError: null, previewNextOffset: null, copyBusy: false, copyMessage: null, copyAvailable: bridge.available && typeof bridge.copyText === "function" }));
   let active = false, ready = false, lifetime = 0, generation = 0, request = 0;
   let timer: ReturnType<typeof setTimeout> | null = null, wantPage1 = false, statusBusy = false, statusAgain = false;
   let selection = 0, previewRequest = 0;
+  let copyRequest = 0, copyPending = false;
   // Latest single pending preview need; a selection never owns a queue.
   type PreviewNeed = { clipId: string; offset: number; append: boolean };
   let pendingPreview: PreviewNeed | null = null;
@@ -44,7 +45,7 @@ export function createHistoryModel(bridge: DesktopBridge) {
   function clearSelection() {
     selection += 1;
     pendingPreview = null;
-    store.setState({ selectedId: null, previewText: "", previewLoading: false, previewError: null, previewNextOffset: null });
+    store.setState({ selectedId: null, previewText: "", previewLoading: false, previewError: null, previewNextOffset: null, copyMessage: null });
   }
   /** A list write is authoritative for the rows: a selection that left them is dropped. */
   function syncSelectionWithRows() {
@@ -200,7 +201,7 @@ export function createHistoryModel(bridge: DesktopBridge) {
     if (state.selectedId === id) return;
     if (!state.summaries.some(item => item.id === id)) return;
     selection += 1;
-    store.setState({ selectedId: id, previewText: "", previewLoading: true, previewError: null, previewNextOffset: null });
+    store.setState({ selectedId: id, previewText: "", previewLoading: true, previewError: null, previewNextOffset: null, copyMessage: null });
     pendingPreview = { clipId: id, offset: 0, append: false };
     void pumpPreview();
   }
@@ -284,5 +285,33 @@ export function createHistoryModel(bridge: DesktopBridge) {
       if (active && token === lifetime) store.setState({ changing: false });
     }
   }
-  return { store, start, refresh, more, toggle, setQuery, selectClip, retryPreview, morePreview };
+  async function copyText() {
+    const state = store.getState();
+    const selected = state.summaries.find(item => item.id === state.selectedId);
+    if (!active || !ready || !bridge.available || !bridge.copyText || copyPending || state.loading || !selected?.format_names.includes("CF_UNICODETEXT") || !state.status || state.status.state === "stopping" || state.status.services.storage !== "ready") return;
+    const token = lifetime, sel = selection, gen = generation;
+    const request = { request_id: `copy-${++copyRequest}`, clip_id: selected.id };
+    copyPending = true;
+    store.setState({ copyBusy: true, copyMessage: null });
+    let message = "无法确认复制结果，剪贴板可能已变化。请自行检查；不会自动重试。";
+    try {
+      const parsed = parseCopyClipTextResult(await bridge.copyText(request.request_id, request.clip_id), request);
+      if (parsed.ok) {
+        const result = parsed.value;
+        if (result.outcome === "copied") message = "已复制，可手动粘贴。";
+        if (result.outcome === "not_written") {
+          const reasons: Partial<Record<NonNullable<typeof result.reason>, string>> = {
+            busy: "当前操作繁忙，请稍后手动重试。", not_found: "历史条目已不存在。", invalid_input: "此条目没有可复制的纯文本。", timeout: "请求在写入前已到期。", permission_unknown: "宿主未允许复制。", storage_unavailable: "历史存储不可用。",
+          };
+          message = `未执行复制：${(result.reason && reasons[result.reason]) || "无法开始复制，请稍后手动重试。"}`;
+        }
+      }
+    } catch { /* Once dispatched, transport failure is uncertain; never replay. */ }
+    finally {
+      copyPending = false;
+      store.setState({ copyBusy: false });
+      if (ownsPreview(token, sel, gen)) store.setState({ copyMessage: message });
+    }
+  }
+  return { store, start, refresh, more, toggle, setQuery, selectClip, retryPreview, morePreview, copyText };
 }

@@ -30,6 +30,7 @@ export default function App({ bridge = nativeBridge }: { bridge?: DesktopBridge 
   const searching = normalizedQuery.ok && normalizedQuery.value.length > 0;
   const label = !status ? "正在读取状态" : ({ listening: "正在收录", paused: "已暂停", overloaded: "已停止新增：队列或历史容量已满", failed: "存储或抓取异常", stopping: "正在退出", startup: "正在启动" })[status.state];
   const retry = status?.services.storage === "failed" && status.queue.items > 0;
+  const copyHasText = view.summaries.find(item => item.id === view.selectedId)?.format_names.includes("CF_UNICODETEXT") ?? false;
   return (
     <main className="shell history-shell">
       <header><h1>片羽</h1><p className="tagline">剪贴板历史 · 隔离运行</p></header>
@@ -59,8 +60,11 @@ export default function App({ bridge = nativeBridge }: { bridge?: DesktopBridge 
         <section className="preview-card" aria-labelledby="preview-heading">
           <div className="toolbar">
             <h2 id="preview-heading">正文预览</h2>
+            <button type="button" disabled={!view.copyAvailable || view.copyBusy || view.loading || !copyHasText || !status || status.state === "stopping" || status.services.storage !== "ready"} onClick={() => void model.copyText()}>{view.copyBusy ? "复制中…" : "复制纯文本"}</button>
             {view.selectedId && <button type="button" onClick={() => model.selectClip(null)}>关闭正文预览</button>}
           </div>
+          {!view.copyAvailable && <p className="notice">当前宿主不支持复制纯文本。</p>}
+          {view.copyMessage && <p role="status" aria-live="polite">{view.copyMessage}</p>}
           {!view.selectedId ? <p className="notice">从列表中选择一条历史以预览正文。</p> : <>
             {view.previewLoading && <p role="status">正在读取正文…</p>}
             {view.previewError && <p className="error" role="alert">{view.previewError}</p>}

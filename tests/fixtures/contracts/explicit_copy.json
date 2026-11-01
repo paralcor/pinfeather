@@ -1,0 +1,34 @@
+{
+  "requests": [
+    {"valid": true, "value": {"request_id": "copy-1", "clip_id": "1"}},
+    {"valid": true, "value": {"request_id": "copy-max", "clip_id": "9223372036854775807"}},
+    {"valid": false, "value": {"request_id": "copy-1", "clip_id": "01"}},
+    {"valid": false, "value": {"request_id": "copy-1", "clip_id": "0"}},
+    {"valid": false, "value": {"request_id": "copy-1", "clip_id": "9223372036854775808"}},
+    {"valid": false, "value": {"request_id": "copy-1", "clip_id": 1}},
+    {"valid": false, "value": {"request_id": "copy-1", "clip_id": "1", "text": "private"}},
+    {"valid": false, "value": {"request_id": "copy-1", "clip_id": "1", "label": "main"}},
+    {"valid": false, "value": {"request_id": "", "clip_id": "1"}},
+    {"valid": false, "value": {"request_id": "有空格", "clip_id": "1"}},
+    {"valid": false, "value": {"request_id": "copy 1", "clip_id": "1"}},
+    {"valid": false, "value": {"request_id": "xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx", "clip_id": "1"}},
+    {"valid": false, "value": {"clip_id": "1"}},
+    {"valid": false, "value": {"request_id": "copy-1"}},
+    {"valid": false, "value": null}
+  ],
+  "request": {"request_id": "copy-1", "clip_id": "1"},
+  "results": [
+    {"valid": true, "value": {"request_id": "copy-1", "clip_id": "1", "outcome": "copied", "reason": null}},
+    {"valid": true, "value": {"request_id": "copy-1", "clip_id": "1", "outcome": "not_written", "reason": "busy"}},
+    {"valid": true, "value": {"request_id": "copy-1", "clip_id": "1", "outcome": "unknown", "reason": "timeout"}},
+    {"valid": false, "value": {"request_id": "copy-1", "clip_id": "2", "outcome": "copied", "reason": null}},
+    {"valid": false, "value": {"request_id": "other", "clip_id": "1", "outcome": "copied", "reason": null}},
+    {"valid": false, "value": {"request_id": "copy-1", "clip_id": "1", "outcome": "copied", "reason": "busy"}},
+    {"valid": false, "value": {"request_id": "copy-1", "clip_id": "1", "outcome": "unknown", "reason": null}},
+    {"valid": false, "value": {"request_id": "copy-1", "clip_id": "1", "outcome": "not_written", "reason": null}},
+    {"valid": false, "value": {"request_id": "copy-1", "clip_id": "1", "outcome": "done", "reason": null}},
+    {"valid": false, "value": {"request_id": "copy-1", "clip_id": "1", "outcome": "unknown", "reason": "private"}},
+    {"valid": false, "value": {"request_id": "copy-1", "clip_id": "1", "outcome": "unknown"}},
+    {"valid": false, "value": {"request_id": "copy-1", "clip_id": "1", "outcome": "copied", "reason": null, "text": "private"}}
+  ]
+}

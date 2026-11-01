@@ -1,5 +1,6 @@
 import { invoke, isTauri } from "@tauri-apps/api/core";
 import { listen } from "@tauri-apps/api/event";
+import { parseCopyClipTextRequest, parseCopyClipTextResult, type CopyClipTextResult } from "./ipc";
 import { parseStatusResult, parseListClipsRequest, parseListClipsResult, parseGetClipTextRequest, parseGetClipTextResult, parseRevisionEvent, type StatusResult, type ListClipsResult, type ListCursor, type GetClipTextResult, type ContractResult } from "./ipc";
 
 export interface DesktopBridge {
@@ -7,6 +8,7 @@ export interface DesktopBridge {
   status(): Promise<StatusResult>;
   list(requestId: string, cursor: ListCursor | null, query?: string): Promise<ListClipsResult>;
   getText(requestId: string, clipId: string, offset: number): Promise<GetClipTextResult>;
+  copyText?(requestId: string, clipId: string): Promise<CopyClipTextResult>;
   setEnabled(enabled: boolean): Promise<StatusResult>;
   subscribe(name: "history_changed" | "status_changed", callback: () => void): Promise<() => void>;
 }
@@ -30,6 +32,16 @@ export const nativeBridge: DesktopBridge = {
     return checked(parseGetClipTextResult(await invoke("get_clip_text", { request }), request));
   },
   async setEnabled(enabled) { return checked(parseStatusResult(await invoke("set_capture_enabled", { request: { enabled } }))); },
+  async copyText(requestId, clipId) {
+    const parsed = parseCopyClipTextRequest({ request_id: requestId, clip_id: clipId });
+    if (!parsed.ok) throw new Error("invalid copy request");
+    const request = parsed.value;
+    try {
+      const result = parseCopyClipTextResult(await invoke("copy_clip_text", { request }), request);
+      if (result.ok) return result.value;
+    } catch { /* A rejected response cannot prove that dispatch had no effects. */ }
+    return { ...request, outcome: "unknown", reason: "protocol_error" };
+  },
   async subscribe(name, callback) { return listen(name, event => { if (parseRevisionEvent(event.payload, "revision").ok) callback(); }); },
 };
 

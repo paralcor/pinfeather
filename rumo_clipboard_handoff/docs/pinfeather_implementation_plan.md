@@ -1,6 +1,10 @@
 # 片羽首轮完整实施方案
 
-版本：v1，更新于 2026-10-24。状态：E00–E06已有工程与相应自动证据，E07/T2基础链路已通过本机人工验收；下一包为E08搜索查询。E03b的IME子关卡仍阻塞W3，扩展真机矩阵及性能验收待办。
+> 2026-11-01 阶段状态：[显式复制历史纯文本](pinfeather_explicit_copy_stage.md)作为 W2 之后、不依赖 W3 的独立增量，已完成实现、负责人独立离线验收及一次最小人工现场验收，范围见[验收计划6.4节](pinfeather_acceptance_plan.md#64-显式复制最小人工现场)。W1/T2与W2/T3基础链路已验收；原T0–T3顶层基础进度仍为4/7，显式复制不计为T4完成。W0/W3的IME/焦点阻塞保留，T4–T6及W4/W5完整范围仍待完成；本轮现场授权已消费，automatic_paste_allowed=false。
+
+版本：v1，更新于 2026-11-01。状态：E07/W1/T2基础收录与E08–E09/W2/T3基础搜索、预览已通过本机验收；显式复制已完成实现、离线及最小人工现场验收，见顶部阶段记录。原T0–T3进度仍为4/7；W0/W3阻塞、T4–T6、W4/W5完整范围及规模/性能矩阵待办。
+
+当前负责人为 Codex gpt-6-astra/high，负责协调、独立审查与验收；执行者为 Codex gpt-6.1-sol/high，仅在明确任务范围内写入，交回后停写。同一范围仅一个写者；带日期的历史角色与执行证据保持原样。
 
 2026-10-23 用户更新职责：新 Codex 会话全程负责设计、实现、修复、验证与 review，是工作区唯一写者。Mimo 已停止执行，原 Codex 会话在确认交接后也停止写入。此前“Codex 不写代码、Mimo 实现”的限制被本次授权替代；历史报告仍保留原执行身份。
 
@@ -259,6 +263,7 @@ Keyset 分页：第1页固定查询开始时的最大 id 作为 upper_id，后�
 | get_status | 无 | startup/listening/paused/overloaded/failed/stopping；各服务 readiness、计数、队列条数/字节、当前数据目录与版本、最近paste结果或null；无正文 |
 | list_clips | request_id、query、limit、cursor 可空 | request_id、normalized_query、summaries、next_cursor；摘要含 id、时间、类型/格式名、preview、source 可信度、字节数 |
 | get_clip_text | request_id、clip_id、offset | request_id、clip_id、text、next_offset；64 KiB，找不到/已删除报 not_found |
+| copy_clip_text | request_id、clip_id | request_id、clip_id、outcome、reason；只按存储 ID 写完整 CF_UNICODETEXT，显式点击，三态结果见下文 |
 | set_capture_enabled | enabled | 更新完成后的 status；暂停确认服从 commit gate，不先发乐观成功 |
 | set_excluded_apps | 规范化 exe 完整路径数组，最多32个 | 更新后 status；每路径最多1024字符，不允许目录/通配符；来源未知规则不变 |
 | set_hotkey | ctrl/alt/shift/win 布尔及单个受支持键 | 注册新键成功后才保存并释放旧键；冲突保留旧键，返回 shortcut_unavailable；拒绝 Win+V |
@@ -317,6 +322,8 @@ Tauri CSP 生产仅本地打包资源和所需 IPC，禁止远程导航/弹窗�
 
 `GetClipTextResult`固定字段为request_id、clip_id（规范i64字符串）、text、next_offset。text为合法Unicode纯文本，UTF-8最多65536字节；next_offset为null或JS安全范围内非负整数。结合对应GetClipTextRequest验证request_id/clip_id回声；next_offset非空时，text必须非空，且next_offset严格等于请求offset加text的UTF-8字节数，计算须检查溢出。null表示正文结束，可返回空文本；正文真实长度和offset字符边界仍由存储读取路径验证，E02合成校验不冒充真实正文读取。
 
+`CopyClipTextResult`固定字段为request_id、clip_id、outcome、reason，两侧严格复核请求关联。outcome=copied时reason必须为null；not_written/unknown时reason为共享ErrorCode。not_written仅表示在可能改变剪贴板前明确拒绝；进入EmptyClipboard后任一步骤失败、发出后的响应超时/断连/不可验证均为unknown。只有文本、来源标记、历史/云禁用标记与CloseClipboard全部成功才为copied，不表示目标已粘贴。宿主唯一写入permit由队列任务持有直到实际完成，3s调用超时不释放它；排队过期和退出禁止后续开始写入，打开后、清空前再核对期限与退出。来源登记的begin/finish短暂持状态锁，系统调用期间保留pending登记并释放状态锁。既有write_stored_text继续使用同一队列及原Result<u64,ContractError>接口；不增加配置或数据库版本。旧DesktopBridge允许缺少可选copyText能力并显示不可用，正式nativeBridge必须实现，不回退浏览器剪贴板。详见[显式复制阶段](pinfeather_explicit_copy_stage.md)。
+
 set_capture_enabled、set_excluded_apps、set_hotkey成功返回StatusResult；panel_ready/dismiss_panel成功返回JSON null，只代表已处理有效当前会话的请求。request_exit返回StatusResult（stopping或退出失败状态），实际已退出不能由响应形状证明。统一失败仍为code/message/retryable，不新增“永远成功”的入口。
 
 事件沿用第7节，history/status revision使用上述u64字符串，panel session/operation使用短标识。PasteClipResult的双状态和reason语义不变。错误也使用真实serde/JSON序列化，转义由序列化器负责；夹具同时验证值、wire类型、未知字段拒绝与安全错误，不只统计accept/reject个数。
@@ -374,19 +381,19 @@ W0 必须先在用户实际配置上做只读探针：浏览器、编辑器、�
 
 2026-10-23 已确认的依赖例外：W0 的工程、契约、传输及回收证据允许 W1/W2 独立开发；IME provider 的 needs_plan_revision 单独阻塞 W3。W4/W5 的原依赖、真实剪贴板测试授权及最终验收要求不变，不把执行顺序调整记成 IME 已通过。
 
-本次移交采用一个 Codex 会话串行写入，不再自动向 Mimo 派工。此前对 Mimo 子agent 的授权属于旧协作安排，不要求新会话启动子agent；不得为并行放宽审批、安装扩展或改变模型。
+当前负责人为 Codex gpt-6-astra/high，负责协调、独立审查与验收；执行者为 Codex gpt-6.1-sol/high，仅在明确任务范围内写入，交回后停写。同一范围仅一个写者；带日期的历史角色与执行证据保持原样。此前对 Mimo 子agent 的授权属于旧协作安排，不自动恢复；不得为并行放宽审批、安装扩展或改变模型。
 
 真实剪贴板、焦点/输入测试仍按验收计划由用户参与。需要多个写者或独立 worktree 时须另行明确安排隔离及未提交基线传递；当前不存在这样的并行写入授权。
 
 ## 11. 当前事实与审阅要点
 
-首轮实现接手基线为 main / `19807067dbf4b80821937514bdf06ba1a2aa1d84`。用户已授权将完成的正式设计、工程和验证内容提交并推送至 origin/main；两个 copy 不改动、不删除、不提交。后续接手须核对实际 HEAD、dirty 清单与 hash，不能 checkout 旧基线丢掉方案和实现。E04 尚无存储源码或数据库操作，其未完成依赖快照仅存本地归档，不纳入发布。
+首轮实现接手基线为 main / `19807067dbf4b80821937514bdf06ba1a2aa1d84`；该历史基线不是当前交付的源码指纹。后续接手须核对实际 HEAD、dirty 清单与 hash，不能 checkout 旧基线丢掉方案和实现。E04–E07的存储、监听和宿主链路已有实现与本机基础证据。两个 copy 及其他受保护未跟踪文件不改动、不删除、不纳入本次提交；本次仅获本地提交授权，推送、PR与发布不在范围。
 
 已有最小 Tauri/Rust/React 工程、锁文件、契约与 fixture supervisor。E03a 的 F2/F3 已按失败回归修复；本会话自审及新进程重跑为 Rust lib 34 项、worker 集成 37 项、前端 28 项、typecheck 和正常 release 构建通过，未发现 fixture 残留。证据在 archive 的 runs/20261023-e03a-codex-owner-fixes/{execution,review}.md；这不是另一模型的独立 review。rustfmt/clippy 缺组件，未安装；保留检查缺口。此前复审报告保留原失败事实。
 
-首轮仍要求启动默认暂停、一个用户一个宿主、W0 先验 IME 可行性、按包 review 以及真实应用人工验收。监听/SQLite/搜索/热键/回贴业务、启动和完整进程树内存均未验收；其余 Windows 组合不得宣称已支持。
+首轮仍要求启动默认暂停、一个用户一个宿主、W0 先验 IME 可行性、按包 review 以及真实应用人工验收。监听/SQLite基础收录、搜索/预览及显式复制的本机接受范围见[验收计划6.1–6.4节](pinfeather_acceptance_plan.md#6-真实应用用例映射)；热键/回贴、完整生命周期、启动性能及完整进程树内存仍未验收，其余Windows组合不得宣称已支持。
 
-E03b 自动部分已实现，见[只读探针说明](pinfeather_w0_probe_guide.md)。最新检查为 Rust lib 38、worker 集成 37、诊断 CLI 2 项；普通 release 构建通过。用户本次授权代运行工程壳复验后，无 UIA/只读 UIA 各 3 次相同单次 WM_CLOSE 均观察到进程树退出，UIA 核对真实目录和暂停状态；不等同人工点击或历史滞留根因已关闭。三目标真实候选已由用户确认，外部 IMM 方法无法判定；用户已批准独立 W1/W2 先行、W3 仍阻塞，W0 不标整体通过。
+E03b 自动部分已实现，见[只读探针说明](pinfeather_w0_probe_guide.md)。该阶段检查为 Rust lib 38、worker 集成 37、诊断 CLI 2 项；普通 release 构建通过。用户本次授权代运行工程壳复验后，无 UIA/只读 UIA 各 3 次相同单次 WM_CLOSE 均观察到进程树退出，UIA 核对真实目录和暂停状态；不等同人工点击或历史滞留根因已关闭。三目标真实候选已由用户确认，外部 IMM 方法无法判定；用户已批准独立 W1/W2 先行、W3 仍阻塞，W0 不标整体通过。
 
 ## 12. 官方依据与限制
 

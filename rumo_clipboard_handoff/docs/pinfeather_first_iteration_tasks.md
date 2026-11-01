@@ -1,6 +1,8 @@
 # 片羽首轮任务清单：规格修订与单机纵向原型
 
-更新日期：2026-10-25。状态：T0/T1、T2基础收录与T3基础搜索/预览已完成，顶层基础进度4/7。E08查询契约、E09前端与HostRuntime跨重启检查通过，普通Release真实桌面搜索/预览已通过本机人工验收，见[验收结果6.2节](pinfeather_acceptance_plan.md#62-e09-本机搜索与正文预览)。E03b/W0仍受IME阻塞，T4–T6、R6规模测量、扩展真机与首轮整体验收待办。当前Codex唯一负责协调、独立审查和验收；实现按任务交给Mimo，同一范围仅一个写者，空闲agent不自动恢复任务。
+> 2026-11-01 阶段状态：[显式复制历史纯文本](pinfeather_explicit_copy_stage.md)作为 W2 之后、不依赖 W3 的独立增量，已完成实现、负责人独立离线验收及一次最小人工现场验收，范围见[验收计划6.4节](pinfeather_acceptance_plan.md#64-显式复制最小人工现场)。W1/T2与W2/T3基础链路已验收；原T0–T3顶层基础进度仍为4/7，显式复制不计为T4完成。W0/W3的IME/焦点阻塞保留，T4–T6及W4/W5完整范围仍待完成；本轮现场授权已消费，automatic_paste_allowed=false。
+
+更新日期：2026-11-01。状态：T0/T1、T2基础收录与T3基础搜索/预览已完成，顶层基础进度4/7。E08查询契约、E09前端与HostRuntime跨重启检查通过，普通Release真实桌面搜索/预览已通过本机人工验收，见[验收结果6.2节](pinfeather_acceptance_plan.md#62-e09-本机搜索与正文预览)。E03b/W0仍受IME阻塞，T4–T6、R6规模测量、扩展真机与首轮整体验收待办。当前负责人为 Codex gpt-6-astra/high，负责协调、独立审查与验收；执行者为 Codex gpt-6.1-sol/high，仅在明确任务范围内写入，交回后停写。同一范围仅一个写者；带日期的历史角色与执行证据保持原样。
 
 IME 最新证据见[UIA 研究结果](pinfeather_ime_uia_findings.md)：Edge＋微软拼音已有空白/组词对照，但提交后范围对象仍存在，状态分类未验收，顶层完成数不变。
 
@@ -161,9 +163,10 @@ R1 的 API 边界见 [SetForegroundWindow](https://learn.microsoft.com/en-us/win
 | E06 内部写回/存储IPC | Codex已装配独立存储线程、提交gate、内部来源规则与真实状态/最近列表。自动规则、真实SQLite与前端检查见 archive/runs/20261024-e06-codex-owner；常规原生集成仍ignored，用户单独执行结果见E07 |
 | E07 / T2 | 本机基础链路通过。Windows 11家庭版x64 build26200、Edge156.0.4314.42、WebView2 155.0.4283.62；Release主界面完成5条/7载荷及两轮重启核对，用户另行执行debug test-fixtures原生内部写回1项通过。记录见 archive/runs/20261024-095055-e07-user-acceptance，[操作指南](pinfeather_development.md)可复跑。退出两次出现WebView2窗口类注销错误1412，未发现数据/进程残留影响，根因待查 |
 | E08–E09 / T3 | 字面全文查询、稳定分页、UTF8分帧及迟到响应保护已有自动证据；普通Release真实WebView的6份合成文本搜索、预览、续读和重启通过，范围见[验收计划6.2节](pinfeather_acceptance_plan.md#62-e09-本机搜索与正文预览) |
+| 显式复制独立增量 | 实现、负责人独立离线验收及一次最小人工现场通过，见[阶段记录](pinfeather_explicit_copy_stage.md)及[验收计划6.4节](pinfeather_acceptance_plan.md#64-显式复制最小人工现场)；不计为T4或增加原4/7完成数，故障/兼容性矩阵未完成 |
 | T4–T6、A1–A11剩余矩阵 | 快捷面板/回贴、完整生命周期及性能未验收；快速复制/交错/占用/隐私标记等扩展真机矩阵仍待办，R2/R3及R6规模测量保持未关闭 |
 
-执行细分见[完整方案](pinfeather_implementation_plan.md)、[E00–E15任务卡](pinfeather_execution_tasks.md)和[验收计划](pinfeather_acceptance_plan.md)。当前Codex唯一协调、独立审查和验收，Mimo按明确任务实现；历史修复保留实际执行身份。W3仍受IME可行性阻塞，人工关卡保持。
+执行细分见[完整方案](pinfeather_implementation_plan.md)、[E00–E15任务卡](pinfeather_execution_tasks.md)和[验收计划](pinfeather_acceptance_plan.md)。当前负责人为 Codex gpt-6-astra/high，负责协调、独立审查与验收；执行者为 Codex gpt-6.1-sol/high，仅在明确任务范围内写入，交回后停写。同一范围仅一个写者；带日期的历史角色与执行证据保持原样。W3仍受IME可行性阻塞，人工关卡保持。
 
 历史环境记录：MSVC x64 19.44.35229、SDK 10.0.22621.0；E03b 工程壳实际加载 WebView2 155.0.4283.62。执行环境记录为 Node 24.19.0、npm 11.17.0、Git 2.55.0.windows.5、Rust/Cargo 1.98.0；Rust 仅在当前进程补 PATH。检查数见上表，不替代产品真机验收。
 

@@ -373,6 +373,57 @@ pub struct GetClipTextRequest {
     pub offset: i64,
 }
 
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct CopyClipTextRequest {
+    pub request_id: String,
+    pub clip_id: String,
+}
+
+pub fn parse_copy_clip_text_request(value: &serde_json::Value) -> ContractResult<CopyClipTextRequest> {
+    let obj = expect_object(value)?;
+    reject_unknown_fields(obj, &["request_id", "clip_id"])?;
+    Ok(CopyClipTextRequest {
+        request_id: validate_request_id(require_field(obj, "request_id")?)?,
+        clip_id: parse_positive_id(require_field(obj, "clip_id")?)?,
+    })
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
+#[serde(rename_all = "snake_case")]
+pub enum CopyOutcome { Copied, NotWritten, Unknown }
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+pub struct CopyClipTextResult {
+    pub request_id: String,
+    pub clip_id: String,
+    pub outcome: CopyOutcome,
+    pub reason: Option<ErrorCode>,
+}
+
+impl CopyClipTextResult {
+    pub fn new(request: &CopyClipTextRequest, outcome: CopyOutcome, reason: Option<ErrorCode>) -> Self {
+        Self { request_id: request.request_id.clone(), clip_id: request.clip_id.clone(), outcome, reason }
+    }
+}
+
+pub fn parse_copy_clip_text_result(value: &serde_json::Value, request: &CopyClipTextRequest) -> ContractResult<CopyClipTextResult> {
+    let obj = expect_object(value)?;
+    reject_unknown_fields(obj, &["request_id", "clip_id", "outcome", "reason"])?;
+    let request_id = validate_request_id(require_field(obj, "request_id")?)?;
+    let clip_id = parse_positive_id(require_field(obj, "clip_id")?)?;
+    if request_id != request.request_id || clip_id != request.clip_id { return Err(reject("copy correlation mismatch")); }
+    let outcome = match require_field(obj, "outcome")?.as_str() {
+        Some("copied") => CopyOutcome::Copied,
+        Some("not_written") => CopyOutcome::NotWritten,
+        Some("unknown") => CopyOutcome::Unknown,
+        _ => return Err(reject("invalid copy outcome")),
+    };
+    let reason = require_field(obj, "reason")?;
+    let reason = if reason.is_null() { None } else { Some(reason.as_str().and_then(ErrorCode::from_str).ok_or_else(||reject("invalid copy reason"))?) };
+    if (outcome == CopyOutcome::Copied) != reason.is_none() { return Err(reject("invalid copy reason for outcome")); }
+    Ok(CopyClipTextResult { request_id, clip_id, outcome, reason })
+}
+
 pub fn parse_get_clip_text_request(
     value: &serde_json::Value,
 ) -> ContractResult<GetClipTextRequest> {

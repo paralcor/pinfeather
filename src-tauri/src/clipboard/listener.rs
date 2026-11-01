@@ -54,8 +54,11 @@ unsafe extern "system" fn window_proc(hwnd:HWND,msg:u32,w:usize,l:isize)->isize 
     let ctx=GetWindowLongPtrW(hwnd,GWLP_USERDATA) as *mut Context;
     if !ctx.is_null(){match msg {
         WM_CLIPBOARDUPDATE=>{
+            if (*ctx).failed.load(Ordering::Acquire){return 0;}
             let result=std::panic::catch_unwind(std::panic::AssertUnwindSafe(||((*ctx).callback)(GetClipboardSequenceNumber(),(*ctx).started.elapsed().as_millis().min(u64::MAX as u128) as u64)));
-            if result.is_err(){(*ctx).failed.store(true,Ordering::Release);PostMessageW(hwnd,WM_CLOSE,0,0);}return 0;
+            // Host health cleanup revokes/drains active owner borrowers before
+            // closing this pump. A failed callback must not destroy it early.
+            if result.is_err(){(*ctx).failed.store(true,Ordering::Release);}return 0;
         }
         WM_CLOSE=>{if (*ctx).registered {if RemoveClipboardFormatListener(hwnd)==0{(*ctx).failed.store(true,Ordering::Release);}(*ctx).registered=false;}DestroyWindow(hwnd);return 0;}
         WM_DESTROY=>{PostQuitMessage(0);return 0;}
