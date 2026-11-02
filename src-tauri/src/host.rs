@@ -263,6 +263,17 @@ impl HostRuntime {
         let result=self.copy_with_budget(positive_id_as_i64(&request.clip_id),Instant::now()+Duration::from_secs(3),Duration::from_secs(3));
         Ok(copy_result(&request,result))
     }
+    pub fn copy_panel_text(&self,panel:&crate::manual_panel::PanelSessions,session:&str,request:CopyClipTextRequest)->ContractResult<CopyClipTextResult>{
+        let request=parse_copy_clip_text_request(&serde_json::json!({"request_id":request.request_id,"clip_id":request.clip_id}))?;
+        // Linearization point: hide/new-session cannot pass between validation and try_send.
+        let admitted=panel.admit(session,||self.queue_copy(positive_id_as_i64(&request.clip_id),Instant::now()+Duration::from_secs(3)));
+        let result=match admitted {
+            Err(error)=>Err(error.into()),
+            Ok(Err(error))=>Err(error),
+            Ok(Ok(reply))=>reply.recv_timeout(Duration::from_secs(3)).unwrap_or_else(|_|Err(WriteFailure{error:ContractError::new(ErrorCode::Timeout,"clipboard write result is unknown"),may_have_written:true})),
+        };
+        Ok(copy_result(&request,result))
+    }
     pub fn set_exclusions(&self,paths:Vec<String>)->ContractResult<StatusResult>{let paths=parse_set_excluded_apps_request(&serde_json::json!({"paths":paths}))?;let gate=self.shared.gate.lock().unwrap_or_else(|e|e.into_inner());let mut s=self.shared.state.lock().unwrap_or_else(|e|e.into_inner());if s.stopping{return Err(ContractError::new(ErrorCode::Busy,"runtime is stopping"));}s.set_exclusions(paths);drop(s);drop(gate);self.shared.notify_status();Ok(self.status())}
     #[cfg(feature="test-fixtures")]
     pub fn queue_test_query(&self,request:ListClipsRequest)->ContractResult<Receiver<ContractResult<ListClipsResult>>>{let(tx,rx)=mpsc::sync_channel(1);self.queries.try_send(Query::List(request,tx)).map_err(|_|ContractError::new(ErrorCode::Busy,"history query queue is full"))?;self.shared.wake.notify_all();Ok(rx)}

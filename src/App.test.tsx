@@ -232,11 +232,12 @@ it("preserves native composition input and never steals focus or candidate keys"
   expect(h.listCalls[h.listCalls.length - 1].query).toBe("拼音");
 });
 
-it("states that history text search is now available", async () => {
+it("states the current search and manual-copy workflow", async () => {
   await mountWithRecent(["合成历史"]);
   expect(screen.queryByText(/搜索、快捷面板与回贴尚未开放/)).toBeNull();
-  expect(screen.getByText(/已开放历史正文搜索/)).toBeTruthy();
-  expect(screen.getByText(/快捷面板与回贴尚未开放/)).toBeTruthy();
+  expect(screen.getByLabelText("搜索历史正文")).toBeTruthy();
+  expect(screen.getByText(/复制后请自行切回目标应用粘贴/)).toBeTruthy();
+  expect(screen.queryByText(/快捷面板与回贴尚未开放/)).toBeNull();
 });
 
 // ---- E09.3c body preview UI ----
@@ -435,4 +436,34 @@ it("C: ordinary browsers without a host make no preview calls", async () => {
   expect(h.getTextCalls.length).toBe(0);
   expect(screen.queryByRole("button", { name: "查看正文" })).toBeNull();
   expect(screen.queryByText("正文预览")).toBeNull();
+});
+
+it("panel query generations require explicit fresh browsing and never reuse a cleared selection", async () => {
+  const h = searchBridge(); const hide = vi.fn(); const copyText = vi.fn();
+  render(<App bridge={{ ...h.bridge, copyText }} panel={{ hide }} />);
+  await waitFor(() => expect(h.listCalls).toHaveLength(1));
+  h.listCalls[0].d.resolve(listResult(h.listCalls[0], ["初始摘要"])); await screen.findByText("初始摘要");
+  const click = (button: HTMLElement) => { fireEvent.pointerDown(button); fireEvent.pointerUp(button); fireEvent.click(button, { detail: 1 }); };
+  click(screen.getByRole("button", { name: "浏览结果" }));
+  click(screen.getByRole("button", { name: "返回搜索" }));
+  const input = screen.getByLabelText("搜索历史正文"); fireEvent.change(input, { target: { value: "旧查询" } });
+  await waitFor(() => expect(h.listCalls).toHaveLength(2)); fireEvent.change(input, { target: { value: "新查询" } });
+  await waitFor(() => expect(h.listCalls).toHaveLength(3));
+  expect(buttonNamed("浏览结果").disabled).toBe(true);
+  h.listCalls[2].d.resolve(listResult(h.listCalls[2], ["新查询摘要"], 3)); await screen.findByText("新查询摘要");
+  await act(async () => h.listCalls[1].d.resolve(listResult(h.listCalls[1], ["过期查询摘要"], 7)));
+  expect(screen.queryByText("过期查询摘要")).toBeNull(); expect(screen.getByRole("button", { name: "查看正文" }).getAttribute("aria-pressed")).toBe("false");
+  fireEvent.keyDown(input, { key: "Enter" }); fireEvent.keyDown(input, { key: "ArrowDown" }); fireEvent.keyDown(input, { key: "Escape" });
+  expect(copyText).not.toHaveBeenCalled(); expect(hide).not.toHaveBeenCalled();
+  click(screen.getByRole("button", { name: "浏览结果" })); expect(h.getTextCalls.at(-1)?.clipId).toBe("4");
+  click(screen.getByRole("button", { name: "清空搜索" })); expect((input as HTMLInputElement).value).toBe(""); expect(document.activeElement).toBe(input);
+  expect(screen.queryByRole("button", { name: "返回搜索" })).toBeNull(); expect(copyText).not.toHaveBeenCalled();
+});
+
+it("keeps main-window search and preview free of panel mode controls and command interception", async () => {
+  const h = await mountWithRecent(["主窗口摘要"]); const input = screen.getByLabelText("搜索历史正文");
+  expect(screen.queryByRole("button", { name: "浏览结果" })).toBeNull(); expect((input as HTMLInputElement).readOnly).toBe(false);
+  openRow(0); expect(h.getTextCalls).toHaveLength(1); expect(screen.getByRole("button", { name: "查看正文" }).getAttribute("aria-pressed")).toBe("true");
+  for (const key of ["ArrowDown", "Enter", "Escape"]) expect(fireEvent.keyDown(input, { key })).toBe(true);
+  expect(screen.queryByRole("button", { name: "返回搜索" })).toBeNull(); expect((input as HTMLInputElement).readOnly).toBe(false);
 });

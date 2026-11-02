@@ -61,6 +61,37 @@ fn response(formats:Vec<WireFormat>)->CaptureResponse {
 fn request()->CopyClipTextRequest{CopyClipTextRequest{request_id:"copy-1".into(),clip_id:"1".into()}}
 fn copied(f:&Fixture)->CopyClipTextResult{f.runtime.copy_clip_text(request()).unwrap()}
 fn list()->ListClipsRequest{parse_list_clips_request(&serde_json::json!({"request_id":"list","query":""})).unwrap()}
+struct ManualPanelWindow;
+impl crate::manual_panel::PanelWindow for ManualPanelWindow {
+    fn hide(&self)->Result<(),String>{Ok(())}fn show(&self)->Result<(),String>{Ok(())}fn focus(&self)->Result<(),String>{Ok(())}fn publish(&self,_:&crate::manual_panel::PanelSnapshot)->Result<(),String>{Ok(())}
+}
+#[test]
+fn manual_panel_real_queue_rejects_invalid_sessions_and_shares_main_permit_through_hide(){
+    let f=fixture(vec![text(&"长正文😀".repeat(20000))]);let panel=Arc::new(crate::manual_panel::PanelSessions::new(true));let window=ManualPanelWindow;
+    let old=panel.open(&window).unwrap().session_id.unwrap();
+    for session in [&old,"forged"]{assert_outcome(f.runtime.copy_panel_text(&panel,session,request()).unwrap(),CopyOutcome::NotWritten,Some(ErrorCode::PermissionUnknown));}
+    assert_eq!(f.control.written.lock().unwrap().created,0);panel.ready(&old,&window).unwrap();
+    f.control.block.store(2,Ordering::Release);let runtime=f.runtime.clone();let p=panel.clone();let id=old.clone();let copying=std::thread::spawn(move||runtime.copy_panel_text(&p,&id,request()).unwrap());
+    f.entered.recv_timeout(Duration::from_secs(2)).unwrap();panel.hide(&old,&window).unwrap();
+    let fresh=panel.open(&window).unwrap().session_id.unwrap();panel.ready(&fresh,&window).unwrap();
+    assert_outcome(copied(&f),CopyOutcome::NotWritten,Some(ErrorCode::Busy));
+    assert_outcome(f.runtime.copy_panel_text(&panel,&fresh,request()).unwrap(),CopyOutcome::NotWritten,Some(ErrorCode::Busy));
+    assert_outcome(f.runtime.copy_panel_text(&panel,&old,request()).unwrap(),CopyOutcome::NotWritten,Some(ErrorCode::PermissionUnknown));
+    f.release.send(()).unwrap();assert_outcome(copying.join().unwrap(),CopyOutcome::Copied,None);
+    assert_eq!(panel.snapshot().session_id.as_deref(),Some(fresh.as_str()));f.control.block.store(0,Ordering::Release);
+    assert_outcome(f.runtime.copy_panel_text(&panel,&fresh,request()).unwrap(),CopyOutcome::Copied,None);assert_eq!(f.control.written.lock().unwrap().created,2);
+}
+#[test]
+fn manual_panel_timeout_does_not_release_permit_or_claim_hidden_write_cancelled(){
+    let f=fixture(vec![text("synthetic panel timeout")]);let panel=Arc::new(crate::manual_panel::PanelSessions::new(true));let window=ManualPanelWindow;
+    let session=panel.open(&window).unwrap().session_id.unwrap();panel.ready(&session,&window).unwrap();f.control.block.store(2,Ordering::Release);
+    let runtime=f.runtime.clone();let p=panel.clone();let id=session.clone();let copying=std::thread::spawn(move||runtime.copy_panel_text(&p,&id,request()).unwrap());
+    f.entered.recv_timeout(Duration::from_secs(2)).unwrap();panel.hide(&session,&window).unwrap();assert_outcome(copying.join().unwrap(),CopyOutcome::Unknown,Some(ErrorCode::Timeout));
+    assert_outcome(copied(&f),CopyOutcome::NotWritten,Some(ErrorCode::Busy));assert_eq!(f.control.written.lock().unwrap().created,1);f.release.send(()).unwrap();
+    // The storage query behind the accepted write is the deterministic completion barrier.
+    f.runtime.list(list()).unwrap();assert!(!f.runtime.shared.copy_busy.load(Ordering::Acquire));assert_eq!(f.control.written.lock().unwrap().dropped,1);
+    assert_outcome(f.runtime.copy_panel_text(&panel,&session,request()).unwrap(),CopyOutcome::NotWritten,Some(ErrorCode::PermissionUnknown));
+}
 fn assert_outcome(result:CopyClipTextResult,outcome:CopyOutcome,reason:Option<ErrorCode>){assert_eq!(result,CopyClipTextResult::new(&request(),outcome,reason));}
 
 struct PauseCommit {shared:Arc<SharedRuntime>,release:Option<mpsc::SyncSender<()>>}

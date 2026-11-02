@@ -379,6 +379,17 @@ pub struct CopyClipTextRequest {
     pub clip_id: String,
 }
 
+pub fn parse_panel_session(value:&serde_json::Value)->ContractResult<String>{
+    let obj=expect_object(value)?;reject_unknown_fields(obj,&["session_id"])?;
+    let session=require_field(obj,"session_id")?.as_str().ok_or_else(||reject("invalid panel session"))?;
+    if session.len()!=32||!session.bytes().all(|b|b.is_ascii_hexdigit()){return Err(reject("invalid panel session"));}Ok(session.into())
+}
+pub fn parse_panel_copy(value:&serde_json::Value)->ContractResult<(String,CopyClipTextRequest)>{
+    let obj=expect_object(value)?;reject_unknown_fields(obj,&["session_id","request"])?;
+    let session=parse_panel_session(&serde_json::json!({"session_id":require_field(obj,"session_id")?}))?;
+    Ok((session,parse_copy_clip_text_request(require_field(obj,"request")?)?))
+}
+
 pub fn parse_copy_clip_text_request(value: &serde_json::Value) -> ContractResult<CopyClipTextRequest> {
     let obj = expect_object(value)?;
     reject_unknown_fields(obj, &["request_id", "clip_id"])?;
