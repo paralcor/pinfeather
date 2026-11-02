@@ -24,6 +24,11 @@ impl OriginRegistry {
         Ok((self.next,marker))
     }
     pub fn finish(&mut self,counter:u64,sequence:Option<u32>){if let Some(op)=self.operations.iter_mut().find(|o|o.counter==counter){op.finished=true;op.sequence=sequence.filter(|s|*s!=0);op.associated=op.sequence.is_none();if op.sequence.is_some(){self.current=Some(counter);}}}
+    /// Only after pausing has invalidated queued and in-flight captures.
+    pub(crate) fn retire_finished_noncurrent(&mut self){
+        let current=self.current;
+        self.operations.retain(|op|!op.finished||Some(op.counter)==current);
+    }
     pub fn classify(&mut self,raw:Option<&[u8]>,owner:Option<usize>,sequence:u32)->Classification{
         if sequence==0{return Classification::External;}
         if self.current.is_some_and(|id|self.operations.iter().any(|op|op.counter==id&&op.sequence!=Some(sequence))){self.current=None;}
