@@ -325,6 +325,8 @@ fn execute_copy(shared:&SharedRuntime,store:&Option<Store>,id:i64,deadline:Insta
         before_write()?;
         if s.stopping{return Err(ContractError::new(ErrorCode::Busy,"runtime is stopping").into());}
         if s.origins.owner()!=owner.owner{return Err(ContractError::new(ErrorCode::InjectionFailed,"clipboard owner unavailable").into());}
+        // Pausing clears queued snapshots and invalidates in-flight captures by epoch.
+        if !s.user_enabled&&s.origins.len()>=crate::clipboard::origin::MAX_OPERATIONS{s.origins.retire_finished_noncurrent();}
         s.origins.begin()?
     };
     let attempt=crate::clipboard::origin::write_registered_text(writer.as_mut(),owner.owner,counter,&marker,&text.data,before_write);
