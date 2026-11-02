@@ -22,6 +22,27 @@ fn registry_never_evicts_current_or_unassociated_operations(){
     assert_eq!(registry.len(),128);assert_eq!(registry.classify(first.as_ref().map(|b|b.as_slice()),Some(99),1),Classification::External);
 }
 
+#[test]
+fn delayed_classification_and_failed_writes_cannot_evict_latest_confirmed_write(){
+    for external in [false,true] {
+        let mut registry=OriginRegistry::new([1;16],99);let mut oldest=None;
+        for sequence in (u32::MAX-126)..=u32::MAX {
+            let(id,marker)=registry.begin().unwrap();registry.finish(id,Some(sequence));
+            assert_eq!(registry.classify(Some(&marker),Some(99),sequence),Classification::Internal);
+            if oldest.is_none(){oldest=Some(marker);}
+        }
+        // A wrapped sequence is still the latest write; no numeric ordering.
+        let(id,current)=registry.begin().unwrap();registry.finish(id,Some(1));
+        assert_eq!(registry.classify(Some(&current),Some(99),1),Classification::Internal);
+        if external {assert_eq!(registry.classify(None,Some(98),u32::MAX),Classification::External);}
+        else {assert_eq!(registry.classify(oldest.as_ref().map(|marker|marker.as_slice()),Some(99),u32::MAX-126),Classification::Internal);}
+        // Rotate every removable slot repeatedly, with no intervening current
+        // classification to repair a pin lost by the delayed snapshot.
+        for _ in 0..256 {let(id,_)=registry.begin().unwrap();registry.finish(id,None);assert_eq!(registry.len(),MAX_OPERATIONS);}
+        assert_eq!(registry.classify(Some(&current),Some(99),1),Classification::Internal,"latest confirmed write survives delayed classification and failed writes");
+    }
+}
+
 struct Writer {fail:usize,step:usize,next:usize,owned:BTreeMap<usize,Vec<u8>>,transferred:Vec<(String,Vec<u8>)>,freed:usize,closed:bool}
 impl Writer {fn new(fail:usize)->Self{Self{fail,step:0,next:0,owned:BTreeMap::new(),transferred:vec![],freed:0,closed:false}}fn check(&mut self)->ContractResult<()>{self.step+=1;if self.step==self.fail{Err(ContractError::new(ErrorCode::InjectionFailed,"synthetic write failure"))}else{Ok(())}}}
 impl WriteApi for Writer {

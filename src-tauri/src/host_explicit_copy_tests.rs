@@ -403,3 +403,79 @@ fn explicit_copy_listener_owner_live_while_user_paused_and_cleanup_failure_stays
     for budget in [Duration::from_secs(2),Duration::ZERO]{assert_eq!(f.runtime.shutdown(budget).unwrap_err().code,ErrorCode::CleanupFailed);assert!(!f.runtime.exit_ready.load(Ordering::Acquire));}
     assert_eq!(f.runtime.status().services.worker,"failed");assert!(f.runtime.capture.lock().unwrap().is_none());assert!(f.runtime.storage.lock().unwrap().is_none());
 }
+
+#[test]
+fn explicit_copy_late_capture_then_paused_failed_write_retains_actual_clipboard_origin(){
+    let body="owner synthetic delayed capture";
+    let f=fixture(vec![text(body)]);
+    for sequence in 50..177 {
+        f.control.sequence.store(sequence,Ordering::Release);
+        assert_outcome(copied(&f),CopyOutcome::Copied,None);
+    }
+    let old_marker=f.control.written.lock().unwrap().transferred.iter().rev().find(|(name,_)|name==INTERNAL).unwrap().1.clone();
+    f.runtime.set_enabled(true).unwrap();
+    let ticket={let mut state=f.runtime.shared.state.lock().unwrap();state.observe(176,0);state.begin_current(176).unwrap()};
+    let mut late=response(vec![text(body)]);
+    late.capture_id=ticket.message.capture_id.clone();late.policy_epoch=ticket.message.policy_epoch;
+    late.sequence_before=176;late.sequence_locked=176;late.sequence_after=176;
+    late.owner.hwnd=Some("99".into());late.internal_origin=Some(STANDARD.encode(&old_marker));
+    let late=crate::clipboard::protocol::decode_snapshot(&serde_json::to_vec(&late).unwrap(),&ticket.message).unwrap();
+    // Snapshot 176 is already read; its completion waits while copy 177 finishes.
+    f.control.sequence.store(177,Ordering::Release);
+    assert_outcome(copied(&f),CopyOutcome::Copied,None);
+    let current_marker=f.control.written.lock().unwrap().transferred.iter().rev().find(|(name,_)|name==INTERNAL).unwrap().1.clone();
+    f.runtime.shared.state.lock().unwrap().complete(ticket,late);
+    assert_eq!(f.runtime.status().counters.ignored,"1");
+    f.runtime.set_enabled(false).unwrap();
+    // Open fails before EmptyClipboard; actual clipboard still contains copy 177.
+    f.control.fail.store(1,Ordering::Release);
+    let result=copied(&f);
+    assert_eq!(result.outcome,CopyOutcome::NotWritten);
+    assert!(matches!(result.reason,Some(ErrorCode::Busy)|Some(ErrorCode::InjectionFailed)));
+    f.runtime.set_enabled(true).unwrap();
+    let mut current=response(vec![text(body)]);
+    current.sequence_before=177;current.sequence_locked=177;current.sequence_after=177;
+    current.owner.hwnd=Some("99".into());current.internal_origin=Some(STANDARD.encode(&current_marker));
+    f.runtime.inject_response(177,current).unwrap();
+    // A FIFO query waits for any queued storage work, without sleeps.
+    f.runtime.list(list()).unwrap();
+    assert_eq!(f.runtime.status().history.items,1,"current internal clipboard must not be stored as external after a failed paused copy");
+    assert_eq!(f.runtime.status().counters.ignored,"2");
+}
+
+#[test]
+fn explicit_copy_late_external_capture_then_paused_failed_write_retains_internal_origin(){
+    let f=fixture(vec![text("synthetic stored text")]);
+    for sequence in 50..177 {
+        f.control.sequence.store(sequence,Ordering::Release);
+        assert_outcome(copied(&f),CopyOutcome::Copied,None);
+    }
+    f.runtime.set_enabled(true).unwrap();
+    let ticket={let mut state=f.runtime.shared.state.lock().unwrap();state.observe(177,0);state.begin_current(177).unwrap()};
+    let mut late=response(vec![text("synthetic external capture")]);
+    late.capture_id=ticket.message.capture_id.clone();late.policy_epoch=ticket.message.policy_epoch;
+    late.sequence_before=177;late.sequence_locked=177;late.sequence_after=177;
+    late.owner.hwnd=Some("98".into());
+    let late=crate::clipboard::protocol::decode_snapshot(&serde_json::to_vec(&late).unwrap(),&ticket.message).unwrap();
+    // The external read predates the new internal write; both completion and
+    // storage classify it after that write has finished.
+    f.control.sequence.store(178,Ordering::Release);
+    assert_outcome(copied(&f),CopyOutcome::Copied,None);
+    let current_marker=f.control.written.lock().unwrap().transferred.iter().rev().find(|(name,_)|name==INTERNAL).unwrap().1.clone();
+    f.runtime.shared.state.lock().unwrap().complete(ticket,late);
+    f.committed.recv_timeout(Duration::from_secs(2)).unwrap();
+    assert_eq!(f.runtime.status().history.items,2,"the older external snapshot remains collectable");
+    f.runtime.set_enabled(false).unwrap();
+    let calls=f.control.written.lock().unwrap().calls;
+    f.control.fail.store(1,Ordering::Release);
+    assert_outcome(copied(&f),CopyOutcome::NotWritten,Some(ErrorCode::InjectionFailed));
+    assert_eq!(f.control.written.lock().unwrap().calls,calls+1,"failed Open never reaches EmptyClipboard");
+    f.runtime.set_enabled(true).unwrap();
+    let mut current=response(vec![text("synthetic stored text")]);
+    current.sequence_before=178;current.sequence_locked=178;current.sequence_after=178;
+    current.owner.hwnd=Some("99".into());current.internal_origin=Some(STANDARD.encode(&current_marker));
+    f.runtime.inject_response(178,current).unwrap();
+    f.runtime.list(list()).unwrap();
+    assert_eq!(f.runtime.status().history.items,2,"late external classification cannot unprotect the current internal clipboard");
+    assert_eq!(f.runtime.status().counters.ignored,"1");
+}
