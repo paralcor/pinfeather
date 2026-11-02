@@ -18,6 +18,23 @@ fn authorize_panel(window:&tauri::WebviewWindow)->ContractResult<()>{validate_pa
 fn join_failed()->ContractError{ContractError::new(ErrorCode::CleanupFailed,"runtime request failed")}
 
 #[tauri::command]
+pub fn get_settings_state(window:tauri::WebviewWindow,runtime:tauri::State<'_,Arc<HostRuntime>>)->ContractResult<SettingsSnapshot>{authorize(&window)?;Ok(runtime.settings())}
+fn settings_request(label:&str,url:&tauri::Url,request:&serde_json::Value)->ContractResult<Vec<String>>{validate_main_caller(label,url)?;parse_set_excluded_apps_request(request)}
+#[tauri::command]
+pub async fn apply_excluded_apps(window:tauri::WebviewWindow,runtime:tauri::State<'_,Arc<HostRuntime>>,request:serde_json::Value)->ContractResult<SettingsSnapshot>{
+    let url=window.url().map_err(|_|ContractError::new(ErrorCode::PermissionUnknown,"caller is not allowed"))?;
+    let paths=settings_request(window.label(),&url,&request)?;let runtime=runtime.inner().clone();
+    tauri::async_runtime::spawn_blocking(move||runtime.apply_exclusions(paths)).await.map_err(|_|join_failed())?
+}
+
+#[tauri::command]
+pub fn get_residency_state(window:tauri::WebviewWindow,owner:tauri::State<'_,Arc<crate::residency::DesktopResidency>>)->ContractResult<crate::residency::ResidencySnapshot>{authorize(&window)?;Ok(owner.coordinator.snapshot())}
+#[tauri::command]
+pub fn request_exit(window:tauri::WebviewWindow,owner:tauri::State<'_,Arc<crate::residency::DesktopResidency>>)->ContractResult<crate::residency::ResidencySnapshot>{authorize_main(&window)?;owner.coordinator.request_exit(owner.effects.clone())}
+#[tauri::command]
+pub async fn retry_exit_saving(window:tauri::WebviewWindow,runtime:tauri::State<'_,Arc<HostRuntime>>)->ContractResult<StatusResult>{authorize_main(&window)?;let runtime=runtime.inner().clone();tauri::async_runtime::spawn_blocking(move||runtime.retry_saving()).await.map_err(|_|join_failed())?}
+
+#[tauri::command]
 pub async fn get_status(window:tauri::WebviewWindow,runtime:tauri::State<'_,Arc<HostRuntime>>)->ContractResult<StatusResult>{
     authorize(&window)?;let runtime=runtime.inner().clone();tauri::async_runtime::spawn_blocking(move||runtime.status()).await.map_err(|_|join_failed())
 }
@@ -59,6 +76,15 @@ pub async fn copy_manual_panel_text(window:tauri::WebviewWindow,panel:tauri::Sta
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[cfg(feature="test-fixtures")]
+    #[test]
+    fn m2_settings_unauthorized_updates_have_zero_policy_and_event_side_effects(){
+        use std::sync::atomic::{AtomicUsize,Ordering};let events=Arc::new(AtomicUsize::new(0));let count=events.clone();let runtime=HostRuntime::for_test_memory(Arc::new(move|_,_|{count.fetch_add(1,Ordering::SeqCst);})).unwrap();
+        let before=serde_json::to_value(runtime.settings()).unwrap();let observed=events.load(Ordering::SeqCst);
+        for(label,url)in[("quick-panel","http://tauri.localhost/"),("main","https://example.invalid/"),("forged-main","http://tauri.localhost/")]{let result=settings_request(label,&tauri::Url::parse(url).unwrap(),&serde_json::json!({"paths":[r"C:\Private\vault.exe"]})).and_then(|paths|runtime.apply_exclusions(paths));assert_eq!(result.unwrap_err().code,ErrorCode::PermissionUnknown);}
+        assert_eq!(serde_json::to_value(runtime.settings()).unwrap(),before);assert_eq!(events.load(Ordering::SeqCst),observed);runtime.shutdown(std::time::Duration::from_secs(1)).unwrap();
+    }
+    #[test]fn m2_management_actions_require_real_local_main_authority(){let local=tauri::Url::parse("http://tauri.localhost/").unwrap();assert!(validate_caller("quick-panel",&local).is_ok());assert!(validate_main_caller("quick-panel",&local).is_err());for(label,url)in[("main","https://example.invalid/"),("main","http://tauri.localhost:7/"),("forged-main","http://tauri.localhost/")]{assert!(validate_main_caller(label,&tauri::Url::parse(url).unwrap()).is_err());}assert!(validate_main_caller("main",&local).is_ok());}
     #[test]fn manual_panel_generic_copy_is_main_only(){assert!(validate_main_caller("quick-panel",&tauri::Url::parse("http://tauri.localhost/").unwrap()).is_err());}
     #[test]fn manual_panel_authority_rejects_unknown_external_and_cross_window_actions(){
         let local=tauri::Url::parse("http://tauri.localhost/index.html?panel=1").unwrap();assert!(validate_panel_caller("quick-panel",&local).is_ok());assert!(validate_panel_caller("main",&local).is_err());

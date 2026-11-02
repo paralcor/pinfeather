@@ -59,6 +59,27 @@ fn response(formats:Vec<WireFormat>)->CaptureResponse {
     r.result=CaptureResult::Captured;r.reason=None;r.attempts=1;r.sequence_before=1;r.sequence_locked=1;r.sequence_after=1;r.formats=formats;r
 }
 fn request()->CopyClipTextRequest{CopyClipTextRequest{request_id:"copy-1".into(),clip_id:"1".into()}}
+#[test]
+fn m2_pipeline_timeout_retains_borrowed_listener_and_same_capture_owner_on_retry(){
+    let f=fixture(vec![text("m2 writer Drop")]);f.control.block.store(12,Ordering::Release);
+    let reply=f.runtime.queue_copy(1,Instant::now()+Duration::from_secs(5)).unwrap();f.entered.recv_timeout(Duration::from_secs(2)).unwrap();
+    let(listener_release,listener_wait)=mpsc::channel();let listener_thread=std::thread::spawn(move||{listener_wait.recv().unwrap();});
+    let listener=crate::clipboard::listener::ClipboardListener::m2_synthetic(listener_thread);
+    let worker=crate::clipboard::worker::WorkerSupervisor::m2_synthetic(&[0]);let shared=f.runtime.shared.clone();
+    let(attempt_tx,attempt_rx)=mpsc::sync_channel(4);*shared.test_cleanup_attempt.lock().unwrap()=Some(attempt_tx);
+    let capture=std::thread::spawn(move||{let mut pipeline=CapturePipeline::m2_synthetic(shared.state.clone(),listener,worker,shared.closing.clone());shared.close_pipeline(&mut pipeline);});
+    let capture_id=capture.thread().id();*f.runtime.capture.lock().unwrap()=Some(capture);
+    let expired=Instant::now();assert_eq!(f.runtime.shutdown_until(expired).unwrap_err().code,ErrorCode::Timeout);
+    let first=attempt_rx.recv_timeout(Duration::from_secs(2)).unwrap();assert!(first.2,"borrowed listener must never enter close or Drop on timeout");
+    assert_eq!(f.runtime.capture.lock().unwrap().as_ref().unwrap().thread().id(),capture_id);
+    assert!(f.runtime.storage.lock().unwrap().is_some());assert_eq!(f.runtime.shared.copy_owner.lock().unwrap().borrowers,1);
+    assert_outcome(copied(&f),CopyOutcome::NotWritten,Some(ErrorCode::Busy));assert!(f.runtime.set_enabled(true).is_err());
+    f.release.send(()).unwrap();reply.recv_timeout(Duration::from_secs(2)).unwrap().unwrap();
+    assert_eq!(f.control.written.lock().unwrap().dropped,1);assert_eq!(f.runtime.shared.copy_owner.lock().unwrap().borrowers,0);
+    listener_release.send(()).unwrap();f.runtime.shutdown_until(Instant::now()+Duration::from_secs(2)).unwrap();
+    let second=attempt_rx.recv_timeout(Duration::from_secs(2)).unwrap();assert!(second.0>first.0);assert_eq!(first.1,second.1,"retry must reuse the pipeline stack owner");assert!(!second.2);
+    assert!(!f.control.owner_violation.load(Ordering::Acquire));
+}
 fn copied(f:&Fixture)->CopyClipTextResult{f.runtime.copy_clip_text(request()).unwrap()}
 fn list()->ListClipsRequest{parse_list_clips_request(&serde_json::json!({"request_id":"list","query":""})).unwrap()}
 struct ManualPanelWindow;

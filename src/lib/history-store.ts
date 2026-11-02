@@ -272,9 +272,14 @@ export function createHistoryModel(bridge: DesktopBridge) {
   async function toggle() {
     const current = store.getState();
     if (!active || current.changing || !current.status) return;
-    const token = lifetime;
     const retry = current.status.services.storage === "failed" && current.status.queue.items > 0;
     const enabled = retry || current.status.state !== "listening";
+    return setEnabled(enabled);
+  }
+  async function setEnabled(enabled: boolean) {
+    const current = store.getState();
+    if (!active || current.changing || !current.status) return;
+    const token = lifetime;
     store.setState({ changing: true, error: null });
     try {
       const status = await bridge.setEnabled(enabled);
@@ -313,5 +318,5 @@ export function createHistoryModel(bridge: DesktopBridge) {
       if (ownsPreview(token, sel, gen)) store.setState({ copyMessage: message });
     }
   }
-  return { store, start, refresh, more, toggle, setQuery, selectClip, retryPreview, morePreview, copyText };
+  return { store, start, refresh, more, toggle, setEnabled, setQuery, selectClip, retryPreview, morePreview, copyText };
 }

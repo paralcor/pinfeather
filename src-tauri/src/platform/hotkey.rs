@@ -28,8 +28,11 @@ impl HotkeyOwner {
         match thread {Ok(thread)=>{let owner=Self{owned:Some(OwnedThread{stop,thread,stopping}),cleanup_failed:false};let result=ready.recv_timeout(startup).unwrap_or_else(|_|Err("快捷键线程启动未确认。".into()));if result.is_err(){owner.owned.as_ref().unwrap().stopping.store(true,Ordering::Release);}(owner,result)},Err(_)=>(Self{owned:None,cleanup_failed:false},Err("快捷键线程创建失败。".into()))}
     }
     pub fn stop(&mut self,budget:Duration)->Result<(),String> {
+        self.stop_until(Instant::now()+budget)
+    }
+    pub fn stop_until(&mut self,deadline:Instant)->Result<(),String> {
         if self.cleanup_failed{return Err("快捷键线程回收曾失败，保留退出失败状态。".into());}
-        let Some(owned)=self.owned.as_ref() else{return Ok(());};let deadline=Instant::now()+budget;owned.stopping.store(true,Ordering::Release);
+        let Some(owned)=self.owned.as_ref() else{return Ok(());};owned.stopping.store(true,Ordering::Release);
         if !owned.thread.is_finished(){let(tx,rx)=mpsc::channel();match owned.stop.try_send(tx){
             Ok(())=>match rx.recv_timeout(deadline.saturating_duration_since(Instant::now())){Ok(result)=>result?,Err(mpsc::RecvTimeoutError::Disconnected)=>{},Err(mpsc::RecvTimeoutError::Timeout)=>return Err("快捷键停止未完成。".into())},
             Err(mpsc::TrySendError::Disconnected(_))=>{},

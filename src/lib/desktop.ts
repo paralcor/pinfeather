@@ -1,8 +1,19 @@
 import { invoke, isTauri } from "@tauri-apps/api/core";
 import { listen } from "@tauri-apps/api/event";
+import { parseResidencySnapshot, type ResidencyControl } from "./residency";
+import { parseSettingsSnapshot, type SettingsControl } from "./settings";
 import { parseManualPanelSnapshot, parseManualPanelSessionRequest, parseManualPanelCopyRequest, type ManualPanelSnapshot } from "./ipc";
 import { parseCopyClipTextRequest, parseCopyClipTextResult, type CopyClipTextResult } from "./ipc";
 import { parseStatusResult, parseListClipsRequest, parseListClipsResult, parseGetClipTextRequest, parseGetClipTextResult, parseRevisionEvent, type StatusResult, type ListClipsResult, type ListCursor, type GetClipTextResult, type ContractResult } from "./ipc";
+import { parseSetExcludedAppsRequest } from "./ipc";
+
+function settingsSnapshot(value: unknown) { const state = parseSettingsSnapshot(value); if (!state) throw new Error("invalid settings state"); return state; }
+export const nativeSettingsControl: SettingsControl = {
+  available: isTauri(),
+  async snapshot() { return settingsSnapshot(await invoke("get_settings_state")); },
+  async subscribe(callback) { return listen("settings_changed", event => { const revision = parseRevisionEvent(event.payload, "revision"); if (revision.ok) callback(revision.value); }); },
+  async apply(paths) { const request = { paths: checked(parseSetExcludedAppsRequest({ paths })) }; return settingsSnapshot(await invoke("apply_excluded_apps", { request })); },
+};
 
 export interface DesktopBridge {
   available: boolean;
@@ -13,6 +24,14 @@ export interface DesktopBridge {
   setEnabled(enabled: boolean): Promise<StatusResult>;
   subscribe(name: "history_changed" | "status_changed", callback: () => void): Promise<() => void>;
 }
+function residencySnapshot(value: unknown) { const state = parseResidencySnapshot(value); if (!state) throw new Error("invalid residency state"); return state; }
+export const nativeResidencyControl: ResidencyControl = {
+  available: isTauri(),
+  async snapshot() { return residencySnapshot(await invoke("get_residency_state")); },
+  async subscribe(callback) { return listen("residency_changed", event => { const state = parseResidencySnapshot(event.payload); if (state) callback(state); }); },
+  async exit() { return residencySnapshot(await invoke("request_exit")); },
+  async retrySaving() { checked(parseStatusResult(await invoke("retry_exit_saving"))); },
+};
 export interface ManualPanelControl {
   available: boolean;
   snapshot(): Promise<ManualPanelSnapshot>;

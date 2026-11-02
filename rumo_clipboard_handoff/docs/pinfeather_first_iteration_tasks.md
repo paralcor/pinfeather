@@ -1,8 +1,8 @@
 # 片羽首轮任务清单：规格修订与单机纵向原型
 
-> 2026-11-02 M1 当前状态统一见[两步输入与有限验收记录](pinfeather_explicit_copy_stage.md#manual-m1-current-evidence)：152项源码已获接受，319项前端测试通过；绑定普通 Windows x64 包已完成有限原生验证。pending-end 修改恢复、候选活跃首次手势及最终 sentinel 仍有缺口，提前退出原因未定，M1 未整体完成，M2 未开始。
+> 2026-11-02 当前状态：M2 两个切片已完成实现和负责人独立离线复核；托盘、暂停、持久排除、显式复制与重启核心现场通过，见[验收记录](pinfeather_acceptance_plan.md#m2-core-field)。提交状态以 Git 记录为准，完整 M2/T5 未验收。M1 已合并，有限证据及中文输入缺口见[两步输入记录](pinfeather_explicit_copy_stage.md#manual-m1-current-evidence)。优先交付手动版，自动回贴延期；原首轮仍为 4/7。
 
-> 手动交付行为、会话与生命周期契约见[权威 M1 章节](pinfeather_explicit_copy_stage.md#manual-m1)。复制后保持面板打开；main X 退出，panel X/Esc/失焦隐藏；驻留属于 M2。原 4/7、自动回贴 unknown/阻塞与带日期的失败历史保留；旧版本现场不外推到当前版本。
+> 当前手动交付沿用[输入、浏览与显式复制契约](pinfeather_explicit_copy_stage.md#manual-m1)，复制后面板保持打开；主窗口 X 在托盘可用时隐藏，否则保留可见入口，明确退出走统一关闭流程，见[M2 设计](pinfeather_m2_design.md)。面板 X/Esc/失焦隐藏。下文带日期的旧版本行为及失败证据保留，不外推到当前候选。
 
 > 2026-11-01 阶段状态：[显式复制历史纯文本](pinfeather_explicit_copy_stage.md)作为 W2 之后、不依赖 W3 的独立增量，已完成实现、负责人独立离线验收及一次最小人工现场验收，范围见[验收计划6.4节](pinfeather_acceptance_plan.md#64-显式复制最小人工现场)。W1/T2与W2/T3基础链路已验收；原T0–T3顶层基础进度仍为4/7，显式复制不计为T4完成。W0/W3的IME/焦点阻塞保留，T4–T6及W4/W5完整范围仍待完成；本轮现场授权已消费，automatic_paste_allowed=false。
 
@@ -153,6 +153,8 @@ R1 的 API 边界见 [SetForegroundWindow](https://learn.microsoft.com/en-us/win
 - [ ] 再安排内部试用剩余功能：完整图片体验、收藏/删除/保留、办公软件验收等；集合、模板、CLI/MCP 和同步按交接文档的后续阶段另列任务，不自动并入本轮。
 
 ## 9. 当前执行状态
+
+M2 两个切片的实现、独立离线复核和核心现场已完成，本地提交状态以 Git 记录为准；[最新验收](pinfeather_acceptance_plan.md#m2-core-field)补充下表的历史阶段记录。T5 仅部分验收，T4/T6 未整体完成，仍为 4/7；后续按[手动版收尾顺序](pinfeather_execution_tasks.md#manual-delivery-closeout)推进。
 
 | 任务 | 状态与证据边界 |
 | --- | --- |

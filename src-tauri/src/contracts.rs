@@ -572,6 +572,31 @@ pub fn normalize_windows_exe_path(input: &str) -> ContractResult<String> {
     normalize_windows_path(input, true, false)
 }
 
+pub(crate) fn windows_path_equal(left: &str, right: &str) -> bool {
+    // Owner matching fails closed; policy deduplication requires a successful comparison.
+    compare_windows_paths(left, right).unwrap_or(true)
+}
+
+pub(crate) fn compare_windows_paths(left: &str, right: &str) -> ContractResult<bool> {
+    use windows_sys::Win32::Globalization::CompareStringOrdinal;
+    let left: Vec<u16> = left.encode_utf16().collect();
+    let right: Vec<u16> = right.encode_utf16().collect();
+    match unsafe { CompareStringOrdinal(left.as_ptr(), left.len() as i32, right.as_ptr(), right.len() as i32, 1) } {
+        2 => Ok(true), 1 | 3 => Ok(false), _ => Err(ContractError::invalid_input("Windows path comparison failed")),
+    }
+}
+
+#[derive(Debug, Clone, serde::Serialize)]
+pub struct SettingsSnapshot {
+    pub revision: String,
+    pub schema_version: u32,
+    pub excluded_apps: Vec<String>,
+    pub saving: bool,
+    pub blocked: bool,
+    pub error: Option<String>,
+    pub last_skip: Option<String>,
+}
+
 pub fn normalize_windows_dir_path(input: &str) -> ContractResult<String> {
     normalize_windows_path(input, false, true)
 }

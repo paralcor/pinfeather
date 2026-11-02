@@ -41,7 +41,7 @@ required-features = ["test-fixtures"]
 tauri-build = { version = "2.7.4", features = [] }
 
 [dependencies]
-tauri = { version = "2.12.5", features = [] }
+tauri = { version = "2.12.5", features = ["tray-icon"] }
 serde = { version = "1.0.229", features = ["derive"] }
 serde_json = "1.0.154"
 windows-sys = { version = "0.61.2", features = [

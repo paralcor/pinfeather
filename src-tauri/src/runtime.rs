@@ -4,13 +4,30 @@ use crate::{clipboard::{protocol::{WorkerMessage,ValidatedSnapshot},capture::Cap
 
 pub const MAX_NOTIFICATIONS: usize=256;
 
-fn windows_path_equal(left:&str,right:&str)->bool {
-    use windows_sys::Win32::Globalization::CompareStringOrdinal;
-    let left:Vec<u16>=left.encode_utf16().collect();
-    let right:Vec<u16>=right.encode_utf16().collect();
-    // An unexpected comparison failure must not bypass an exclusion.
-    matches!(unsafe{CompareStringOrdinal(left.as_ptr(),left.len() as i32,right.as_ptr(),right.len() as i32,1)},0|2)
+/// One capture owner observes every close attempt; closing never admits work again.
+#[derive(Default)]
+pub struct CloseControl {
+    closing:std::sync::atomic::AtomicBool,
+    attempt:std::sync::Mutex<(u64,Option<std::time::Instant>)>,
+    changed:std::sync::Condvar,
 }
+impl CloseControl {
+    pub fn publish(&self,deadline:std::time::Instant)->u64 {
+        let mut attempt=self.attempt.lock().unwrap_or_else(|e|e.into_inner());
+        self.closing.store(true,std::sync::atomic::Ordering::Release);
+        attempt.0+=1;attempt.1=Some(deadline);self.changed.notify_all();attempt.0
+    }
+    pub fn closing(&self)->bool{self.closing.load(std::sync::atomic::Ordering::Acquire)}
+    pub fn current(&self)->(u64,Option<std::time::Instant>){*self.attempt.lock().unwrap_or_else(|e|e.into_inner())}
+    pub fn deadline(&self,normal:std::time::Instant)->std::time::Instant{self.current().1.unwrap_or(normal)}
+    pub fn next(&self,previous:u64)->(u64,std::time::Instant){
+        let mut attempt=self.attempt.lock().unwrap_or_else(|e|e.into_inner());
+        while attempt.0==previous{attempt=self.changed.wait(attempt).unwrap_or_else(|e|e.into_inner());}
+        (attempt.0,attempt.1.expect("published close deadline"))
+    }
+}
+
+use crate::contracts::windows_path_equal;
 #[derive(Debug,Clone,Copy,PartialEq,Eq)]
 pub enum Admission {UserPaused,Active,Overloaded,Failed,Stopped}
 #[derive(Debug,Clone,Copy,PartialEq,Eq)]
@@ -25,13 +42,14 @@ pub struct CaptureState {
     pub user_enabled:bool,pub history:crate::contracts::HistoryUsage,pub storage_inflight:(usize,u64),
     pub storage_ready:bool,pub storage_failed:bool,pub storage_retry:bool,pub listener_ready:bool,pub worker_service:String,
     pub stopping:bool,pub revision:u64,pub history_revision:u64,pub origins:crate::clipboard::origin::OriginRegistry,pub internal_ignored:u64,pub restart_worker:bool,
+    pub settings_saving:bool,pub settings_blocked:bool,pub settings_error:Option<String>,
     instance:String,next:u64,pending:VecDeque<CaptureTicket>,last:Option<(u32,String)>,
     in_flight:Option<String>,pub(crate) queue:VecDeque<QueuedSnapshot>,pub(crate) bytes:u64,pub(crate) exclusions:Vec<String>,acquired:Option<(u32,String)>,
 }
 impl CaptureState {
     pub fn new(instance:&str)->Self{
         assert!(!instance.is_empty()&&instance.len()<=40&&instance.bytes().all(|b|b.is_ascii_graphic()));
-        Self{admission:Admission::UserPaused,counters:Counters::default(),epoch:0,notice:None,user_enabled:false,history:crate::contracts::HistoryUsage{items:0,payload_bytes:0},storage_inflight:(0,0),storage_ready:false,storage_failed:false,storage_retry:false,listener_ready:false,worker_service:"not_started".into(),stopping:false,revision:0,history_revision:0,origins:crate::clipboard::origin::OriginRegistry::new(uuid::Uuid::parse_str(instance).unwrap_or_else(|_|uuid::Uuid::new_v4()).into_bytes(),0),internal_ignored:0,restart_worker:false,instance:instance.into(),next:0,pending:VecDeque::new(),last:None,in_flight:None,queue:VecDeque::new(),bytes:0,exclusions:vec![],acquired:None}
+        Self{admission:Admission::UserPaused,counters:Counters::default(),epoch:0,notice:None,user_enabled:false,history:crate::contracts::HistoryUsage{items:0,payload_bytes:0},storage_inflight:(0,0),storage_ready:false,storage_failed:false,storage_retry:false,listener_ready:false,worker_service:"not_started".into(),stopping:false,revision:0,history_revision:0,origins:crate::clipboard::origin::OriginRegistry::new(uuid::Uuid::parse_str(instance).unwrap_or_else(|_|uuid::Uuid::new_v4()).into_bytes(),0),internal_ignored:0,restart_worker:false,settings_saving:false,settings_blocked:false,settings_error:None,instance:instance.into(),next:0,pending:VecDeque::new(),last:None,in_flight:None,queue:VecDeque::new(),bytes:0,exclusions:vec![],acquired:None}
     }
     pub fn set_enabled(&mut self,enabled:bool){
         if self.admission==Admission::Stopped{return;}
@@ -93,7 +111,7 @@ impl CaptureState {
     pub fn complete(&mut self,ticket:CaptureTicket,response:ValidatedSnapshot){
         if self.in_flight.as_ref()!=Some(&ticket.message.capture_id){self.counters.failed+=1;return;}
         self.in_flight=None;
-        if ticket.message.policy_epoch!=self.epoch || matches!(self.admission,Admission::UserPaused|Admission::Stopped){self.counters.cancelled+=1;return;}
+        if self.stopping || ticket.message.policy_epoch!=self.epoch || matches!(self.admission,Admission::UserPaused|Admission::Stopped){self.counters.cancelled+=1;return;}
         if response.message()!=ticket.message {self.counters.failed+=1;self.admission=Admission::Failed;self.notice=Some(Notice::InvalidSnapshot);return;}
         let owner=response.response.owner.hwnd.as_ref().and_then(|s|s.parse::<usize>().ok());
         if self.origins.classify(response.internal_origin.as_deref(),owner,response.response.sequence_after)==crate::clipboard::origin::Classification::Internal {self.counters.ignored+=1;self.internal_ignored+=1;return;}
@@ -129,9 +147,9 @@ impl CaptureState {
     pub fn capture_failed(&mut self,ticket:&CaptureTicket,terminal:bool){
         if self.in_flight.as_ref()!=Some(&ticket.message.capture_id){return;}
         self.in_flight=None;
-        if ticket.message.policy_epoch!=self.epoch || matches!(self.admission,Admission::UserPaused|Admission::Stopped){self.counters.cancelled+=1;}
+        if self.stopping || ticket.message.policy_epoch!=self.epoch || matches!(self.admission,Admission::UserPaused|Admission::Stopped){self.counters.cancelled+=1;}
         else{self.counters.failed+=1;self.notice=Some(Notice::WorkerFailed);}
-        if terminal{self.admission=Admission::Failed;self.notice=Some(Notice::WorkerFailed);}
+        if terminal&&!self.stopping{self.admission=Admission::Failed;self.notice=Some(Notice::WorkerFailed);}
     }
     pub fn stop(&mut self){self.set_enabled(false);self.admission=Admission::Stopped;}
     pub fn stop_observing(&mut self){self.stopping=true;self.admission=Admission::Stopped;self.counters.cancelled+=self.pending.len() as u64;self.pending.clear();}
@@ -143,33 +161,47 @@ pub struct CapturePipeline {
     state:std::sync::Arc<std::sync::Mutex<CaptureState>>,
     listener:crate::clipboard::listener::ClipboardListener,
     worker:crate::clipboard::worker::WorkerSupervisor,
+    closing:std::sync::Arc<CloseControl>,
+    close_attempted:bool,
     #[cfg(feature="test-fixtures")]
     test_product:Option<std::path::PathBuf>,
 }
 impl CapturePipeline {
+    #[cfg(all(test,feature="test-fixtures"))]
+    pub(crate) fn m2_synthetic(state:std::sync::Arc<std::sync::Mutex<CaptureState>>,listener:crate::clipboard::listener::ClipboardListener,mut worker:crate::clipboard::worker::WorkerSupervisor,closing:std::sync::Arc<CloseControl>)->Self{
+        worker.set_close_control(closing.clone());Self{state,listener,worker,closing,close_attempted:false,test_product:None}
+    }
     pub fn start_paused()->crate::contracts::ContractResult<Self>{
         let state=std::sync::Arc::new(std::sync::Mutex::new(CaptureState::new(&uuid::Uuid::new_v4().simple().to_string())));
         Self::start_shared(state,std::sync::Arc::new(||{}))
     }
     pub fn start_shared(state:std::sync::Arc<std::sync::Mutex<CaptureState>>,wake:std::sync::Arc<dyn Fn()+Send+Sync>)->crate::contracts::ContractResult<Self>{
+        Self::start_controlled(state,wake,std::sync::Arc::new(CloseControl::default()))
+    }
+    pub fn start_controlled(state:std::sync::Arc<std::sync::Mutex<CaptureState>>,wake:std::sync::Arc<dyn Fn()+Send+Sync>,closing:std::sync::Arc<CloseControl>)->crate::contracts::ContractResult<Self>{
         let observed=state.clone();
         let listener=crate::clipboard::listener::ClipboardListener::start(std::sync::Arc::new(move|seq,at|{observed.lock().unwrap_or_else(|e|e.into_inner()).observe(seq,at);wake();}))?;
         {let mut s=state.lock().unwrap_or_else(|e|e.into_inner());s.origins.set_owner(listener.owner_hwnd());s.listener_ready=true;}
-        Ok(Self{state,listener,worker:crate::clipboard::worker::WorkerSupervisor::for_product(),#[cfg(feature="test-fixtures")]test_product:None})
+        let mut worker=crate::clipboard::worker::WorkerSupervisor::for_product();worker.set_close_control(closing.clone());
+        Ok(Self{state,listener,worker,closing,close_attempted:false,#[cfg(feature="test-fixtures")]test_product:None})
     }
     pub fn state(&self)->&std::sync::Arc<std::sync::Mutex<CaptureState>>{&self.state}
     pub fn worker_service(&self)->&'static str{if self.worker.state()==crate::clipboard::worker::WorkerState::FailedPaused{"failed"}else if self.worker.current_identity().is_some(){"ready"}else{"not_started"}}
     pub fn listener_healthy(&self)->bool{self.listener.healthy()}
     #[cfg(feature="test-fixtures")]
-    pub fn use_test_product(&mut self,exe:std::path::PathBuf){self.worker.close();self.worker=crate::clipboard::worker::WorkerSupervisor::for_test_product(exe.clone());self.test_product=Some(exe);}
+    pub fn use_test_product(&mut self,exe:std::path::PathBuf){self.worker.close();self.worker=crate::clipboard::worker::WorkerSupervisor::for_test_product(exe.clone());self.worker.set_close_control(self.closing.clone());self.test_product=Some(exe);}
     pub fn reset_worker(&mut self)->crate::contracts::ContractResult<()>{
+        if self.closing.closing(){return Err(crate::contracts::ContractError::new(crate::contracts::ErrorCode::Busy,"capture closing"));}
         self.worker.close();
         if self.worker.last_reap().is_some_and(|r|r.cleanup_failed){return Err(crate::contracts::ContractError::new(crate::contracts::ErrorCode::CleanupFailed,"worker resources are still in use"));}
+        if self.closing.closing(){return Err(crate::contracts::ContractError::new(crate::contracts::ErrorCode::Busy,"capture closing"));}
         self.worker=crate::clipboard::worker::WorkerSupervisor::for_product();
         #[cfg(feature="test-fixtures")]if let Some(exe)=&self.test_product{self.worker=crate::clipboard::worker::WorkerSupervisor::for_test_product(exe.clone());}
+        self.worker.set_close_control(self.closing.clone());
         if self.worker.state()==crate::clipboard::worker::WorkerState::FailedPaused{return Err(crate::contracts::ContractError::new(crate::contracts::ErrorCode::CleanupFailed,"worker resources are still in use"));}Ok(())
     }
     pub fn poll_capture(&mut self)->crate::contracts::ContractResult<bool>{
+        if self.closing.closing(){return Ok(false);}
         if !self.listener.healthy(){let mut state=self.state.lock().unwrap_or_else(|e|e.into_inner());state.admission=Admission::Failed;state.notice=Some(Notice::ListenerStopped);return Err(crate::contracts::ContractError::new(crate::contracts::ErrorCode::CleanupFailed,"clipboard listener stopped"));}
         let ticket={
             let mut state=self.state.lock().unwrap_or_else(|e|e.into_inner());
@@ -186,11 +218,30 @@ impl CapturePipeline {
         }
     }
     pub fn close(&mut self)->crate::contracts::ContractResult<()> {
+        self.close_until(std::time::Instant::now()+std::time::Duration::from_secs(2))
+    }
+    pub fn cancel_worker_until(&mut self,deadline:std::time::Instant)->crate::contracts::ContractResult<()>{self.worker.close_until(deadline)}
+    pub fn cleanup_pending(&self)->bool{self.listener.cleanup_pending()||self.worker.current_identity().is_some()}
+    #[cfg(all(test,feature="test-fixtures"))]
+    pub(crate) fn m2_listener_pending(&self)->bool{self.listener.m2_untouched()}
+    pub fn close_until(&mut self,deadline:std::time::Instant)->crate::contracts::ContractResult<()> {
+        self.close_attempted=true;
         self.state.lock().unwrap_or_else(|e|e.into_inner()).stop_observing();
-        let listener=self.listener.close();self.worker.close();
-        listener?;
-        if self.worker.last_reap().is_some_and(|r|r.cleanup_failed){return Err(crate::contracts::ContractError::new(crate::contracts::ErrorCode::CleanupFailed,"clipboard worker cleanup failed"));}
-        Ok(())
+        let worker=self.worker.close_until(deadline);let listener=self.listener.close_until(deadline);
+        match (worker,listener){(Err(a),Err(b))=>Err(crate::contracts::ContractError::new(if a.code==crate::contracts::ErrorCode::CleanupFailed||b.code==crate::contracts::ErrorCode::CleanupFailed{crate::contracts::ErrorCode::CleanupFailed}else{crate::contracts::ErrorCode::Timeout},&format!("{}; {}",a.message,b.message))),(Err(e),_)|(_,Err(e))=>Err(e),_=>Ok(())}
     }
 }
-impl Drop for CapturePipeline {fn drop(&mut self){let _=self.close();}}
+impl Drop for CapturePipeline {fn drop(&mut self){if !self.close_attempted{let _=self.close();}}}
+
+#[cfg(all(test,feature="test-fixtures"))]
+mod m2_tests {
+    use super::*;use std::{sync::{Arc,Mutex,mpsc},time::{Instant,Duration}};
+    #[test]
+    fn m2_production_pipeline_propagates_one_deadline_to_both_retained_owners(){
+        let(release,gate)=mpsc::channel();let listener=crate::clipboard::listener::ClipboardListener::m2_synthetic(std::thread::spawn(move||{gate.recv_timeout(Duration::from_secs(5)).unwrap();}));
+        let worker=crate::clipboard::worker::WorkerSupervisor::m2_synthetic(&[258,0]);let identity=worker.current_identity();let control=Arc::new(CloseControl::default());
+        let mut pipeline=CapturePipeline::m2_synthetic(Arc::new(Mutex::new(CaptureState::new("m2-synthetic"))),listener,worker,control.clone());let expired=Instant::now();control.publish(expired);
+        assert_eq!(pipeline.close_until(expired).unwrap_err().code,crate::contracts::ErrorCode::Timeout);assert_eq!(pipeline.listener.m2_deadline(),Some(expired));assert_eq!(pipeline.worker.m2_deadline(),Some(expired));assert_eq!(pipeline.worker.current_identity(),identity);assert!(pipeline.cleanup_pending());assert!(pipeline.reset_worker().is_err());
+        release.send(()).unwrap();let retry=Instant::now()+Duration::from_secs(1);control.publish(retry);pipeline.close_until(retry).unwrap();assert_eq!(pipeline.listener.m2_deadline(),Some(retry));assert_eq!(pipeline.worker.m2_deadline(),Some(retry));assert!(!pipeline.cleanup_pending());
+    }
+}

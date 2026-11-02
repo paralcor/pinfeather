@@ -1,6 +1,9 @@
 import { useEffect, useMemo, useRef, useState } from "react";
 import { useStore } from "zustand";
-import { nativeBridge, nativePanelControl, type DesktopBridge, type ManualPanelControl } from "./lib/desktop";
+import { nativeBridge, nativePanelControl, nativeResidencyControl, nativeSettingsControl, type DesktopBridge, type ManualPanelControl } from "./lib/desktop";
+import { ExclusionSettings } from "./ExclusionSettings";
+import type { SettingsControl } from "./lib/settings";
+import { useResidency, type ResidencyControl } from "./lib/residency";
 import { useManualPanel } from "./lib/manual-panel-state";
 import { ManualPanelInput } from "./lib/manual-panel-input";
 import { createHistoryModel } from "./lib/history-store";
@@ -23,11 +26,14 @@ function HistoryItem({ item, selected, disabled, onSelect }: { item: ClipSummary
   );
 }
 
-export default function App({ bridge = nativeBridge, panel, panelControl = nativePanelControl }: { bridge?: DesktopBridge; panel?: { hide(): void }; panelControl?: ManualPanelControl }) {
+export default function App({ bridge = nativeBridge, panel, panelControl = nativePanelControl, residencyControl = nativeResidencyControl, settingsControl = nativeSettingsControl }: { bridge?: DesktopBridge; panel?: { hide(): void }; panelControl?: ManualPanelControl; residencyControl?: ResidencyControl; settingsControl?: SettingsControl }) {
   const model = useMemo(() => createHistoryModel(bridge), [bridge]);
   const view = useStore(model.store);
   useEffect(() => model.start(), [model]);
   const panelState = useManualPanel(panelControl, !panel);
+  const residency = useResidency(residencyControl, !panel);
+  const [settingsBlocked, setSettingsBlocked] = useState(settingsControl.available);
+  const closing = residency.pending || (!!residency.snapshot && residency.snapshot.phase !== "running");
   const input = useMemo(() => new ManualPanelInput(), []);
   const [completion, setCompletion] = useState(input.completion);
   const [mode, setMode] = useState<"search" | "browse">("search");
@@ -36,7 +42,7 @@ export default function App({ bridge = nativeBridge, panel, panelControl = nativ
   const inputStatusRef = useRef<HTMLParagraphElement>(null);
   const browsing = !!panel && mode === "browse";
   const frozen = !!panel && (browsing || completion === "pending" || completion === "ready");
-  const actionsAllowed = !panel || input.actionsAllowed;
+  const actionsAllowed = !closing && (!panel || input.actionsAllowed);
   useEffect(() => { if (panel) searchRef.current?.focus(); }, [panel !== undefined]);
   function enterBrowse(id?: string) {
     if (panel && !input.actionsAllowed) return;
@@ -77,7 +83,7 @@ export default function App({ bridge = nativeBridge, panel, panelControl = nativ
     inputStatusRef.current?.focus();
   }
   function hidePanel() { if (input.actionsAllowed) panel?.hide(); }
-  function copyText() { if (!panel || (input.actionsAllowed && mode === "browse")) void model.copyText(); }
+  function copyText() { if (actionsAllowed && (!panel || (input.actionsAllowed && mode === "browse"))) void model.copyText(); }
   const status = view.status;
   const normalizedQuery = normalizeQuery(view.query);
   const searching = normalizedQuery.ok && normalizedQuery.value.length > 0;
@@ -132,16 +138,19 @@ export default function App({ bridge = nativeBridge, panel, panelControl = nativ
       if (input.blocksActionClick(event.detail)) { event.preventDefault(); event.stopPropagation(); }
     }}>
       <header><h1>{panel ? "片羽 · 快捷面板" : "片羽"}</h1><p className="tagline">{panel ? browsing ? "上下键选择，Enter 复制，Esc 隐藏；复制后手动粘贴" : completion === "ordinary" ? "输入搜索词，再点击“浏览结果”；复制后手动粘贴" : "先完成输入，再另行浏览结果；复制后手动粘贴" : "剪贴板历史 · 隔离运行"}</p>
-        {panel ? <button type="button" disabled={!actionsAllowed} onClick={hidePanel}>隐藏快捷面板</button> : <><button type="button" disabled={!panelControl.available || panelState.snapshot?.phase === "stopping" || panelState.snapshot?.phase === "unavailable"} onClick={() => void panelState.open()}>打开快捷面板</button><p role="status">{panelState.snapshot?.hotkey === "ready" ? "快捷键：Ctrl+Alt+V" : "可使用主窗口入口打开快捷面板。"}</p>{panelState.snapshot?.error && <p role="alert">{panelState.snapshot.error}</p>}{panelState.error && <p role="alert">{panelState.error}</p>}</>}
+        {panel ? <button type="button" disabled={!actionsAllowed} onClick={hidePanel}>隐藏快捷面板</button> : <><button type="button" disabled={closing || !panelControl.available || panelState.snapshot?.phase === "stopping" || panelState.snapshot?.phase === "unavailable"} onClick={() => void panelState.open()}>打开快捷面板</button><p role="status">{panelState.snapshot?.hotkey === "ready" ? "快捷键：Ctrl+Alt+V" : "可使用主窗口入口打开快捷面板。"}</p>{panelState.snapshot?.error && <p role="alert">{panelState.snapshot.error}</p>}{panelState.error && <p role="alert">{panelState.error}</p>}<button type="button" disabled={!residency.snapshot || residency.pending || residency.snapshot.phase === "stopping" || residency.snapshot.phase === "exited"} onClick={() => void residency.exit()}>{residency.snapshot?.phase === "failed" ? "重试退出片羽" : "退出片羽"}</button>{residency.snapshot?.phase === "stopping" && <p role="status">正在退出片羽，等待保存和资源回收。</p>}{residency.snapshot?.phase === "failed" && <p role="alert">退出未完成，仍有 {view.status?.queue.items ?? "待确认"} 条未保存内容；收录和复制保持关闭。</p>}{residency.snapshot?.error && <p role="alert">{residency.snapshot.error}</p>}{residency.error && <p role="alert">{residency.error}</p>}{!residencyControl.available && <p role="status">当前环境未提供驻留与退出控制。</p>}</>}
       </header>
       {view.hostMissing ? <p className="notice" role="status">需要桌面宿主。请从片羽桌面程序打开此界面。</p> : <>
         <section className="status-card" aria-label="收录状态">
           <div className="toolbar"><p role="status" aria-live="polite">{label}</p>
-            {!panel && <button disabled={!status || view.changing || (status.state === "stopping" && !retry)} onClick={() => void model.toggle()}>{view.changing ? "正在更改…" : retry ? "重试保存" : status?.capture.user_enabled && status.state === "listening" ? "暂停收录" : "开始收录"}</button>}
+            {!panel && <button disabled={closing || !status || view.changing || (!status.capture.user_enabled && settingsBlocked) || (status.state === "stopping" && !retry)} onClick={() => void (retry ? model.toggle() : model.setEnabled(!status?.capture.user_enabled))}>{view.changing ? "正在更改…" : retry ? "重试保存" : status?.capture.user_enabled ? "暂停收录" : "开始收录"}</button>}
+            {!panel && residency.snapshot?.phase === "failed" && retry && <button disabled={residency.pending} onClick={() => void residency.retrySaving().then(() => model.refresh(false))}>仅重试保存</button>}
           </div>
-          {status && <><dl className="counts"><div><dt>已存历史</dt><dd>{status.history.items} 条</dd></div><div><dt>未保存队列</dt><dd>{status.queue.items} 条 · {Math.ceil(status.queue.bytes / 1024)} KiB</dd></div><div><dt>已忽略 / 已覆盖</dt><dd>{status.counters.ignored} / {status.counters.superseded}</dd></div></dl><details><summary>隔离数据目录</summary><p className="data-path">{status.data_dir}</p></details></>}
+          {status && <><dl className="counts"><div><dt>已存历史</dt><dd>{status.history.items} 条</dd></div><div><dt>未保存队列</dt><dd>{status.queue.items} 条 · {Math.ceil(status.queue.bytes / 1024)} KiB</dd></div><div><dt>已忽略 / 已覆盖</dt><dd>{status.counters.ignored} / {status.counters.superseded}</dd></div><div><dt>已取消</dt><dd>{status.counters.cancelled}</dd></div></dl><details><summary>隔离数据目录</summary><p className="data-path">{status.data_dir}</p></details></>}
           {status?.state === "failed" && <p className="error" role="alert">{status.queue.items > 0 ? "仍有未保存内容。可重试保存，退出未完成时窗口会保留。" : "服务暂不可用，请检查隔离目录或重启程序。"}</p>}
+          {!panel && <p className="notice">暂停确认后，尚未保存的旧收录任务会取消；已保存历史仍可浏览和复制。重试保存用于保留的失败队列，与开始收录不同。</p>}
         </section>
+        {!panel && <ExclusionSettings control={settingsControl} closing={closing} onApplied={() => void model.refresh(false)} onBlocked={setSettingsBlocked} />}
         {view.error && <p className="error" role="alert">{view.error}</p>}
         <section aria-labelledby="history-heading" aria-busy={view.loading}>
           <div className="toolbar"><h2 id="history-heading">最近历史</h2><button disabled={!actionsAllowed || view.loading} onClick={() => { if (actionsAllowed) void model.refresh(); }}>刷新</button></div>

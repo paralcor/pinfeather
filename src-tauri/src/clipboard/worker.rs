@@ -159,6 +159,11 @@ pub struct WorkerSupervisor {
     config: WorkerConfig,
     state: WorkerState,
     closed: bool,
+    closing:Option<std::sync::Arc<crate::runtime::CloseControl>>,
+    close_deadline:Option<Instant>,
+    cleanup_failed:bool,
+    #[cfg(all(test,feature="test-fixtures"))]
+    test_wait_started:Option<std::sync::mpsc::SyncSender<()>>,
     consecutive_timeouts: u32,
     spawn_count: u32,
     late_frames_discarded: u64,
@@ -214,6 +219,8 @@ impl WorkerSupervisor {
             config,
             state,
             closed: false,
+            closing:None,close_deadline:None,cleanup_failed:false,
+            #[cfg(all(test,feature="test-fixtures"))]test_wait_started:None,
             consecutive_timeouts: 0,
             spawn_count: 0,
             late_frames_discarded: 0,
@@ -232,6 +239,13 @@ impl WorkerSupervisor {
     pub fn state(&self) -> WorkerState {
         self.state
     }
+    pub fn set_close_control(&mut self,control:std::sync::Arc<crate::runtime::CloseControl>){self.closing=Some(control);}
+    #[cfg(all(test,feature="test-fixtures"))]
+    pub(crate) fn m2_synthetic(waits:&[u32])->Self{let effects=r3_spawn_tests::Effects::new(true,true,true,waits);let mut owner=effects.supervisor();owner.ensure_worker().unwrap();owner}
+    #[cfg(all(test,feature="test-fixtures"))]
+    pub(crate) fn m2_deadline(&self)->Option<Instant>{self.close_deadline}
+    fn is_closing(&self)->bool{self.closing.as_ref().is_some_and(|c|c.closing())}
+    fn cleanup_deadline(&self,normal:Instant)->Instant{self.closing.as_ref().map_or(self.close_deadline.unwrap_or(normal),|c|c.deadline(self.close_deadline.unwrap_or(normal)))}
 
     pub fn consecutive_timeouts(&self) -> u32 {
         self.consecutive_timeouts
@@ -317,7 +331,7 @@ impl WorkerSupervisor {
     }
 
     fn exchange(&mut self, request: &WorkerMessage) -> ContractResult<WorkerReply> {
-        if self.closed {
+        if self.closed || self.is_closing() {
             return Err(ContractError::new(ErrorCode::Busy, "supervisor closed"));
         }
         if self.state == WorkerState::FailedPaused {
@@ -391,6 +405,7 @@ impl WorkerSupervisor {
                             if let Some(err) = self.reader_status().flatten() {
                                 return Err(self.fail_request(request, err, false));
                             }
+                            if self.is_closing(){return Err(self.fail_request(request,ContractError::new(ErrorCode::Busy,"capture closing"),false));}
                             if Instant::now() >= deadline {
                                 return Err(self.fail_request(
                                     request,
@@ -434,6 +449,14 @@ impl WorkerSupervisor {
         self.reap();
         self.state = self.state_after_reap();
     }
+    pub fn close_until(&mut self,deadline:Instant)->ContractResult<()> {
+        self.close_deadline=Some(deadline);self.closed=true;self.state=WorkerState::Reaping;
+        self.reap_with_deadline(deadline);self.state=self.state_after_reap();
+        if self.cleanup_failed{return Err(ContractError::new(ErrorCode::CleanupFailed,"抓取资源回收失败，退出状态已保留。"));}
+        if self.worker.is_some(){return Err(ContractError::new(ErrorCode::Timeout,"抓取资源仍在回收，请保留窗口后重试。"));}
+        if self.config.cleanup_pending(){return Err(ContractError::new(ErrorCode::CleanupFailed,"仍有保留的抓取资源尚未确认回收。"));}
+        Ok(())
+    }
 
     fn reader_status(&mut self) -> Option<Option<ContractError>> {
         let wp = self.worker.as_mut()?;
@@ -446,21 +469,26 @@ impl WorkerSupervisor {
     }
 
     fn pump_next(&mut self, timeout: Duration) -> Option<PumpEvent> {
+        let deadline=Instant::now()+timeout;
+        loop {
+        if self.is_closing(){return Some(PumpEvent::Stopped(Some(ContractError::new(ErrorCode::Busy,"capture closing"))));}
         if let Some(err) = self.reader_status().flatten() {
             return Some(PumpEvent::Stopped(Some(err)));
         }
         let wp = self.worker.as_ref()?;
-        let next = wp.frames.recv_timeout(timeout);
+        #[cfg(all(test,feature="test-fixtures"))]if let Some(started)=self.test_wait_started.take(){let _=started.send(());}
+        let next = wp.frames.recv_timeout(deadline.saturating_duration_since(Instant::now()).min(Duration::from_millis(10)));
         // EOF 不遮住最后一份完整帧；fatal 错误则始终优先。
         if let Some(err) = self.reader_status().flatten() {
             return Some(PumpEvent::Stopped(Some(err)));
         }
         match next {
-            Ok(body) => Some(PumpEvent::Frame(body)),
-            Err(RecvTimeoutError::Timeout) => None,
+            Ok(body) => return Some(PumpEvent::Frame(body)),
+            Err(RecvTimeoutError::Timeout) => if Instant::now()>=deadline{return None;}else{continue;},
             Err(RecvTimeoutError::Disconnected) => {
-                Some(PumpEvent::Stopped(self.reader_status().flatten()))
+                return Some(PumpEvent::Stopped(self.reader_status().flatten()));
             }
+        }
         }
     }
 
@@ -470,6 +498,7 @@ impl WorkerSupervisor {
             None => return Err(ContractError::protocol_error("worker unavailable")),
         };
         let (result, stalled) = win::write_all_cancellable(handle, frame, deadline,
+            self.closing.clone(),
             #[cfg(feature = "test-fixtures")]
             self.test_write_gate.take(),
         );
@@ -480,6 +509,7 @@ impl WorkerSupervisor {
     }
 
     fn evaluate_frame(&mut self, request: &WorkerMessage, bytes: &[u8]) -> FrameOutcome {
+        if self.is_closing(){return FrameOutcome::Failed(ContractError::new(ErrorCode::Busy,"capture closing"));}
         let body = match std::str::from_utf8(bytes) {
             Ok(body) => body,
             Err(_) => {
@@ -569,7 +599,7 @@ impl WorkerSupervisor {
     }
 
     fn ensure_worker(&mut self) -> ContractResult<()> {
-        if self.closed || self.state == WorkerState::FailedPaused || self.config.cleanup_pending() {
+        if self.closed || self.is_closing() || self.state == WorkerState::FailedPaused || self.config.cleanup_pending() {
             self.state = WorkerState::FailedPaused;
             return Err(ContractError::new(ErrorCode::Busy, "supervisor paused"));
         }
@@ -637,6 +667,7 @@ impl WorkerSupervisor {
                                     "handshake deadline exceeded",
                                 )));
                             }
+                            if self.is_closing(){return Err(self.fail_handshake(ContractError::new(ErrorCode::Busy,"capture closing")));}
                             self.state = WorkerState::Ready;
                             Ok(())
                         }
@@ -652,8 +683,10 @@ impl WorkerSupervisor {
     }
 
     fn reap_with_budget(&mut self, budget: Duration) {
+        self.reap_with_deadline(self.cleanup_deadline(Instant::now()+budget));
+    }
+    fn reap_with_deadline(&mut self,deadline:Instant) {
         let start = Instant::now();
-        let deadline = start + budget;
         let mut report = ReapReport {
             identity: None,
             exited: true,
@@ -668,10 +701,11 @@ impl WorkerSupervisor {
             report.identity = Some(wp.identity);
             win::terminate_owned(&wp.process);
             // writer、reader 与 stderr 排空共用同一个清理截止；循环取消覆盖取消早于 IO 的竞态。
-            report.writer_stopped = win::finish_thread(&mut wp.writer, deadline);
-            report.reader_stopped = win::finish_thread(&mut wp.reader, deadline);
-            report.stderr_stopped = win::finish_thread(&mut wp.stderr, deadline);
-            report.exited = win::wait_owned(&wp.process, deadline);
+            report.writer_stopped = win::finish_thread_controlled(&mut wp.writer, deadline,self.closing.as_ref());
+            report.reader_stopped = win::finish_thread_controlled(&mut wp.reader, deadline,self.closing.as_ref());
+            report.stderr_stopped = win::finish_thread_controlled(&mut wp.stderr, deadline,self.closing.as_ref());
+            self.cleanup_failed|=(!report.writer_stopped&&wp.writer.is_none())||(!report.reader_stopped&&wp.reader.is_none())||(!report.stderr_stopped&&wp.stderr.is_none());
+            report.exited = win::wait_owned_controlled(&wp.process, deadline,self.closing.as_ref());
             for _ in 0..READER_QUEUE_FRAMES {
                 if wp.frames.try_recv().is_err() {
                     break;
@@ -692,6 +726,7 @@ impl WorkerSupervisor {
         // A replacement supervisor must also report globally retained cleanup
         // through the existing runtime close/reset result consumer.
         report.cleanup_failed |= self.config.cleanup_pending();
+        report.cleanup_failed |= self.cleanup_failed;
         report.cleanup_elapsed = start.elapsed();
         self.last_reap = Some(report);
     }
@@ -711,7 +746,7 @@ fn stopped_error(status: Option<ContractError>) -> ContractError {
 
 impl Drop for WorkerSupervisor {
     fn drop(&mut self) {
-        self.close();
+        if let Some(deadline)=self.close_deadline{let _=self.close_until(deadline);}else{self.close();}
         if let Some(worker) = self.worker.take() {
             eprintln!("pinfeather: worker cleanup_failed; resources retained, worker creation disabled");
             #[cfg(all(test, feature = "test-fixtures"))]
@@ -760,7 +795,7 @@ mod tests {
         let payload = vec![0u8; 1024 * 1024];
         let started = Instant::now();
         let (result, mut stalled) =
-            win::write_all_cancellable(write_h, &payload, Instant::now() + Duration::from_millis(200),
+            win::write_all_cancellable(write_h, &payload, Instant::now() + Duration::from_millis(200),None,
                 #[cfg(feature = "test-fixtures")]
                 None,
             );
@@ -799,6 +834,8 @@ mod r3_spawn_tests {
         pub reader_started: Mutex<Option<Receiver<()>>>,
         reader_done: Mutex<Option<std::sync::mpsc::SyncSender<()>>>,
         borrowing: std::sync::atomic::AtomicBool,
+        hello_frame:std::sync::atomic::AtomicBool,
+        held_frames:Mutex<Vec<std::sync::mpsc::Sender<Vec<u8>>>>,
     }
     pub(super) struct MockHandle {
         pub effects: Arc<Effects>,
@@ -808,13 +845,13 @@ mod r3_spawn_tests {
         fn drop(&mut self) { self.effects.released.lock().unwrap().push(self.name); }
     }
     impl Effects {
-        fn new(created: bool, assigned: bool, terminate_ok: bool, waits: &[u32]) -> Arc<Self> {
+        pub(super) fn new(created: bool, assigned: bool, terminate_ok: bool, waits: &[u32]) -> Arc<Self> {
             Arc::new(Self { created, assigned, terminate_ok, waits: Mutex::new(waits.iter().copied().collect()),
                 spawns: AtomicUsize::new(0), pending: AtomicUsize::new(0), retained: Mutex::new(vec![]),
                 terminations: Mutex::new(vec![]), budgets: Mutex::new(vec![]), released: Mutex::new(vec![]),
                 io_fail_at: AtomicUsize::new(usize::MAX), io_attempts: AtomicUsize::new(0),
                 reader_gate: Mutex::new(None), reader_entered: Mutex::new(None), reader_started: Mutex::new(None),
-                reader_done: Mutex::new(None), borrowing: std::sync::atomic::AtomicBool::new(false) })
+                reader_done: Mutex::new(None), borrowing: std::sync::atomic::AtomicBool::new(false),hello_frame:std::sync::atomic::AtomicBool::new(true),held_frames:Mutex::new(vec![]) })
         }
         pub fn terminate(&self) { self.terminations.lock().unwrap().push(self.terminate_ok); }
         pub fn reader_task(self: &Arc<Self>) -> impl FnOnce() + Send + 'static {
@@ -846,19 +883,77 @@ mod r3_spawn_tests {
             if !self.created { return Err(ContractError::new(ErrorCode::CleanupFailed, "worker spawn failed")); }
             let handle = |name| WorkerHandle::Mock(MockHandle { effects: self.clone(), name });
             let (frames_tx, frames) = std::sync::mpsc::channel();
-            frames_tx.send(crate::clipboard::protocol::HELLO_BODY.as_bytes().to_vec()).unwrap();
+            if self.hello_frame.load(Ordering::Acquire){frames_tx.send(crate::clipboard::protocol::HELLO_BODY.as_bytes().to_vec()).unwrap();}else{self.held_frames.lock().unwrap().push(frames_tx);}
             let (_, status) = std::sync::mpsc::channel();
             Ok(WorkerProcess { _job: handle("job"), process: handle("process"), stdin_write: handle("stdin"),
                 _stdout_read: handle("stdout"), _stderr_read: handle("stderr"), identity: WorkerIdentity { pid: 7, create_time: 11 },
                 reader: None, writer: None, stderr: None, frames, status, reader_status: None, spawn_cleanup: None })
         }
-        fn supervisor(self: &Arc<Self>) -> WorkerSupervisor {
+        pub(super) fn supervisor(self: &Arc<Self>) -> WorkerSupervisor {
             WorkerSupervisor::with_config(WorkerConfig { exe: PathBuf::from("must-not-launch.exe"), args: vec![], snapshot: true, mock_spawn: Some(self.clone()) })
         }
         fn assert_released_once(&self) {
             let mut released = self.released.lock().unwrap().clone(); released.sort();
             assert_eq!(released, ["job", "process", "stderr", "stdin", "stdout"]);
         }
+    }
+
+    #[test]
+    fn m2_cancellation_during_read_wait_rejects_late_frame_and_new_spawn(){
+        let effects=Effects::new(true,true,true,&[0]);let mut owner=effects.supervisor();owner.ensure_worker().unwrap();
+        let control=Arc::new(crate::runtime::CloseControl::default());owner.set_close_control(control.clone());
+        let(frame_tx,frames)=std::sync::mpsc::channel();let(_status_tx,status)=std::sync::mpsc::channel();
+        owner.worker.as_mut().unwrap().frames=frames;owner.worker.as_mut().unwrap().status=status;
+        let(tx,rx)=std::sync::mpsc::sync_channel(0);owner.test_wait_started=Some(tx);
+        let thread=std::thread::spawn(move||{let event=owner.pump_next(Duration::from_secs(30));assert!(matches!(event,Some(PumpEvent::Stopped(Some(ref e))) if e.code==ErrorCode::Busy));owner});
+        rx.recv_timeout(Duration::from_secs(1)).unwrap();let deadline=Instant::now()+Duration::from_millis(200);control.publish(deadline);
+        let mut owner=thread.join().unwrap();let request=WorkerMessage{version:1,capture_id:"m2-late".into(),policy_epoch:0};
+        let late=serde_json::to_vec(&serde_json::json!({"version":1,"capture_id":"m2-late","policy_epoch":0})).unwrap();let _=frame_tx.send(late.clone());
+        assert!(matches!(owner.evaluate_frame(&request,&late),FrameOutcome::Failed(e) if e.code==ErrorCode::Busy));
+        assert_eq!(owner.capture_snapshot(&request).unwrap_err().code,ErrorCode::Busy);
+        assert_eq!(effects.spawns.load(Ordering::SeqCst),1);owner.close_until(deadline).unwrap();effects.assert_released_once();
+    }
+    #[test]
+    fn m2_closing_interrupts_already_running_handshake_without_replacement(){
+        let effects=Effects::new(true,true,true,&[0,0]);effects.hello_frame.store(false,Ordering::Release);let mut owner=effects.supervisor();
+        let control=Arc::new(crate::runtime::CloseControl::default());owner.set_close_control(control.clone());let(tx,rx)=std::sync::mpsc::sync_channel(0);owner.test_wait_started=Some(tx);
+        let waiting=std::thread::spawn(move||{let result=owner.ensure_worker();(owner,result)});rx.recv_timeout(Duration::from_secs(1)).unwrap();control.publish(Instant::now());
+        let(mut owner,result)=waiting.join().unwrap();assert_eq!(result.unwrap_err().code,ErrorCode::Busy);assert_eq!(effects.spawns.load(Ordering::SeqCst),1);assert!(owner.ensure_worker().is_err());assert_eq!(effects.spawns.load(Ordering::SeqCst),1);
+        assert_eq!(effects.budgets.lock().unwrap()[0],Duration::ZERO);let deadline=Instant::now()+Duration::from_secs(1);control.publish(deadline);owner.close_until(deadline).unwrap();effects.assert_released_once();
+    }
+    #[test]
+    fn m2_shared_deadline_reaches_reaper_retains_identity_and_retry(){
+        let effects=Effects::new(true,true,true,&[258,0]);let mut owner=effects.supervisor();owner.ensure_worker().unwrap();
+        let identity=owner.current_identity();let control=Arc::new(crate::runtime::CloseControl::default());owner.set_close_control(control.clone());
+        let expired=Instant::now();control.publish(expired);assert_eq!(owner.close_until(expired).unwrap_err().code,ErrorCode::Timeout);
+        assert_eq!(owner.current_identity(),identity);assert!(!owner.cleanup_failed);assert_eq!(effects.budgets.lock().unwrap()[0],Duration::ZERO);
+        let deadline=Instant::now()+Duration::from_secs(1);control.publish(deadline);owner.close_until(deadline).unwrap();assert_eq!(effects.spawns.load(Ordering::SeqCst),1);effects.assert_released_once();
+    }
+    #[test]
+    fn m2_cancelled_write_wait_retains_thread_without_native_write(){
+        let control=Arc::new(crate::runtime::CloseControl::default());let c=control.clone();let(tx,gate)=std::sync::mpsc::channel();
+        // The synthetic writer waits on a gate, then observes closing before any OS IO.
+        let thread=std::thread::spawn(move||win::write_all_cancellable(std::ptr::null_mut(),b"synthetic",Instant::now()+Duration::from_secs(30),Some(c),Some(gate)));
+        let bound=Instant::now()+Duration::from_secs(1);while Arc::strong_count(&control)<3{assert!(Instant::now()<bound);std::thread::yield_now();}control.publish(Instant::now());
+        let(result,mut pending)=thread.join().unwrap();assert_eq!(result.unwrap_err().code,ErrorCode::Busy);
+        assert!(pending.is_some(),"cancellation occurs after a writer thread is owned");
+        tx.send(()).ok();if let Some(join)=pending.take(){join.join().unwrap();}
+    }
+    #[test]
+    fn m2_pending_drop_uses_expired_deadline_without_new_budget(){
+        let effects=Effects::new(true,true,true,&[258,258,0]);let mut owner=effects.supervisor();owner.ensure_worker().unwrap();
+        let expired=Instant::now();assert_eq!(owner.close_until(expired).unwrap_err().code,ErrorCode::Timeout);drop(owner);
+        assert_eq!(effects.budgets.lock().unwrap().as_slice(),&[Duration::ZERO,Duration::ZERO]);
+        let mut recovery=effects.supervisor();recovery.worker=effects.retained.lock().unwrap().pop();recovery.close();effects.assert_released_once();
+    }
+    #[test]
+    fn m2_worker_io_panic_stays_failed_after_its_join_handle_is_consumed(){
+        let effects=Effects::new(true,true,true,&[0,0]);let mut owner=effects.supervisor();owner.ensure_worker().unwrap();
+        let reader=std::thread::spawn(||panic!("synthetic worker reader panic"));while !reader.is_finished(){std::thread::yield_now();}owner.worker.as_mut().unwrap().reader=Some(reader);
+        assert_eq!(owner.close_until(Instant::now()+Duration::from_secs(1)).unwrap_err().code,ErrorCode::CleanupFailed);
+        assert!(owner.cleanup_failed);assert!(owner.worker.as_ref().unwrap().reader.is_none());
+        assert_eq!(owner.close_until(Instant::now()+Duration::from_secs(1)).unwrap_err().code,ErrorCode::CleanupFailed);assert!(owner.worker.is_none());effects.assert_released_once();
+        assert_eq!(owner.close_until(Instant::now()).unwrap_err().code,ErrorCode::CleanupFailed);assert_eq!(effects.spawns.load(Ordering::SeqCst),1);
     }
 
     fn unconfirmed(terminate_ok: bool, wait: u32) {
@@ -1151,6 +1246,16 @@ mod win {
         }
         wait_exit(process.as_raw_handle(), deadline)
     }
+    pub fn wait_owned_controlled(process:&WorkerHandle,deadline:Instant,closing:Option<&std::sync::Arc<crate::runtime::CloseControl>>)->bool{
+        if closing.is_none(){return wait_owned(process,deadline);}
+        #[cfg(all(test,feature="test-fixtures"))]
+        if let WorkerHandle::Mock(_)=process{return wait_owned(process,closing.map_or(deadline,|c|c.deadline(deadline)));}
+        loop {
+            let deadline=closing.map_or(deadline,|c|c.deadline(deadline));let budget=deadline.saturating_duration_since(Instant::now()).as_millis().min(5) as u32;
+            let result=unsafe{WaitForSingleObject(process.as_raw_handle(),budget)};if result==WAIT_OBJECT_0{return true;}
+            if result!=258||Instant::now()>=deadline{return false;}
+        }
+    }
 
     fn assign_worker(mut worker: WorkerProcess) -> Result<WorkerProcess, SpawnFailure> {
         #[cfg(all(test, feature = "test-fixtures"))]
@@ -1206,20 +1311,23 @@ mod win {
 
     /// 仅在确认线程完成后 join；取消是请求，不能当作退出确认。
     pub fn finish_thread(thread: &mut Option<JoinHandle<()>>, deadline: Instant) -> bool {
+        finish_thread_controlled(thread,deadline,None)
+    }
+    pub fn finish_thread_controlled(thread:&mut Option<JoinHandle<()>>,deadline:Instant,closing:Option<&std::sync::Arc<crate::runtime::CloseControl>>)->bool {
         let Some(join) = thread.as_ref() else { return true };
         // Rust is_finished 不保证 OS 线程析构已结束；等待原生线程句柄 signaled 才 join。
         while unsafe { WaitForSingleObject(join.as_raw_handle(), 0) } != WAIT_OBJECT_0 {
             // 同步匿名管道 IO 使用线程级取消；反复请求以覆盖线程启动竞态。
             unsafe { CancelSynchronousIo(join.as_raw_handle()) };
             let now = Instant::now();
+            let deadline=closing.map_or(deadline,|c|c.deadline(deadline));
             if now >= deadline {
                 return false;
             }
             let millis = (deadline - now).as_millis().clamp(1, 5) as u32;
             unsafe { WaitForSingleObject(join.as_raw_handle(), millis) };
         }
-        let _ = thread.take().expect("completed thread retained").join();
-        true
+        thread.take().expect("completed thread retained").join().is_ok()
     }
 
     fn read_exact(handle: HANDLE, buf: &mut [u8]) -> ContractResult<usize> {
@@ -1249,8 +1357,9 @@ mod win {
         Ok(filled)
     }
 
-    fn write_all(handle: HANDLE, mut data: &[u8], deadline: Instant) -> ContractResult<()> {
+    fn write_all(handle: HANDLE, mut data: &[u8], deadline: Instant,closing:Option<&std::sync::Arc<crate::runtime::CloseControl>>) -> ContractResult<()> {
         while !data.is_empty() {
+            if closing.is_some_and(|c|c.closing()){return Err(ContractError::new(ErrorCode::Busy,"capture closing"));}
             if Instant::now() >= deadline {
                 return Err(ContractError::new(ErrorCode::Timeout, "write deadline exceeded"));
             }
@@ -1277,40 +1386,47 @@ mod win {
         handle: HANDLE,
         data: &[u8],
         deadline: Instant,
+        closing:Option<std::sync::Arc<crate::runtime::CloseControl>>,
         #[cfg(feature = "test-fixtures")] gate: Option<mpsc::Receiver<()>>,
     ) -> (ContractResult<()>, Option<JoinHandle<()>>) {
+        if closing.as_ref().is_some_and(|c|c.closing()) {
+            return (Err(ContractError::new(ErrorCode::Busy,"capture closing")),None);
+        }
         if Instant::now() >= deadline {
             return (Err(ContractError::new(ErrorCode::Timeout, "write deadline exceeded")), None);
         }
         let data = data.to_vec();
         let handle_usize = handle as usize;
         let (tx, rx) = mpsc::channel();
+        let writer_closing=closing.clone();
         let join = thread::spawn(move || {
             #[cfg(feature = "test-fixtures")]
             if let Some(gate) = gate {
                 let _ = gate.recv();
             }
-            let result = write_all(handle_usize as HANDLE, &data, deadline);
+            let result = write_all(handle_usize as HANDLE, &data, deadline,writer_closing.as_ref());
             let _ = tx.send(result);
         });
-        let now = Instant::now();
-        let budget = if now >= deadline {
-            Duration::ZERO
-        } else {
-            deadline - now
-        };
         let mut pending = Some(join);
-        match rx.recv_timeout(budget) {
+        loop {
+        if closing.as_ref().is_some_and(|c|c.closing()) {
+            if let Some(thread)=pending.as_ref(){unsafe{CancelSynchronousIo(thread.as_raw_handle());}}
+            return (Err(ContractError::new(ErrorCode::Busy,"capture closing")),pending);
+        }
+        let budget=deadline.saturating_duration_since(Instant::now());
+        match rx.recv_timeout(budget.min(Duration::from_millis(10))) {
             Ok(result) => {
-                if finish_thread(&mut pending, deadline) {
-                    (result, None)
+                if finish_thread(&mut pending, closing.as_ref().map_or(deadline,|c|c.deadline(deadline))) {
+                    return (result, None);
                 } else {
-                    (Err(ContractError::new(ErrorCode::Timeout, "write deadline exceeded")), pending)
+                    return (Err(ContractError::new(ErrorCode::Timeout, "write deadline exceeded")), pending);
                 }
             }
+            Err(mpsc::RecvTimeoutError::Timeout) if Instant::now()<deadline=>continue,
             Err(_) => {
-                (Err(ContractError::new(ErrorCode::Timeout, "write deadline exceeded")), pending)
+                return (Err(ContractError::new(ErrorCode::Timeout, "write deadline exceeded")), pending);
             }
+        }
         }
     }
 

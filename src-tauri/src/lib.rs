@@ -7,6 +7,7 @@ pub mod runtime;
 pub mod host;
 pub mod commands;
 pub mod manual_panel;
+pub mod residency;
 
 use config::HostArgs;
 
@@ -73,13 +74,16 @@ pub fn run(args: HostArgs) {
     let webview_dir = prepared.webview_dir;
 
     tauri::Builder::default()
-        .invoke_handler(tauri::generate_handler![commands::get_status,commands::list_clips,commands::get_clip_text,commands::copy_clip_text,commands::set_capture_enabled,commands::get_manual_panel_state,commands::open_manual_panel,commands::ready_manual_panel,commands::hide_manual_panel,commands::copy_manual_panel_text])
+        .invoke_handler(tauri::generate_handler![commands::get_status,commands::list_clips,commands::get_clip_text,commands::copy_clip_text,commands::set_capture_enabled,commands::get_manual_panel_state,commands::open_manual_panel,commands::ready_manual_panel,commands::hide_manual_panel,commands::copy_manual_panel_text,commands::get_residency_state,commands::request_exit,commands::retry_exit_saving,commands::get_settings_state,commands::apply_excluded_apps])
         .setup(move |app| {
             let handle=app.handle().clone();
-            let runtime=std::sync::Arc::new(host::HostRuntime::start(data_dir.clone(),std::sync::Arc::new(move|name,revision|{let _=handle.emit(name,serde_json::json!({"revision":revision.to_string()}));})).map_err(|e|std::io::Error::other(e.message))?);
+            let runtime=std::sync::Arc::new(host::HostRuntime::start(data_dir.clone(),std::sync::Arc::new(move|name,revision|{
+                let _=handle.emit(name,serde_json::json!({"revision":revision.to_string()}));
+                let target=handle.clone();let _=handle.run_on_main_thread(move||{if let Some(owner)=target.try_state::<std::sync::Arc<residency::DesktopResidency>>(){owner.refresh_tray();}});
+            })).map_err(|e|std::io::Error::other(e.message))?);
             // Collection always requires an explicit user action in this isolated run.
             // --start-paused remains accepted; no implicit remembered enable exists.
-            app.manage(runtime);
+            app.manage(runtime.clone());
             let window=tauri::WebviewWindowBuilder::new(
                 app,
                 "main",
@@ -105,24 +109,22 @@ pub fn run(args: HostArgs) {
                 });
                 panel.start_hotkey();
             }
-            let owner=app.handle().clone();
+            let residency=residency::DesktopResidency::new(app.handle().clone(),runtime,panel);
+            app.manage(residency.clone());residency.install_tray();
             window.on_window_event(move|event|{
                 if let tauri::WindowEvent::CloseRequested{api,..}=event {
-                    let runtime=owner.state::<std::sync::Arc<host::HostRuntime>>().inner().clone();
-                    if runtime.exit_ready.load(std::sync::atomic::Ordering::Acquire){return;}
+                    if residency.coordinator.exited(){return;}
                     api.prevent_close();
-                    if runtime.exit_pending.swap(true,std::sync::atomic::Ordering::AcqRel){return;}
-                    let handle=owner.clone();
-                    let panel=owner.state::<std::sync::Arc<manual_panel::PanelHost>>().inner().clone();
-                    tauri::async_runtime::spawn(async move{
-                        let closing=runtime.clone();
-                        let result=tauri::async_runtime::spawn_blocking(move||{panel.stop()?;closing.shutdown(std::time::Duration::from_secs(3))}).await;
-                        if matches!(result,Ok(Ok(()))){handle.exit(0);}else{runtime.exit_pending.store(false,std::sync::atomic::Ordering::Release);runtime.exit_failed();}
-                    });
+                    residency.coordinator.close_main(residency.effects.as_ref());
                 }
             });
             Ok(())
         })
-        .run(tauri::generate_context!())
-        .expect("pinfeather: Tauri 运行失败");
+        .build(tauri::generate_context!())
+        .expect("pinfeather: Tauri 运行失败")
+        .run(|handle,event|if let tauri::RunEvent::ExitRequested{api,..}=event{
+            if let Some(owner)=handle.try_state::<std::sync::Arc<residency::DesktopResidency>>(){
+                if !owner.coordinator.exited(){api.prevent_exit();let _=owner.coordinator.request_exit(owner.effects.clone());}
+            }
+        });
 }

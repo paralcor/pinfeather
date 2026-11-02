@@ -46,6 +46,7 @@ impl PanelSessions {
     }
     pub fn dismiss(&self,window:&dyn PanelWindow) { if let Some(session)=self.snapshot().session_id {let _=self.hide(&session,window);} }
     pub fn stop(&self,window:&dyn PanelWindow)->ContractResult<()> {let mut s=self.state.lock().unwrap_or_else(|e|e.into_inner());s.session=None;s.phase=Phase::Stopping;s.revision+=1;let result=window.hide();if let Err(error)=&result{s.error=Some(error.clone());}let _=window.publish(&s.snapshot());result.map_err(|_|ContractError::new(ErrorCode::CleanupFailed,"panel hide incomplete"))}
+    pub fn seal(&self){let mut s=self.state.lock().unwrap_or_else(|e|e.into_inner());s.session=None;s.phase=Phase::Stopping;s.revision+=1;}
     pub fn admit<T>(&self,session:&str,admission:impl FnOnce()->T)->ContractResult<T> {
         let s=self.state.lock().unwrap_or_else(|e|e.into_inner());
         if s.phase!=Phase::Ready||s.session.as_deref()!=Some(session){return Err(denied());}
@@ -78,8 +79,11 @@ impl PanelHost {
         self.sessions.hotkey(if result.is_ok(){"ready"}else{"failed"},result.err(),&self.window);
     }
     pub fn stop(&self)->ContractResult<()> {
+        self.stop_until(std::time::Instant::now()+std::time::Duration::from_secs(3))
+    }
+    pub fn stop_until(&self,deadline:std::time::Instant)->ContractResult<()> {
         let hidden=self.sessions.stop(&self.window);
-        if let Some(owner)=self.hotkey.lock().unwrap_or_else(|e|e.into_inner()).as_mut(){if let Err(error)=owner.stop(std::time::Duration::from_secs(3)){self.sessions.hotkey("failed",Some(error),&self.window);return Err(ContractError::new(ErrorCode::CleanupFailed,"hotkey cleanup incomplete"));}}
+        if let Some(owner)=self.hotkey.lock().unwrap_or_else(|e|e.into_inner()).as_mut(){if let Err(error)=owner.stop_until(deadline){self.sessions.hotkey("failed",Some(error.clone()),&self.window);return Err(ContractError::new(ErrorCode::CleanupFailed,&format!("{}hotkey: {error}",hidden.err().map(|e|format!("{}; ",e.message)).unwrap_or_default())));}}
         hidden?;self.sessions.hotkey("stopped",None,&self.window);Ok(())
     }
 }
