@@ -6,6 +6,7 @@ pub mod store;
 pub mod runtime;
 pub mod host;
 pub mod commands;
+pub mod manual_panel;
 
 use config::HostArgs;
 
@@ -72,7 +73,7 @@ pub fn run(args: HostArgs) {
     let webview_dir = prepared.webview_dir;
 
     tauri::Builder::default()
-        .invoke_handler(tauri::generate_handler![commands::get_status,commands::list_clips,commands::get_clip_text,commands::copy_clip_text,commands::set_capture_enabled])
+        .invoke_handler(tauri::generate_handler![commands::get_status,commands::list_clips,commands::get_clip_text,commands::copy_clip_text,commands::set_capture_enabled,commands::get_manual_panel_state,commands::open_manual_panel,commands::ready_manual_panel,commands::hide_manual_panel,commands::copy_manual_panel_text])
         .setup(move |app| {
             let handle=app.handle().clone();
             let runtime=std::sync::Arc::new(host::HostRuntime::start(data_dir.clone(),std::sync::Arc::new(move|name,revision|{let _=handle.emit(name,serde_json::json!({"revision":revision.to_string()}));})).map_err(|e|std::io::Error::other(e.message))?);
@@ -86,9 +87,24 @@ pub fn run(args: HostArgs) {
             )
             .title("片羽")
             .inner_size(720.0, 520.0)
-            .data_directory(webview_dir)
+            .data_directory(webview_dir.clone())
             .on_navigation(|url| navigation_allowed(url, cfg!(debug_assertions)))
             .build()?;
+            let quick=tauri::WebviewWindowBuilder::new(app,"quick-panel",tauri::WebviewUrl::App("index.html?panel=1".into()))
+                .title("片羽 · 快捷面板").inner_size(620.0,560.0).visible(false).data_directory(webview_dir)
+                .on_navigation(|url|navigation_allowed(url,cfg!(debug_assertions))).build();
+            let panel=std::sync::Arc::new(manual_panel::PanelHost::new(app.handle().clone(),quick.is_ok()));
+            app.manage(panel.clone());
+            if let Ok(quick)=quick {
+                let p=panel.clone();
+                quick.on_window_event(move|event|match event{
+                    tauri::WindowEvent::CloseRequested{api,..}=>{api.prevent_close();p.sessions.dismiss(&p.window);},
+                    tauri::WindowEvent::Focused(false)=>{if p.sessions.snapshot().phase=="ready"&&p.window.0.get_webview_window("quick-panel").and_then(|w|w.is_focused().ok())==Some(false){p.sessions.dismiss(&p.window);}},
+                    tauri::WindowEvent::Destroyed=>{let _=p.stop();},
+                    _=>{},
+                });
+                panel.start_hotkey();
+            }
             let owner=app.handle().clone();
             window.on_window_event(move|event|{
                 if let tauri::WindowEvent::CloseRequested{api,..}=event {
@@ -97,9 +113,10 @@ pub fn run(args: HostArgs) {
                     api.prevent_close();
                     if runtime.exit_pending.swap(true,std::sync::atomic::Ordering::AcqRel){return;}
                     let handle=owner.clone();
+                    let panel=owner.state::<std::sync::Arc<manual_panel::PanelHost>>().inner().clone();
                     tauri::async_runtime::spawn(async move{
                         let closing=runtime.clone();
-                        let result=tauri::async_runtime::spawn_blocking(move||closing.shutdown(std::time::Duration::from_secs(3))).await;
+                        let result=tauri::async_runtime::spawn_blocking(move||{panel.stop()?;closing.shutdown(std::time::Duration::from_secs(3))}).await;
                         if matches!(result,Ok(Ok(()))){handle.exit(0);}else{runtime.exit_pending.store(false,std::sync::atomic::Ordering::Release);runtime.exit_failed();}
                     });
                 }

@@ -1,5 +1,9 @@
 # 片羽首轮验证、真机验收与测量计划
 
+> 2026-11-02 M1 当前状态统一见[两步输入与有限验收记录](pinfeather_explicit_copy_stage.md#manual-m1-current-evidence)：152项源码已获接受，319项前端测试通过；绑定普通 Windows x64 包已完成有限原生验证。pending-end 修改恢复、候选活跃首次手势及最终 sentinel 仍有缺口，提前退出原因未定，M1 未整体完成，M2 未开始。
+
+> 手动交付行为、会话与生命周期契约见[权威 M1 章节](pinfeather_explicit_copy_stage.md#manual-m1)。复制后保持面板打开；main X 退出，panel X/Esc/失焦隐藏；驻留属于 M2。原 4/7、自动回贴 unknown/阻塞与带日期的失败历史保留；旧版本现场不外推到当前版本。
+
 版本：v1，更新于2026-11-01。本文规定验收要求；E07/W1/T2基础收录与E09/W2/T3基础搜索/预览已有本机人工证据，范围见第6.1、6.2节。[显式复制独立增量](pinfeather_explicit_copy_stage.md)已完成实现、负责人独立离线及一次最小人工现场验收，见[6.4节](#64-显式复制最小人工现场)。原T0–T3顶层基础进度仍为4/7，不计为T4完成；T4–T6及W4/W5完整范围仍待完成。E03a的F1–F4已关闭；W0 release在相同单次WM_CLOSE方式下完成无UIA/只读UIA各3次退出复验。三类真实应用的候选已由用户确认，外部IMM方法均返回unknown，IME子关卡needs_plan_revision。用户已批准独立W1/W2先行、W3继续阻塞；W0整体与完整真机矩阵不能由编译或契约测试推断通过。
 
 设计见[完整方案](pinfeather_implementation_plan.md)，任务及文件边界见[任务卡](pinfeather_execution_tasks.md)。当前负责人为 Codex gpt-6-astra/high，负责协调、独立审查与验收；执行者为 Codex gpt-6.1-sol/high，仅在明确任务范围内写入，交回后停写。同一范围仅一个写者；带日期的历史角色与执行证据保持原样。

@@ -68,6 +68,19 @@ export interface ContractError {
 
 export type ContractResult<T> = { ok: true; value: T } | { ok: false; error: ContractError };
 
+export interface ManualPanelSnapshot { revision: string; session_id: string | null; phase: "hidden" | "waiting" | "ready" | "stopping" | "unavailable"; hotkey: "not_started" | "ready" | "failed" | "stopped"; error: string | null; }
+export function parseManualPanelSnapshot(value: unknown): ManualPanelSnapshot | null {
+  if (typeof value !== "object" || value === null || Array.isArray(value)) return null;
+  const v = value as Record<string, unknown>;
+  if (Object.keys(v).sort().join(",") !== "error,hotkey,phase,revision,session_id") return null;
+  if (typeof v.revision !== "string" || !/^(0|[1-9][0-9]*)$/.test(v.revision) || BigInt(v.revision) > 18446744073709551615n) return null;
+  if (!["hidden", "waiting", "ready", "stopping", "unavailable"].includes(v.phase as string) || !["not_started", "ready", "failed", "stopped"].includes(v.hotkey as string)) return null;
+  const live = v.phase === "waiting" || v.phase === "ready";
+  if (live ? typeof v.session_id !== "string" || !/^[a-fA-F0-9]{32}$/.test(v.session_id) : v.session_id !== null) return null;
+  if (v.error !== null && typeof v.error !== "string") return null;
+  return v as unknown as ManualPanelSnapshot;
+}
+
 function fail(code: ErrorCode, message: string): ContractError {
   return { code, message, retryable: RETRYABLE.has(code) };
 }
@@ -307,6 +320,19 @@ export interface GetClipTextRequest {
 }
 
 export interface CopyClipTextRequest { request_id: string; clip_id: string; }
+export function parseManualPanelSessionRequest(value: unknown): ContractResult<{ session_id: string }> {
+  if (!isPlainObject(value)) return err(invalid("request must be an object"));
+  const bad = rejectUnknownFields(value, ["session_id"]); if (bad) return err(bad);
+  if (typeof value.session_id !== "string" || !/^[a-fA-F0-9]{32}$/.test(value.session_id)) return err(invalid("invalid panel session"));
+  return ok({ session_id: value.session_id });
+}
+export function parseManualPanelCopyRequest(value: unknown): ContractResult<{ session_id: string; request: CopyClipTextRequest }> {
+  if (!isPlainObject(value)) return err(invalid("request must be an object"));
+  const bad = rejectUnknownFields(value, ["session_id", "request"]); if (bad) return err(bad);
+  const session = parseManualPanelSessionRequest({ session_id: value.session_id }); if (!session.ok) return session;
+  const request = parseCopyClipTextRequest(value.request); if (!request.ok) return request;
+  return ok({ ...session.value, request: request.value });
+}
 export interface CopyClipTextResult extends CopyClipTextRequest {
   outcome: "copied" | "not_written" | "unknown";
   reason: ErrorCode | null;

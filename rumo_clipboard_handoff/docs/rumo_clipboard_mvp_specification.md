@@ -1,5 +1,9 @@
 # 片羽 Pinfeather：首轮 MVP 规格
 
+> 2026-11-02 M1 当前状态统一见[两步输入与有限验收记录](pinfeather_explicit_copy_stage.md#manual-m1-current-evidence)：152项源码已获接受，319项前端测试通过；绑定普通 Windows x64 包已完成有限原生验证。pending-end 修改恢复、候选活跃首次手势及最终 sentinel 仍有缺口，提前退出原因未定，M1 未整体完成，M2 未开始。
+
+> 手动交付行为、会话与生命周期契约见[权威 M1 章节](pinfeather_explicit_copy_stage.md#manual-m1)。复制后保持面板打开；main X 退出，panel X/Esc/失焦隐藏；驻留属于 M2。原 4/7、自动回贴 unknown/阻塞与带日期的失败历史保留；旧版本现场不外推到当前版本。
+
 > 2026-11-01 阶段状态：[显式复制历史纯文本](pinfeather_explicit_copy_stage.md)作为 W2 之后、不依赖 W3 的独立增量，已完成实现、负责人独立离线验收及一次最小人工现场验收，范围见[验收计划6.4节](pinfeather_acceptance_plan.md#64-显式复制最小人工现场)。W1/T2与W2/T3基础链路已验收；原T0–T3顶层基础进度仍为4/7，显式复制不计为T4完成。W0/W3的IME/焦点阻塞保留，T4–T6及W4/W5完整范围仍待完成；本轮现场授权已消费，automatic_paste_allowed=false。
 
 修订日期：2026-11-01。状态：首轮规格基线已确认；W1/T2基础收录与W2/T3基础搜索、预览已通过本机验收，显式复制已完成实现、离线及最小人工现场验收。原T0–T3进度仍为4/7；W0/W3阻塞及T4–T6、W4/W5完整范围未完成。
@@ -185,6 +189,8 @@ MCP 要另选真实客户端、协议与 SDK 版本，实现协商、所有公�
 R8 仅修订候选 F 的 `WH_KEYBOARD_LL`（13）与 `WH_GETMESSAGE` 具名常量。初次与重试分支都核对；未验证回调、超时、卸载或跨进程行为。本轮用正常全局快捷键注册，不引入全局键盘钩子或跨进程注入。[微软钩子定义](https://learn.microsoft.com/en-us/windows/win32/api/winuser/nf-winuser-setwindowshookexw)。
 
 ## 8. 验收与性能（R7）
+
+下表保留原首轮自动回贴规格的规划状态，不是当前源码实测清单。基础链路及显式复制的已验范围见本文顶部记录；当前手动 M1 的实现、有限现场证据与剩余待验统一见[当前 M1 记录](pinfeather_explicit_copy_stage.md#manual-m1-current-evidence)，不把原完整矩阵改记为已通过。
 
 任务依赖及 A1–A11 的完整场景以[首轮清单](pinfeather_first_iteration_tasks.md)为准。R1/R2/R6 任一阻塞不能验收首轮通过。
 
