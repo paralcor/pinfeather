@@ -10,6 +10,7 @@ impl State {fn record_error(&mut self,error:String){self.error=Some(match self.e
 #[derive(Debug)]
 pub struct CleanupError {pub message:String,pub terminal:bool}
 pub trait ResidencyEffects:Send+Sync+'static {
+    fn tray_available(&self)->Result<bool,String>;
     fn show_main(&self)->Result<(),String>;
     fn hide_main(&self)->Result<(),String>;
     fn seal(&self,deadline:Instant);
@@ -33,10 +34,20 @@ impl Residency {
     }
     pub fn show(&self,effects:&dyn ResidencyEffects){if let Err(error)=effects.show_main(){self.update(|s|s.record_error(error),effects);}}
     pub fn close_main(&self,effects:&dyn ResidencyEffects){
+        // The native probe can dispatch to the main thread; hold no state lock while waiting.
+        let tray=if self.running(){effects.tray_available()}else{Ok(false)};
         // Keep the eligibility check and hide effect in the exit admission order.
-        let hidden={let s=self.state.lock().unwrap_or_else(|e|e.into_inner());if s.phase=="running"&&s.tray{Some(effects.hide_main())}else{None}};
+        let (hidden,observed)={
+            let mut s=self.state.lock().unwrap_or_else(|e|e.into_inner());
+            if s.phase=="running"{
+                s.tray=matches!(tray,Ok(true));s.revision+=1;
+                if let Err(error)=tray{s.record_error(error);}
+                if s.tray{(Some(effects.hide_main()),true)}else{s.record_error("托盘不可用，请使用退出片羽。".into());(None,true)}
+            }else{(None,false)}
+        };
+        if observed{effects.publish(&self.snapshot());}
         match hidden {
-            None=>{self.show(effects);if self.running(){self.update(|s|s.record_error("托盘不可用，请使用退出片羽。".into()),effects);}},
+            None=>self.show(effects),
             Some(Err(error))=>{self.update(|s|s.record_error(error),effects);self.show(effects);},
             Some(Ok(()))=>{},
         }
@@ -68,6 +79,10 @@ impl Residency {
 
 pub struct TauriEffects {pub handle:tauri::AppHandle,pub runtime:Arc<HostRuntime>,pub panel:Arc<PanelHost>}
 impl ResidencyEffects for TauriEffects {
+    fn tray_available(&self)->Result<bool,String>{
+        let Some(tray)=self.handle.tray_by_id("pinfeather-residency")else{return Ok(false);};
+        tray.rect().map(|rect|rect.is_some()).map_err(|_|"托盘状态查询失败，请使用主窗口处理。".into())
+    }
     fn show_main(&self)->Result<(),String>{let w=self.handle.get_webview_window("main").ok_or("主窗口不可用。")?;w.show().and_then(|_|w.set_focus()).map_err(|_|"主窗口显示失败，请保留现有入口并重试退出。".into())}
     fn hide_main(&self)->Result<(),String>{self.handle.get_webview_window("main").ok_or("主窗口不可用。")?.hide().map_err(|_|"主窗口隐藏失败，窗口将保留。".into())}
     fn seal(&self,deadline:Instant){self.panel.sessions.seal();self.runtime.begin_shutdown(deadline);}
@@ -131,12 +146,14 @@ mod tests {
     use super::*;
     use std::{collections::VecDeque,sync::atomic::{AtomicBool,AtomicUsize,Ordering}};
     struct Effects {
+        tray:Mutex<Result<bool,String>>,probes:AtomicUsize,probe_entered:Mutex<Option<mpsc::Sender<()>>>,probe_gate:Mutex<Option<mpsc::Receiver<()>>>,
         show_fail:AtomicBool,hide_fail:AtomicBool,hides:AtomicUsize,shows:AtomicUsize,seals:AtomicUsize,exits:AtomicUsize,
         updates:mpsc::Sender<ResidencySnapshot>,entered:mpsc::Sender<()>,gate:Mutex<Option<mpsc::Receiver<()>>>,
         results:Mutex<VecDeque<Result<(),CleanupError>>>,threads:Mutex<Vec<std::thread::ThreadId>>,deadlines:Mutex<Vec<Instant>>,sealed:Mutex<Vec<Instant>>,
         hide_gate:Mutex<Option<mpsc::Receiver<()>>>,hide_entered:Mutex<Option<mpsc::Sender<()>>>,hidden_after_seal:AtomicBool,
     }
     impl ResidencyEffects for Effects {
+        fn tray_available(&self)->Result<bool,String>{self.probes.fetch_add(1,Ordering::SeqCst);if let Some(tx)=self.probe_entered.lock().unwrap().take(){tx.send(()).unwrap();}if let Some(rx)=self.probe_gate.lock().unwrap().take(){rx.recv_timeout(Duration::from_secs(3)).unwrap();}self.tray.lock().unwrap().clone()}
         fn show_main(&self)->Result<(),String>{self.shows.fetch_add(1,Ordering::SeqCst);if self.show_fail.load(Ordering::SeqCst){Err("show failed".into())}else{Ok(())}}
         fn hide_main(&self)->Result<(),String>{if let Some(tx)=self.hide_entered.lock().unwrap().take(){tx.send(()).unwrap();}if let Some(rx)=self.hide_gate.lock().unwrap().take(){rx.recv_timeout(Duration::from_secs(3)).unwrap();}self.hidden_after_seal.store(self.seals.load(Ordering::SeqCst)>0,Ordering::SeqCst);self.hides.fetch_add(1,Ordering::SeqCst);if self.hide_fail.load(Ordering::SeqCst){Err("hide failed".into())}else{Ok(())}}
         fn seal(&self,deadline:Instant){self.seals.fetch_add(1,Ordering::SeqCst);self.sealed.lock().unwrap().push(deadline);}
@@ -145,14 +162,45 @@ mod tests {
         fn exit(&self){self.exits.fetch_add(1,Ordering::SeqCst);}
     }
     fn fixture()->(Arc<Residency>,Arc<Effects>,mpsc::Receiver<ResidencySnapshot>,mpsc::Receiver<()>){
-        let(tx,rx)=mpsc::channel();let(entered,ready)=mpsc::channel();let effects=Arc::new(Effects{show_fail:AtomicBool::new(false),hide_fail:AtomicBool::new(false),hides:AtomicUsize::new(0),shows:AtomicUsize::new(0),seals:AtomicUsize::new(0),exits:AtomicUsize::new(0),updates:tx,entered,gate:Mutex::new(None),results:Mutex::new(VecDeque::new()),threads:Mutex::new(vec![]),deadlines:Mutex::new(vec![]),sealed:Mutex::new(vec![]),hide_gate:Mutex::new(None),hide_entered:Mutex::new(None),hidden_after_seal:AtomicBool::new(false)});
+        let(tx,rx)=mpsc::channel();let(entered,ready)=mpsc::channel();let effects=Arc::new(Effects{tray:Mutex::new(Ok(true)),probes:AtomicUsize::new(0),probe_entered:Mutex::new(None),probe_gate:Mutex::new(None),show_fail:AtomicBool::new(false),hide_fail:AtomicBool::new(false),hides:AtomicUsize::new(0),shows:AtomicUsize::new(0),seals:AtomicUsize::new(0),exits:AtomicUsize::new(0),updates:tx,entered,gate:Mutex::new(None),results:Mutex::new(VecDeque::new()),threads:Mutex::new(vec![]),deadlines:Mutex::new(vec![]),sealed:Mutex::new(vec![]),hide_gate:Mutex::new(None),hide_entered:Mutex::new(None),hidden_after_seal:AtomicBool::new(false)});
         (Residency::new(),effects,rx,ready)
     }
     fn phase(rx:&mpsc::Receiver<ResidencySnapshot>,expected:&str){while rx.recv_timeout(Duration::from_secs(2)).unwrap().phase!=expected{}}
+    fn assert_lost_tray_keeps_entry(observation:Result<bool,String>){
+        let(owner,effects,_,_)=fixture();owner.tray_result(Ok(()),effects.as_ref());assert!(owner.snapshot().tray_available);
+        *effects.tray.lock().unwrap()=observation;owner.close_main(effects.as_ref());
+        assert_eq!(effects.hides.load(Ordering::SeqCst),0,"cached tray success must not hide main after current tray loss");
+        assert_eq!(effects.probes.load(Ordering::SeqCst),1);assert_eq!(effects.shows.load(Ordering::SeqCst),1);
+        assert!(!owner.snapshot().tray_available);assert!(owner.snapshot().error.unwrap().contains("托盘"));
+        assert!(owner.running());assert_eq!(effects.seals.load(Ordering::SeqCst),0);assert_eq!(effects.exits.load(Ordering::SeqCst),0);assert!(effects.threads.lock().unwrap().is_empty());
+    }
+    #[test]
+    fn m2_main_x_rechecks_missing_or_unknown_tray_after_cached_success(){assert_lost_tray_keeps_entry(Ok(false));}
+    #[test]
+    fn m2_main_x_rechecks_tray_query_error_after_cached_success(){assert_lost_tray_keeps_entry(Err("托盘查询失败".into()));}
+    #[test]
+    fn m2_main_x_uses_recovered_tray_without_clearing_other_errors(){
+        let(owner,effects,_,_)=fixture();owner.update(|s|s.record_error("primary worker failure".into()),effects.as_ref());
+        *effects.tray.lock().unwrap()=Ok(false);owner.close_main(effects.as_ref());assert_eq!(effects.hides.load(Ordering::SeqCst),0);assert!(!owner.snapshot().tray_available);
+        *effects.tray.lock().unwrap()=Ok(true);owner.close_main(effects.as_ref());
+        assert_eq!(effects.probes.load(Ordering::SeqCst),2);assert_eq!(effects.hides.load(Ordering::SeqCst),1);assert!(owner.snapshot().tray_available);assert!(owner.snapshot().error.unwrap().contains("primary worker failure"));
+        assert!(owner.running());assert_eq!(effects.seals.load(Ordering::SeqCst),0);assert!(effects.threads.lock().unwrap().is_empty());
+    }
+    #[test]
+    fn m2_exit_can_seal_during_native_probe_and_late_success_never_hides(){
+        let(owner,effects,updates,entered)=fixture();owner.tray_result(Ok(()),effects.as_ref());
+        let(probing,probe_started)=mpsc::channel();let(release_probe,probe_gate)=mpsc::channel();*effects.probe_entered.lock().unwrap()=Some(probing);*effects.probe_gate.lock().unwrap()=Some(probe_gate);
+        let(release_cleanup,cleanup_gate)=mpsc::channel();*effects.gate.lock().unwrap()=Some(cleanup_gate);
+        let o=owner.clone();let e=effects.clone();let closing=std::thread::spawn(move||o.close_main(e.as_ref()));probe_started.recv_timeout(Duration::from_secs(1)).unwrap();
+        let(done,done_rx)=mpsc::channel();let o=owner.clone();let e=effects.clone();let exiting=std::thread::spawn(move||{done.send(o.request_exit(e)).unwrap();});
+        let admitted=done_rx.recv_timeout(Duration::from_secs(1));release_probe.send(()).unwrap();closing.join().unwrap();exiting.join().unwrap();entered.recv_timeout(Duration::from_secs(1)).unwrap();release_cleanup.send(()).unwrap();phase(&updates,"exited");
+        assert!(admitted.is_ok(),"the native probe must not hold the exit admission lock");assert_eq!(admitted.unwrap().unwrap().phase,"stopping");
+        assert_eq!(effects.hides.load(Ordering::SeqCst),0);assert_eq!(effects.seals.load(Ordering::SeqCst),1);assert_eq!(effects.probes.load(Ordering::SeqCst),1);assert!(!effects.hidden_after_seal.load(Ordering::SeqCst));
+    }
     #[test]
     fn m2_tray_failure_x_retains_entry_and_hide_never_shutdown(){
-        let(owner,effects,_,_)=fixture();owner.tray_result(Err("tray failed".into()),effects.as_ref());owner.close_main(effects.as_ref());assert_eq!(effects.hides.load(Ordering::SeqCst),0);assert_eq!(effects.seals.load(Ordering::SeqCst),0);
-        owner.tray_result(Ok(()),effects.as_ref());owner.close_main(effects.as_ref());assert_eq!(effects.hides.load(Ordering::SeqCst),1);assert!(owner.running());assert!(effects.threads.lock().unwrap().is_empty());
+        let(owner,effects,_,_)=fixture();*effects.tray.lock().unwrap()=Ok(false);owner.tray_result(Err("tray failed".into()),effects.as_ref());owner.close_main(effects.as_ref());assert_eq!(effects.hides.load(Ordering::SeqCst),0);assert_eq!(effects.seals.load(Ordering::SeqCst),0);
+        *effects.tray.lock().unwrap()=Ok(true);owner.tray_result(Ok(()),effects.as_ref());owner.close_main(effects.as_ref());assert_eq!(effects.hides.load(Ordering::SeqCst),1);assert!(owner.running());assert!(effects.threads.lock().unwrap().is_empty());
         effects.hide_fail.store(true,Ordering::SeqCst);owner.close_main(effects.as_ref());assert!(owner.snapshot().error.unwrap().contains("hide"));assert!(effects.shows.load(Ordering::SeqCst)>=3);
         owner.tray_result(Err("tray update failed".into()),effects.as_ref());assert!(!owner.snapshot().tray_available);
     }
