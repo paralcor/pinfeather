@@ -357,12 +357,60 @@ function controller() {
   const histories: ReturnType<typeof fixture>[] = []; const unsubscribe = vi.fn();
   const control: ManualPanelControl = {
     available: true, snapshot: vi.fn(async () => current), subscribe: vi.fn(async callback => { listener = callback; return unsubscribe; }),
-    open: vi.fn(async () => current), ready: vi.fn(async () => current), hide: vi.fn(async () => current),
+    open: vi.fn(async () => current), ready: vi.fn(async () => ({ ...current, phase: "ready" as const })), hide: vi.fn(async () => current),
     history: vi.fn(() => { const f = fixture(); histories.push(f); return f.bridge; }),
   };
   return { control, histories, unsubscribe, emit(next: ManualPanelSnapshot) { current = next; listener?.(next); } };
 }
 describe("manual panel sessions", () => {
+  it.each(["reject", "waiting", "wrong-session"])("does not activate an editor on presentation %s", async outcome => {
+    const f = controller();
+    f.control.ready = vi.fn(async () => {
+      if (outcome === "reject") throw new Error("synthetic focus failure");
+      return { revision: "2", session_id: outcome === "wrong-session" ? b : a,
+        phase: outcome === "waiting" ? "waiting" : "ready", hotkey: "ready", error: null } as ManualPanelSnapshot;
+    });
+    render(<ManualPanel control={f.control} />);
+    await screen.findByRole("alert");
+    expect(screen.queryByLabelText("搜索历史正文")).toBeNull();
+    expect(f.histories[0].bridge.list).not.toHaveBeenCalled();
+    expect(f.histories[0].writes).toHaveLength(0);
+  });
+  it.each(["hidden", "replaced", "unmounted"])("discards a late presentation reply after the session is %s", async action => {
+    const f = controller();
+    const replies = new Map<string, (value: ManualPanelSnapshot) => void>();
+    f.control.ready = vi.fn((session: string) => new Promise<ManualPanelSnapshot>(resolve => { replies.set(session, resolve); }));
+    const mounted = render(<ManualPanel control={f.control} />);
+    await waitFor(() => expect(replies.has(a)).toBe(true));
+    if (action === "unmounted") mounted.unmount();
+    else act(() => f.emit({ revision: "3", session_id: action === "replaced" ? b : null,
+      phase: action === "replaced" ? "waiting" : "hidden", hotkey: "ready", error: null }));
+    await act(async () => replies.get(a)!({ revision: "2", session_id: a, phase: "ready", hotkey: "ready", error: null }));
+    expect(screen.queryByLabelText("搜索历史正文")).toBeNull();
+    expect(f.histories[0].bridge.list).not.toHaveBeenCalled();
+    if (action === "replaced") {
+      await act(async () => replies.get(b)!({ revision: "4", session_id: b, phase: "ready", hotkey: "ready", error: null }));
+      expect(document.activeElement).toBe(await screen.findByLabelText("搜索历史正文"));
+    }
+  });
+  it("does not refocus the editor on duplicate ready notifications", async () => {
+    const f = controller(); render(<ManualPanel control={f.control} />); await screen.findByText("摘要1");
+    const list = browse(); expect(document.activeElement).toBe(list);
+    act(() => f.emit({ revision: "3", session_id: a, phase: "ready", hotkey: "ready", error: null }));
+    expect(document.activeElement).toBe(list); expect(f.control.ready).toHaveBeenCalledTimes(1);
+  });
+  it("waits for native presentation acknowledgement before mounting or focusing the editor", async () => {
+    const f = controller();
+    let ready!: (value: ManualPanelSnapshot) => void;
+    f.control.ready = vi.fn(() => new Promise<ManualPanelSnapshot>(resolve => { ready = resolve; }));
+    render(<ManualPanel control={f.control} />);
+    await waitFor(() => expect(f.control.ready).toHaveBeenCalledWith(a));
+    expect(screen.queryByLabelText("搜索历史正文")).toBeNull();
+    await act(async () => ready({ revision: "2", session_id: a, phase: "ready", hotkey: "ready", error: null }));
+    const search = await screen.findByLabelText("搜索历史正文");
+    expect(document.activeElement).toBe(search);
+    expect(f.histories[0].writes).toHaveLength(0);
+  });
   it.each([false, true])("replaces IME acknowledgement (end observed: %s), rejects old controls and late query results", async ended => {
     const f = controller(); render(<ManualPanel control={f.control} />); await screen.findByText("摘要1");
     const oldSearch = screen.getByLabelText("搜索历史正文");

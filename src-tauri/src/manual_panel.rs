@@ -59,7 +59,13 @@ pub struct TauriPanelWindow(pub tauri::AppHandle);
 impl PanelWindow for TauriPanelWindow {
     fn hide(&self)->Result<(),String>{use tauri::Manager;if let Some(w)=self.0.get_webview_window("quick-panel"){w.hide().map_err(|_|"快捷面板隐藏失败。".into())}else{Ok(())}}
     fn show(&self)->Result<(),String>{use tauri::Manager;self.0.get_webview_window("quick-panel").ok_or("快捷面板不可用。".to_string())?.show().map_err(|_|"快捷面板显示失败。".into())}
-    fn focus(&self)->Result<(),String>{use tauri::Manager;self.0.get_webview_window("quick-panel").ok_or("快捷面板不可用。".to_string())?.set_focus().map_err(|_|"快捷面板聚焦失败。".into())}
+    fn focus(&self)->Result<(),String>{
+        use tauri::Manager;
+        let window=self.0.get_webview_window("quick-panel").ok_or("快捷面板不可用。".to_string())?;
+        window.set_focus().map_err(|_|"快捷面板聚焦失败。".to_string())?;
+        let webview:&tauri::Webview=window.as_ref();
+        webview.set_focus().map_err(|_|"快捷面板输入焦点请求失败。".into())
+    }
     fn publish(&self,snapshot:&PanelSnapshot)->Result<(),String>{use tauri::Emitter;self.0.emit("manual_panel_changed",snapshot).map_err(|_|"快捷面板状态通知失败。".into())}
 }
 pub struct PanelHost {

@@ -95,7 +95,7 @@ pub fn run(args: HostArgs) {
             .on_navigation(|url| navigation_allowed(url, cfg!(debug_assertions)))
             .build()?;
             let quick=tauri::WebviewWindowBuilder::new(app,"quick-panel",tauri::WebviewUrl::App("index.html?panel=1".into()))
-                .title("片羽 · 快捷面板").inner_size(620.0,560.0).visible(false).data_directory(webview_dir)
+                .title("片羽 · 快捷面板").inner_size(620.0,560.0).visible(false).focused(false).data_directory(webview_dir)
                 .on_navigation(|url|navigation_allowed(url,cfg!(debug_assertions))).build();
             let panel=std::sync::Arc::new(manual_panel::PanelHost::new(app.handle().clone(),quick.is_ok()));
             app.manage(panel.clone());
