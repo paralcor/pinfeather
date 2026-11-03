@@ -32,6 +32,8 @@ use crate::contracts::windows_path_equal;
 pub enum Admission {UserPaused,Active,Overloaded,Failed,Stopped}
 #[derive(Debug,Clone,Copy,PartialEq,Eq)]
 pub enum Notice {NotificationOverrun,SnapshotQueueFull,HistoryCapacity,UnknownOwner,ExcludedOwner,ZeroSequence,InvalidSnapshot,WorkerFailed,ListenerStopped,Capture(crate::clipboard::capture::CaptureReason)}
+#[derive(Debug,Clone,Copy,PartialEq,Eq)]
+pub(crate) enum ApplicationSkip {UnknownOwner,ExcludedOwner}
 #[derive(Debug,Default)]
 pub struct Counters {pub observed:u64,pub captured:u64,pub persisted:u64,pub ignored:u64,pub superseded:u64,pub failed:u64,pub overloaded:u64,pub cancelled:u64}
 #[derive(Debug,Clone)]
@@ -43,13 +45,14 @@ pub struct CaptureState {
     pub storage_ready:bool,pub storage_failed:bool,pub storage_retry:bool,pub listener_ready:bool,pub worker_service:String,
     pub stopping:bool,pub revision:u64,pub history_revision:u64,pub origins:crate::clipboard::origin::OriginRegistry,pub internal_ignored:u64,pub restart_worker:bool,
     pub settings_saving:bool,pub settings_blocked:bool,pub settings_error:Option<String>,
+    last_application_skip:Option<ApplicationSkip>,
     instance:String,next:u64,pending:VecDeque<CaptureTicket>,last:Option<(u32,String)>,
     in_flight:Option<String>,pub(crate) queue:VecDeque<QueuedSnapshot>,pub(crate) bytes:u64,pub(crate) exclusions:Vec<String>,acquired:Option<(u32,String)>,
 }
 impl CaptureState {
     pub fn new(instance:&str)->Self{
         assert!(!instance.is_empty()&&instance.len()<=40&&instance.bytes().all(|b|b.is_ascii_graphic()));
-        Self{admission:Admission::UserPaused,counters:Counters::default(),epoch:0,notice:None,user_enabled:false,history:crate::contracts::HistoryUsage{items:0,payload_bytes:0},storage_inflight:(0,0),storage_ready:false,storage_failed:false,storage_retry:false,listener_ready:false,worker_service:"not_started".into(),stopping:false,revision:0,history_revision:0,origins:crate::clipboard::origin::OriginRegistry::new(uuid::Uuid::parse_str(instance).unwrap_or_else(|_|uuid::Uuid::new_v4()).into_bytes(),0),internal_ignored:0,restart_worker:false,settings_saving:false,settings_blocked:false,settings_error:None,instance:instance.into(),next:0,pending:VecDeque::new(),last:None,in_flight:None,queue:VecDeque::new(),bytes:0,exclusions:vec![],acquired:None}
+        Self{admission:Admission::UserPaused,counters:Counters::default(),epoch:0,notice:None,user_enabled:false,history:crate::contracts::HistoryUsage{items:0,payload_bytes:0},storage_inflight:(0,0),storage_ready:false,storage_failed:false,storage_retry:false,listener_ready:false,worker_service:"not_started".into(),stopping:false,revision:0,history_revision:0,origins:crate::clipboard::origin::OriginRegistry::new(uuid::Uuid::parse_str(instance).unwrap_or_else(|_|uuid::Uuid::new_v4()).into_bytes(),0),internal_ignored:0,restart_worker:false,settings_saving:false,settings_blocked:false,settings_error:None,last_application_skip:None,instance:instance.into(),next:0,pending:VecDeque::new(),last:None,in_flight:None,queue:VecDeque::new(),bytes:0,exclusions:vec![],acquired:None}
     }
     pub fn set_enabled(&mut self,enabled:bool){
         if self.admission==Admission::Stopped{return;}
@@ -87,9 +90,15 @@ impl CaptureState {
     }
     pub fn notification_count(&self)->usize{self.pending.len()}
     pub fn queue_usage(&self)->(usize,u64){(self.queue.len()+self.storage_inflight.0,self.bytes+self.storage_inflight.1)}
+    pub(crate) fn last_application_skip(&self)->Option<ApplicationSkip>{self.last_application_skip}
     pub(crate) fn owner_allowed(&mut self,source:Option<&str>)->bool{
         let owner_path=source.and_then(|p|crate::contracts::normalize_windows_exe_path(p).ok());
-        if !self.exclusions.is_empty()&&owner_path.as_ref().is_none_or(|path|self.exclusions.iter().any(|excluded|windows_path_equal(path,excluded))){self.notice=Some(if owner_path.is_none(){Notice::UnknownOwner}else{Notice::ExcludedOwner});false}else{true}
+        if !self.exclusions.is_empty()&&owner_path.as_ref().is_none_or(|path|self.exclusions.iter().any(|excluded|windows_path_equal(path,excluded))){
+            let reason=if owner_path.is_none(){ApplicationSkip::UnknownOwner}else{ApplicationSkip::ExcludedOwner};
+            // Application feedback outlives transient notices and policy invalidation.
+            self.last_application_skip=Some(reason);
+            self.notice=Some(match reason{ApplicationSkip::UnknownOwner=>Notice::UnknownOwner,ApplicationSkip::ExcludedOwner=>Notice::ExcludedOwner});false
+        }else{true}
     }
     pub fn begin_current(&mut self,sequence:u32)->Option<CaptureTicket>{
         if self.admission!=Admission::Active || self.in_flight.is_some(){return None;}

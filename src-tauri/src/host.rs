@@ -323,7 +323,7 @@ impl HostRuntime {
     }
     pub fn settings(&self)->SettingsSnapshot {
         let s=self.shared.state.lock().unwrap_or_else(|e|e.into_inner());
-        SettingsSnapshot{revision:s.revision.to_string(),schema_version:1,excluded_apps:s.exclusions.clone(),saving:s.settings_saving,blocked:s.settings_blocked,error:s.settings_error.clone(),last_skip:match s.notice{Some(crate::runtime::Notice::ExcludedOwner)=>Some("excluded_owner".into()),Some(crate::runtime::Notice::UnknownOwner)=>Some("unknown_owner".into()),_=>None}}
+        SettingsSnapshot{revision:s.revision.to_string(),schema_version:1,excluded_apps:s.exclusions.clone(),saving:s.settings_saving,blocked:s.settings_blocked,error:s.settings_error.clone(),last_skip:s.last_application_skip().map(|reason|match reason{crate::runtime::ApplicationSkip::ExcludedOwner=>"excluded_owner",crate::runtime::ApplicationSkip::UnknownOwner=>"unknown_owner"}.into())}
     }
     pub fn set_exclusions(&self,paths:Vec<String>)->ContractResult<StatusResult>{self.apply_exclusions(paths)?;Ok(self.status())}
     pub fn apply_exclusions(&self,paths:Vec<String>)->ContractResult<SettingsSnapshot>{
