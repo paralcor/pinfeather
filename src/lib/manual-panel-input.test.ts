@@ -155,3 +155,194 @@ describe("manual panel physical IME boundary", () => {
   it("does not unlock while composition is still live", () => { const input = new ManualPanelInput(); input.compositionStart(); input.keyUp("a"); expect(input.blocks(key("Enter"))).toBe(true); input.compositionEnd(); input.keyUp("Enter"); expect(input.blocks(key("Enter"))).toBe(false); });
   it("does not treat a modifier release as the candidate key release", () => { const input = new ManualPanelInput(); input.compositionStart(); input.compositionEnd(); input.keyUp("Control"); expect(input.blocks(key("Enter"))).toBe(true); input.keyUp("Enter"); expect(input.blocks(key("Escape"))).toBe(false); });
 });
+
+describe("explicit completion after a non-action physical release", () => {
+  it.each(["Process", "g"].flatMap(releasedKey => ["up-end-complete", "end-up-complete", "complete-end-up"].map(order => ({ releasedKey, order }))))("accepts only a distinct action after $releasedKey release ($order)", ({ releasedKey, order }) => {
+    const input = new ManualPanelInput(); input.compositionStart(); input.blocks(key("Process", { code: "KeyG", isComposing: true }));
+    for (const step of order.split("-")) {
+      if (step === "up") input.keyUp({ key: releasedKey, code: "KeyG", isComposing: order.startsWith("up-") });
+      else if (step === "end") input.compositionEnd();
+      else { input.pointerDown("complete"); expect(input.inputClick("complete", 1)).toBe(true); input.acknowledge(); }
+      expect(input.blocksActionClick(0)).toBe(true);
+    }
+    expect(input.completion).toBe("ready");
+    expect(input.blocks(key(" ", { code: "Space" }))).toBe(false);
+    expect(input.blocksActionClick(0)).toBe(false);
+  });
+  it.each(["Process", "g"])("%s release proves only that physical key, never candidate completion", releasedKey => {
+    const input = new ManualPanelInput(); input.compositionStart(); input.blocks(key("Process", { code: "KeyG", isComposing: true }));
+    input.keyUp({ key: releasedKey, code: "KeyG", isComposing: true }); input.compositionEnd();
+    expect(input.blocksClick(0)).toBe(true);
+    expect(input.blocks(key("Escape", { code: "Escape" }))).toBe(true);
+  });
+  it.each([
+    null,
+    { key: "g", code: "KeyH", isComposing: false },
+    { key: "g", isComposing: false },
+    { key: "Process", code: "", isComposing: false },
+    { key: "Escape", code: "KeyG", isComposing: false },
+    { key: "Process", code: "KeyG", isComposing: true },
+  ])("does not discard an unproven held non-action key on completion: %j", release => {
+    const input = new ManualPanelInput(); input.compositionStart(); input.blocks(key("Process", { code: "KeyG", isComposing: true })); input.compositionEnd();
+    if (release) input.keyUp(release);
+    input.pointerDown("complete"); input.inputClick("complete", 1); input.acknowledge();
+    expect(input.completion).toBe("ready"); expect(input.blocksClick(0)).toBe(true);
+    expect(input.blocks(key(" ", { code: "Space" }))).toBe(true);
+  });
+  it.each(["KeyH", "Space", "ArrowDown", "Enter"])("a late KeyG release cannot clear newer %s activity after completion", code => {
+    const input = new ManualPanelInput(); input.compositionStart(); input.blocks(key("Process", { code: "KeyG", isComposing: true }));
+    input.blocks(key("Process", { code, isComposing: true })); input.compositionEnd();
+    input.pointerDown("complete"); input.inputClick("complete", 1); input.acknowledge();
+    input.keyUp({ key: "g", code: "KeyG", isComposing: false });
+    expect(input.blocks(key(" ", { code: "Space" }))).toBe(true);
+    expect(input.blocksClick(0)).toBe(true);
+  });
+});
+
+it.each([false, true])("new non-IME activity after end invalidates an older non-action release (has code: %s)", hasCode => {
+  const input = new ManualPanelInput(); input.compositionStart(); input.blocks(key("Process", { code: "KeyG", isComposing: true })); input.compositionEnd();
+  input.pointerDown("complete"); input.inputClick("complete", 1); input.acknowledge();
+  input.blocks(key("h", hasCode ? { code: "KeyH" } : {}));
+  input.keyUp({ key: "g", code: "KeyG", isComposing: false });
+  expect(input.blocks(key(" ", { code: "Space" }))).toBe(true);
+  expect(input.blocksClick(0)).toBe(true);
+});
+
+describe("superseded physical release proof", () => {
+  it.each(["Enter", "KeyG", ""].flatMap(heldCode => ["Tab", "KeyH"].flatMap(newCode =>
+    ["new-only", "old-only", "new-then-old", "old-then-new"].map(order => ({ heldCode, newCode, order }))
+  )))("requires every known held $heldCode and newer $newCode release ($order)", ({ heldCode, newCode, order }) => {
+    const input = new ManualPanelInput(); input.compositionStart(); input.blocks(key("Process", { code: heldCode, isComposing: true })); input.compositionEnd();
+    input.pointerDown("complete"); input.inputClick("complete", 1); input.acknowledge();
+    input.blocks(key(newCode === "Tab" ? "Tab" : "h", { code: newCode }));
+    const oldRelease = () => input.keyUp({ key: "Process", code: heldCode, isComposing: false });
+    const newRelease = () => input.keyUp({ key: newCode === "Tab" ? "Tab" : "h", code: newCode, isComposing: false });
+    if (order.startsWith("old")) oldRelease(); else newRelease();
+    if (order === "new-then-old") oldRelease();
+    if (order === "old-then-new") newRelease();
+    const recovered = heldCode !== "" && (order === "new-then-old" || order === "old-then-new");
+    // Only R2's rejected complete-known-release expectations change; partial/unknown stays blocked.
+    input.pointerDown(); expect(input.blocksActionClick(1)).toBe(false);
+    expect(input.blocks(key(" ", { code: "Space" }))).toBe(!recovered); input.keyUp({ key: " ", code: "Space", isComposing: false });
+    expect(input.blocksClick(0)).toBe(!recovered);
+    expect(input.blocks(key("Escape", { code: "Escape" }))).toBe(!recovered); input.keyUp({ key: "Escape", code: "Escape", isComposing: false });
+    expect(input.blocks(key(" ", { code: "Space" }))).toBe(!recovered);
+  });
+  it.each(["Enter", "KeyG"])("does not taint repeated same physical %s before its matching release", code => {
+    const input = new ManualPanelInput(); input.compositionStart(); input.blocks(key("Process", { code, isComposing: true }));
+    input.blocks(key("Process", { code, isComposing: true, repeat: true })); input.compositionEnd();
+    input.pointerDown("complete"); input.inputClick("complete", 1); input.acknowledge();
+    input.keyUp({ key: "Process", code, isComposing: false });
+    expect(input.blocks(key(" ", { code: "Space" }))).toBe(false);
+  });
+  it.each(["end-complete", "complete-end", "terminal-end-complete"])("retains superseded release proof across %s", order => {
+    const input = new ManualPanelInput(); input.compositionStart(); input.blocks(key("Process", { code: "KeyG", isComposing: true }));
+    if (order === "complete-end") { input.pointerDown("complete"); input.inputClick("complete", 1); input.acknowledge(); }
+    const terminal = order.startsWith("terminal");
+    input.blocks(key(terminal ? "Process" : "h", { code: terminal ? "Enter" : "KeyH", isComposing: terminal }));
+    input.keyUp({ key: terminal ? "Process" : "h", code: terminal ? "Enter" : "KeyH", isComposing: terminal });
+    if (order === "complete-end") expect(input.completion).toBe("pending");
+    input.compositionEnd();
+    if (order !== "complete-end") { input.pointerDown("complete"); input.inputClick("complete", 1); input.acknowledge(); }
+    expect(input.completion).toBe("ready");
+    expect(input.blocks(key(" ", { code: "Space" }))).toBe(true);
+    expect(input.blocksActionClick(0)).toBe(true);
+  });
+});
+
+describe("bounded physical release ownership", () => {
+  it.each([8, 9])("keeps %s distinct held codes bounded and fails closed only on overflow", count => {
+    const input = new ManualPanelInput(); input.compositionStart();
+    for (let n = 0; n < count; n++) input.blocks(key("Process", { code: `Key${n}`, isComposing: true }));
+    input.compositionEnd(); input.pointerDown("complete"); input.inputClick("complete", 1); input.acknowledge();
+    for (let n = 0; n < count; n++) input.keyUp({ key: "Process", code: `Key${n}`, isComposing: false });
+    expect(input.blocks(key(" ", { code: "Space" }))).toBe(count > 8);
+  });
+  it("stores at most eight identities under arbitrarily many distinct codes and resets only at a new episode", () => {
+    const input = new ManualPanelInput(); input.compositionStart();
+    for (let n = 0; n < 1000; n++) input.blocks(key("Process", { code: `Key${n}`, isComposing: true }));
+    // A cardinality assertion is needed here: blocking alone cannot prove a memory bound.
+    expect(Reflect.get(input, "heldCodes").size).toBe(8);
+    input.compositionEnd(); input.pointerDown("complete"); input.inputClick("complete", 1); input.acknowledge();
+    for (let n = 0; n < 1000; n++) input.keyUp({ key: "Process", code: `Key${n}`, isComposing: false });
+    expect(input.blocks(key("Enter", { code: "Enter" }))).toBe(true); input.keyUp({ key: "Enter", code: "Enter", isComposing: false });
+    expect(input.blocks(key(" ", { code: "Space" }))).toBe(true);
+    input.compositionStart(); input.blocks(key("Process", { code: "KeyG", isComposing: true }));
+    input.keyUp({ key: "g", code: "KeyG", isComposing: true }); input.compositionEnd();
+    input.pointerDown("complete"); input.inputClick("complete", 1); input.acknowledge();
+    expect(input.blocks(key(" ", { code: "Space" }))).toBe(false);
+  });
+  it("does not count same-code repeats or previously released distinct codes against the bound", () => {
+    const input = new ManualPanelInput(); input.compositionStart();
+    for (let n = 0; n < 40; n++) input.blocks(key("Process", { code: "KeyG", isComposing: true, repeat: n > 0 }));
+    input.keyUp({ key: "g", code: "KeyG", isComposing: true });
+    for (let n = 0; n < 40; n++) {
+      input.blocks(key("Process", { code: `Key${n}`, isComposing: true }));
+      input.keyUp({ key: "Process", code: `Key${n}`, isComposing: true });
+    }
+    input.compositionEnd(); input.pointerDown("complete"); input.inputClick("complete", 1); input.acknowledge();
+    expect(input.blocks(key(" ", { code: "Space" }))).toBe(false);
+  });
+  it.each(["Space", "ArrowDown"])("all known releases including %s still need explicit completion", code => {
+    const input = new ManualPanelInput(); input.compositionStart();
+    input.blocks(key("Process", { code: "KeyG", isComposing: true })); input.blocks(key("Process", { code, isComposing: true }));
+    input.keyUp({ key: "g", code: "KeyG", isComposing: true }); input.keyUp({ key: "Process", code, isComposing: true }); input.compositionEnd();
+    expect(input.blocks(key("Escape", { code: "Escape" }))).toBe(true); expect(input.blocksActionClick(0)).toBe(true);
+  });
+  it.each([false, true])("missing-code activity mixed with known identities stays unpaired (missing first: %s)", missingFirst => {
+    const input = new ManualPanelInput(); input.compositionStart();
+    for (const code of missingFirst ? ["", "KeyG"] : ["KeyG", ""]) input.blocks(key("Process", { code, isComposing: true }));
+    input.keyUp({ key: "g", code: "KeyG", isComposing: true }); input.keyUp({ key: "Process", code: "", isComposing: true }); input.compositionEnd();
+    input.pointerDown("complete"); input.inputClick("complete", 1); input.acknowledge();
+    input.blocks(key("h", { code: "KeyH" })); input.keyUp({ key: "h", code: "KeyH", isComposing: false });
+    expect(input.blocks(key(" ", { code: "Space" }))).toBe(true);
+  });
+});
+
+describe("R4 explicit completion release order", () => {
+  const cases = ["Enter", "Escape", "Space", "ArrowUp", "ArrowDown"].flatMap(actionCode =>
+    [false, true].flatMap(actionFirst => [false, true].map(actionReleasedFirst => ({ actionCode, actionFirst, actionReleasedFirst })))
+  );
+  it.each(cases)("restores after all $actionCode/KeyG releases (action down first: $actionFirst, up first: $actionReleasedFirst)", ({ actionCode, actionFirst, actionReleasedFirst }) => {
+    const input = new ManualPanelInput(); input.compositionStart();
+    for (const code of actionFirst ? [actionCode, "KeyG"] : ["KeyG", actionCode]) input.blocks(key("Process", { code, isComposing: true }));
+    input.compositionEnd(); input.pointerDown("complete"); input.inputClick("complete", 1); input.acknowledge();
+    for (const code of actionReleasedFirst ? [actionCode, "KeyG"] : ["KeyG", actionCode]) {
+      input.keyUp({ key: "Process", code, isComposing: false });
+      expect(input.blocksActionClick(0)).toBe(true);
+    }
+    expect(input.completion).toBe("ready");
+    expect(input.blocks(key(" ", { code: "Space" }))).toBe(false);
+    expect(input.blocksActionClick(0)).toBe(false);
+  });
+  it.each(cases.filter(({ actionCode }) => ["Space", "ArrowUp", "ArrowDown"].includes(actionCode)))("does not infer completion from $actionCode/KeyG releases (action down first: $actionFirst, up first: $actionReleasedFirst)", ({ actionCode, actionFirst, actionReleasedFirst }) => {
+    const input = new ManualPanelInput(); input.compositionStart();
+    for (const code of actionFirst ? [actionCode, "KeyG"] : ["KeyG", actionCode]) input.blocks(key("Process", { code, isComposing: true }));
+    input.compositionEnd();
+    for (const code of actionReleasedFirst ? [actionCode, "KeyG"] : ["KeyG", actionCode]) input.keyUp({ key: "Process", code, isComposing: false });
+    expect(input.completion).toBe("editing"); expect(input.blocksClick(0)).toBe(true);
+    expect(input.blocks(key("Enter", { code: "Enter" }))).toBe(true);
+  });
+  it.each(["Enter", "Escape", "Space", "ArrowUp", "ArrowDown"].flatMap(actionCode =>
+    ["held", "missing-code", "different-code", "contradictory-key", "still-composing"].map(boundary => ({ actionCode, boundary }))
+  ))("keeps unproven $actionCode/$boundary blocked despite ready and a matching KeyG release", ({ actionCode, boundary }) => {
+    const input = new ManualPanelInput(); input.compositionStart();
+    input.blocks(key("Process", { code: actionCode, isComposing: true })); input.blocks(key("Process", { code: "KeyG", isComposing: true }));
+    input.compositionEnd(); input.pointerDown("complete"); input.inputClick("complete", 1); input.acknowledge();
+    input.keyUp({ key: "g", code: "KeyG", isComposing: false });
+    if (boundary !== "held") input.keyUp({
+      key: boundary === "contradictory-key" ? "g" : "Process",
+      code: boundary === "missing-code" ? "" : boundary === "different-code" ? "KeyJ" : actionCode,
+      isComposing: boundary === "still-composing",
+    });
+    input.blocks(key("Tab", { code: "Tab" })); input.keyUp({ key: "Tab", code: "Tab", isComposing: false });
+    expect(input.blocks(key(" ", { code: "Space" }))).toBe(true); expect(input.blocksActionClick(0)).toBe(true);
+  });
+});
+
+it.each([" ", "ArrowUp", "ArrowDown", "g"])("R4 legacy missing-code %s release does not prove physical recovery after completion", name => {
+  const input = new ManualPanelInput(); input.compositionStart(); input.blocks(key(name, { isComposing: true })); input.compositionEnd();
+  input.pointerDown("complete"); input.inputClick("complete", 1); input.acknowledge();
+  input.keyUp({ key: name, isComposing: false });
+  expect(input.blocks(key("Enter", { code: "Enter" }))).toBe(true); expect(input.blocksActionClick(0)).toBe(true);
+});

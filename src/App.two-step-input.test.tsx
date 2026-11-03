@@ -181,3 +181,172 @@ it.each(["Enter", " "])("keyboard %s Modify restores editing without reusing its
   expect(f.search.readOnly).toBe(false); expect(button("浏览结果").disabled).toBe(true); noAction(f);
   complete(); browse(); expect(rows()).toEqual(["true"]);
 });
+
+// Defaults are synthesized at their native activation phase and only if uncancelled.
+function keyboardActivation(target: HTMLElement, key: string, repeat = false) {
+  const code = key === " " ? "Space" : "Enter";
+  const down = fireEvent.keyDown(target, { key, code, repeat });
+  if (key === "Enter" && down) fireEvent.click(target, { detail: 0 });
+  const up = fireEvent.keyUp(target, { key, code });
+  if (key === " " && down && up) fireEvent.click(target, { detail: 0 });
+}
+
+it.each(["Enter", " "].flatMap(key => ["浏览结果", "隐藏快捷面板"].flatMap(name =>
+  ["release-end-complete", "end-release-complete", "release-complete-end", "complete-end-release"].map(order => ({ key, name, order }))
+)))("P2 first independent $key on $name after matching non-action release ($order)", async ({ key, name, order }) => {
+  const f = await mount(); fireEvent.compositionStart(f.search); fireEvent.keyDown(f.search, process);
+  const release = () => fireEvent.keyUp(f.search, { key: "g", code: "KeyG", isComposing: order.startsWith("release-") });
+  const end = () => fireEvent.compositionEnd(f.search);
+  for (const step of order.split("-")) {
+    if (step === "release") release();
+    else if (step === "end") end();
+    else complete();
+    noAction(f);
+  }
+  expect(f.search.readOnly).toBe(true); expect(button(name).disabled).toBe(false);
+  // Focus represents a separate keyboard gesture; no intervening terminal key/pointer Browse.
+  const target = button(name); target.focus(); keyboardActivation(target, key);
+  expect(f.bridge.copyText).not.toHaveBeenCalled();
+  if (name === "浏览结果") {
+    expect(rows()).toEqual(["true"]); expect(f.bridge.getText).toHaveBeenCalledTimes(1); expect(f.hide).not.toHaveBeenCalled();
+  } else {
+    expect(f.hide).toHaveBeenCalledTimes(1); expect(rows()).toEqual(["false"]); expect(f.bridge.getText).not.toHaveBeenCalled();
+  }
+});
+
+it.each(["Enter", " "].flatMap(key => ["浏览结果", "隐藏快捷面板"].flatMap(name =>
+  ["held", "different-code", "missing-code", "still-composing", "newer-key", "repeat", "newer-ordinary", "newer-ordinary-missing-code"].map(boundary => ({ key, name, boundary }))
+)))("P2 safety: $boundary cannot activate $name with $key after completion", async ({ key, name, boundary }) => {
+  const f = await mount(); fireEvent.compositionStart(f.search); fireEvent.keyDown(f.search, process);
+  if (boundary === "newer-key") fireEvent.keyDown(f.search, { ...process, code: "KeyH" });
+  fireEvent.compositionEnd(f.search);
+  const lateOrdinary = boundary.startsWith("newer-ordinary");
+  if (boundary !== "held" && !lateOrdinary) fireEvent.keyUp(f.search, {
+    key: "g", code: boundary === "different-code" ? "KeyH" : boundary === "missing-code" ? "" : "KeyG", isComposing: boundary === "still-composing",
+  });
+  complete(); noAction(f); expect(f.search.readOnly).toBe(true);
+  if (lateOrdinary) {
+    fireEvent.keyDown(f.search, { key: "h", code: boundary === "newer-ordinary" ? "KeyH" : "" });
+    fireEvent.keyUp(f.search, { key: "g", code: "KeyG", isComposing: false }); noAction(f);
+  }
+  const target = button(name); target.focus(); keyboardActivation(target, key, boundary === "repeat"); noAction(f);
+  // An unsolicited default click must remain inert after the blocked activation too.
+  fireEvent.click(target, { detail: 0 }); noAction(f);
+});
+
+it.each(["Enter", "KeyG", ""].flatMap(heldCode => ["Tab", "h"].flatMap(intervening =>
+  ["Enter", " "].flatMap(key => ["浏览结果", "隐藏快捷面板"].map(name => ({ heldCode, intervening, key, name })))
+)))("P2 R2 held $heldCode survives $intervening down/up before first $key on $name", async ({ heldCode, intervening, key, name }) => {
+  const f = await mount(); fireEvent.compositionStart(f.search); fireEvent.keyDown(f.search, { ...process, code: heldCode });
+  fireEvent.compositionEnd(f.search); complete(); noAction(f);
+  expect(f.search.readOnly).toBe(true); expect(button(name).disabled).toBe(false);
+  // The original physical key has no keyup; another key proves only its own release.
+  const code = intervening === "Tab" ? "Tab" : "KeyH";
+  fireEvent.keyDown(f.search, { key: intervening, code }); fireEvent.keyUp(f.search, { key: intervening, code }); noAction(f);
+  const target = button(name); target.focus(); keyboardActivation(target, key); noAction(f);
+  fireEvent.click(target, { detail: 0 }); noAction(f);
+});
+
+it.each(["Enter", " "].flatMap(key => ["浏览结果", "隐藏快捷面板"].flatMap(name =>
+  ["g-h", "h-g"].flatMap(releases => ["release-end-complete", "end-release-complete", "release-complete-end", "complete-end-release", "first-end-complete-last", "first-complete-end-last"].map(order => ({ key, name, releases, order })))
+)))("P2 R3 overlap: complete $releases releases restore first $key on $name ($order)", async ({ key, name, releases, order }) => {
+  const f = await mount(); fireEvent.compositionStart(f.search);
+  fireEvent.keyDown(f.search, process); fireEvent.keyDown(f.search, { ...process, code: "KeyH" }); noAction(f);
+  const release = (letter: string, isComposing: boolean) => fireEvent.keyUp(f.search, { key: letter, code: letter === "g" ? "KeyG" : "KeyH", isComposing });
+  for (const step of order.split("-")) {
+    if (step === "release") for (const letter of releases.split("-")) {
+      release(letter, order.startsWith("release-")); noAction(f);
+    }
+    else if (step === "first") release(releases.split("-")[0], true);
+    else if (step === "last") release(releases.split("-")[1], false);
+    else if (step === "end") fireEvent.compositionEnd(f.search);
+    else complete();
+    noAction(f);
+  }
+  expect(f.search.readOnly).toBe(true); expect(button(name).disabled).toBe(false);
+  const target = button(name); target.focus(); keyboardActivation(target, key);
+  expect(f.bridge.copyText).not.toHaveBeenCalled();
+  if (name === "浏览结果") {
+    expect(rows()).toEqual(["true"]); expect(f.bridge.getText).toHaveBeenCalledTimes(1); expect(f.hide).not.toHaveBeenCalled();
+  } else {
+    expect(f.hide).toHaveBeenCalledTimes(1); expect(rows()).toEqual(["false"]); expect(f.bridge.getText).not.toHaveBeenCalled();
+  }
+});
+
+it.each(["Enter", " "].flatMap(key => ["浏览结果", "隐藏快捷面板"].flatMap(name =>
+  ["g", "h"].flatMap(held => ["held", "missing-code", "different-code", "still-composing", "contradictory-key"].map(boundary => ({ key, name, held, boundary })))
+)))("P2 R3 unproven $held/$boundary cannot borrow Tab release for $key on $name", async ({ key, name, held, boundary }) => {
+  const f = await mount(); fireEvent.compositionStart(f.search);
+  fireEvent.keyDown(f.search, process); fireEvent.keyDown(f.search, { ...process, code: "KeyH" });
+  fireEvent.compositionEnd(f.search); complete(); noAction(f);
+  const code = held === "g" ? "KeyG" : "KeyH";
+  fireEvent.keyUp(f.search, { key: held === "g" ? "h" : "g", code: held === "g" ? "KeyH" : "KeyG" });
+  if (boundary !== "held") fireEvent.keyUp(f.search, {
+    key: boundary === "contradictory-key" ? "Escape" : held,
+    code: boundary === "missing-code" ? "" : boundary === "different-code" ? "KeyJ" : code,
+    isComposing: boundary === "still-composing",
+  });
+  noAction(f); fireEvent.keyDown(f.search, { key: "Tab", code: "Tab" }); fireEvent.keyUp(f.search, { key: "Tab", code: "Tab" }); noAction(f);
+  const target = button(name); target.focus(); keyboardActivation(target, key); noAction(f);
+  fireEvent.click(target, { detail: 0 }); noAction(f);
+});
+
+// Matching releases after explicit completion must not depend on the last key's category.
+const r4OverlapCases = ["Enter", "Escape", "Space", "ArrowUp", "ArrowDown"].flatMap(actionCode =>
+  ["g-action", "action-g"].flatMap(presses => ["g-action", "action-g"].flatMap(releases =>
+    ["Enter", " "].flatMap(key => ["浏览结果", "隐藏快捷面板"].map(name => ({ actionCode, presses, releases, key, name })))
+  ))
+);
+function r4Codes(order: string, actionCode: string) { return order.split("-").map(part => part === "g" ? "KeyG" : actionCode); }
+function r4Down(search: HTMLElement, presses: string, actionCode: string) {
+  for (const code of r4Codes(presses, actionCode)) fireEvent.keyDown(search, { ...process, code });
+}
+function r4Release(search: HTMLElement, code: string) { fireEvent.keyUp(search, { key: code === "KeyG" ? "g" : "Process", code, isComposing: false }); }
+
+it.each(r4OverlapCases)("P2 R4 complete overlap $actionCode down:$presses up:$releases restores first $key on $name", async ({ actionCode, presses, releases, key, name }) => {
+  const f = await mount(); fireEvent.compositionStart(f.search); r4Down(f.search, presses, actionCode); noAction(f);
+  fireEvent.compositionEnd(f.search); noAction(f); complete(); noAction(f);
+  expect(f.search.readOnly).toBe(true); expect(button(name).disabled).toBe(false);
+  for (const code of r4Codes(releases, actionCode)) { r4Release(f.search, code); noAction(f); }
+  const target = button(name);
+  // keyup may discharge the fence, but cannot replay a previously blocked default click.
+  fireEvent.click(target, { detail: 0 }); noAction(f);
+  target.focus(); keyboardActivation(target, key);
+  expect(f.bridge.copyText).not.toHaveBeenCalled();
+  if (name === "浏览结果") {
+    expect(rows()).toEqual(["true"]); expect(f.bridge.getText).toHaveBeenCalledTimes(1); expect(f.hide).not.toHaveBeenCalled();
+  } else {
+    expect(f.hide).toHaveBeenCalledTimes(1); expect(rows()).toEqual(["false"]); expect(f.bridge.getText).not.toHaveBeenCalled();
+  }
+});
+
+it.each(r4OverlapCases)("P2 R4 uncompleted overlap $actionCode down:$presses up:$releases blocks $key on $name", async ({ actionCode, presses, releases, key, name }) => {
+  const f = await mount(); fireEvent.compositionStart(f.search); r4Down(f.search, presses, actionCode);
+  fireEvent.compositionEnd(f.search);
+  for (const code of r4Codes(releases, actionCode)) { r4Release(f.search, code); noAction(f); }
+  expect(f.search.readOnly).toBe(false); expect(button(name).disabled).toBe(true);
+  // Exercise the capture and handler guards as well as the disabled attribute.
+  const target = button(name); target.removeAttribute("disabled"); target.focus();
+  keyboardActivation(target, key); noAction(f); fireEvent.click(target, { detail: 0 }); noAction(f);
+});
+
+it.each(r4OverlapCases)("P2 R4 partial overlap $actionCode down:$presses up:$releases retains last held key before $key on $name", async ({ actionCode, presses, releases, key, name }) => {
+  const f = await mount(); fireEvent.compositionStart(f.search); r4Down(f.search, presses, actionCode);
+  fireEvent.compositionEnd(f.search); complete(); noAction(f);
+  // Release just the first of the matching pair. The other physical key is still held.
+  r4Release(f.search, r4Codes(releases, actionCode)[0]); noAction(f);
+  fireEvent.keyDown(f.search, { key: "Tab", code: "Tab" }); fireEvent.keyUp(f.search, { key: "Tab", code: "Tab" }); noAction(f);
+  const target = button(name); target.focus(); keyboardActivation(target, key); noAction(f);
+  fireEvent.click(target, { detail: 0 }); noAction(f);
+});
+
+it.each([" ", "ArrowUp", "ArrowDown", "g"].flatMap(candidate => ["Enter", " "].flatMap(key =>
+  ["浏览结果", "隐藏快捷面板"].map(name => ({ candidate, key, name }))
+)))("P2 R4 legacy missing-code $candidate release cannot prove physical recovery for $key on $name", async ({ candidate, key, name }) => {
+  const f = await mount(); fireEvent.compositionStart(f.search);
+  fireEvent.keyDown(f.search, { key: candidate, isComposing: true });
+  fireEvent.compositionEnd(f.search); complete(); noAction(f);
+  fireEvent.keyUp(f.search, { key: candidate, isComposing: false }); noAction(f);
+  const target = button(name); target.focus(); keyboardActivation(target, key); noAction(f);
+  fireEvent.click(target, { detail: 0 }); noAction(f);
+});

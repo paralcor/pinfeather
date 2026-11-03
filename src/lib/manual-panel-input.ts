@@ -3,6 +3,7 @@ export type InputCompletion = "ordinary" | "editing" | "pending" | "ready";
 type InputAction = "complete" | "edit";
 type CompositionQuery = { value: string; start: number; end: number };
 const actionCodes = new Map([["Enter", "Enter"], ["Escape", "Escape"], ["Space", " "], ["ArrowUp", "ArrowUp"], ["ArrowDown", "ArrowDown"]]);
+const maxHeldCodes = 8;
 function candidateKey(event: KeyIdentity) {
   if (!event.code) return event.key === "Process" ? null : event.key;
   const key = actionCodes.get(event.code);
@@ -20,12 +21,17 @@ export class ManualPanelInput {
   private awaitingRelease = false;
   private releaseKey: string | null = null;
   private releaseCode: string | null = null;
+  private heldCodes = new Map<string, string>();
+  private unpairedRelease = false;
   private releasedCommitKey: string | null = null;
   private freshPointer = false;
   private pointerCommitsComposition = false;
   private suppressKeyboardClick = false;
   get completion() { return this.completionState; }
   get actionsAllowed() { return this.completionState === "ordinary" || this.completionState === "ready"; }
+  private get hasHeldKeys() {
+    return this.heldCodes.size > 0 || this.unpairedRelease || (this.releaseKey !== null && this.releaseCode === null);
+  }
   private observeIme() {
     this.completionState = "editing";
     this.observedEnd = false;
@@ -41,7 +47,7 @@ export class ManualPanelInput {
     this.pointerCommitsComposition = false;
     this.actionPointerReady = false;
     this.suppressKeyboardClick = true;
-    if (this.observedEnd && this.releaseKey === null) this.awaitingRelease = false;
+    if (this.observedEnd && !this.hasHeldKeys) this.awaitingRelease = false;
   }
   resumeEditing() {
     if (this.completionState !== "ordinary") this.completionState = "editing";
@@ -71,6 +77,8 @@ export class ManualPanelInput {
     this.awaitingRelease = true;
     this.releaseKey = null;
     this.releaseCode = null;
+    this.heldCodes.clear();
+    this.unpairedRelease = false;
     this.releasedCommitKey = null;
     this.freshPointer = false;
     this.pointerCommitsComposition = false;
@@ -83,11 +91,11 @@ export class ManualPanelInput {
     const query = this.compositionQuery;
     this.compositionQuery = null;
     this.composing = false;
-    this.awaitingRelease = this.releasedCommitKey === null;
+    this.awaitingRelease = this.releasedCommitKey === null || this.hasHeldKeys;
     this.observedEnd = true;
     if (this.completionState === "pending") {
       this.completionState = "ready";
-      if (this.releaseKey === null) this.awaitingRelease = false;
+      if (!this.hasHeldKeys) this.awaitingRelease = false;
     }
     // End data belongs to this episode, even when the final change arrives later.
     if (!query) return null;
@@ -98,12 +106,19 @@ export class ManualPanelInput {
     const event: KeyIdentity & { isComposing?: boolean } = typeof release === "string" ? { key: release } : release;
     if (["Control", "Alt", "Shift", "Meta"].includes(event.key)) return;
     if (!this.composing && event.isComposing) return;
-    if (this.releaseKey === null || this.releaseKey !== candidateKey(event) || this.releaseCode !== (event.code || null)) return;
-    const terminal = this.releaseKey === "Enter" || this.releaseKey === "Escape";
-    if (this.composing && terminal) this.releasedCommitKey = this.releaseKey;
-    this.releaseKey = null;
-    this.releaseCode = null;
-    if (!this.composing && terminal) this.awaitingRelease = false;
+    const held = event.code ? this.heldCodes.get(event.code) : this.releaseCode === null ? this.releaseKey : null;
+    // A physical non-action release proves only itself, never candidate completion.
+    const nonActionRelease = !!event.code && !actionCodes.has(event.code) && ![...actionCodes.values()].includes(event.key);
+    if (held == null || (held !== candidateKey(event) && !nonActionRelease)) return;
+    if (event.code) this.heldCodes.delete(event.code);
+    const latest = this.releaseCode === (event.code || null) && this.releaseKey === held;
+    const terminal = latest && (held === "Enter" || held === "Escape");
+    if (latest) {
+      if (this.composing && terminal) this.releasedCommitKey = held;
+      this.releaseKey = null;
+      this.releaseCode = null;
+    }
+    if (!this.composing && !this.hasHeldKeys && (terminal || this.releasedCommitKey !== null || (!!event.code && this.completionState === "ready" && this.observedEnd))) this.awaitingRelease = false;
   }
   pointerDown(action: InputAction | null = null) {
     this.inputPointer = action;
@@ -112,21 +127,30 @@ export class ManualPanelInput {
     this.pointerCommitsComposition = this.composing;
     // A pointer begun during composition may itself commit the candidate.
     // Only a new gesture after the end resolves a fence with no held candidate key.
-    if (this.freshPointer && this.releaseKey === null) this.awaitingRelease = false;
+    if (this.freshPointer && !this.hasHeldKeys) this.awaitingRelease = false;
   }
   blocks(event: KeyIdentity & { keyCode?: number; isComposing: boolean; repeat: boolean }, query?: CompositionQuery) {
     this.freshPointer = false;
     const ime = event.isComposing || event.key === "Process" || event.keyCode === 229;
+    const modifier = ["Control", "Alt", "Shift", "Meta"].includes(event.key);
+    if (this.composing || this.awaitingRelease || ime) {
+      if (modifier) {
+        if (ime && this.heldCodes.size > 0) this.unpairedRelease = true;
+      } else if (event.code) {
+        if (this.releaseKey !== null && this.releaseCode === null) this.unpairedRelease = true;
+        if (actionCodes.has(event.code) && candidateKey(event) === null) this.unpairedRelease = true;
+        if (!this.heldCodes.has(event.code) && this.heldCodes.size >= maxHeldCodes) this.unpairedRelease = true;
+        else this.heldCodes.set(event.code, candidateKey(event) ?? event.key);
+      } else if (this.heldCodes.size > 0) this.unpairedRelease = true;
+    }
     if (ime) { if (!this.composing && this.compositionQuery === null) this.compositionQuery = query ?? null; this.observeIme(); this.awaitingRelease = true; this.releaseKey = null; this.releaseCode = null; this.releasedCommitKey = null; this.suppressKeyboardClick = true; }
     if ((this.composing || this.awaitingRelease) && !["Control", "Alt", "Shift", "Meta"].includes(event.key)) {
       // Process marks IME handling; code identifies the physical key it obscures.
-      // Only the latest matching terminal key release can complete this fence.
+      // Latest activity owns terminal evidence; heldCodes owns every known release.
       // Navigation/Space may select or page candidates; their releases prove only themselves.
       this.releasedCommitKey = null;
-      if (this.composing || ime || ["Enter", "Escape", "ArrowUp", "ArrowDown", " "].includes(event.key)) {
-        this.releaseKey = candidateKey(event) ?? event.key;
-        this.releaseCode = event.code || null;
-      }
+      this.releaseKey = candidateKey(event) ?? event.key;
+      this.releaseCode = event.code || null;
     }
     const blocked = this.composing || this.awaitingRelease || event.repeat;
     if (["Enter", "Escape", " "].includes(event.key)) this.suppressKeyboardClick = blocked;
