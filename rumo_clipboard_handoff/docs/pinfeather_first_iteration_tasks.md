@@ -1,6 +1,6 @@
 # 片羽首轮任务清单：规格修订与单机纵向原型
 
-> 2026-11-02 当前状态：M2 两个切片已完成实现和负责人独立离线复核；托盘、暂停、持久排除、显式复制与重启核心现场通过，见[验收记录](pinfeather_acceptance_plan.md#m2-core-field)。提交状态以 Git 记录为准，完整 M2/T5 未验收。M1 已合并，有限证据及中文输入缺口见[两步输入记录](pinfeather_explicit_copy_stage.md#manual-m1-current-evidence)。优先交付手动版，自动回贴延期；原首轮仍为 4/7。
+> 2026-11-03 当前状态：M2 最小范围已完成实现、独立离线复核及本机有限现场验收，证据与保留限制见[收口记录](pinfeather_acceptance_plan.md#m2-closeout)。M1 输入边界、完整 T5、跨应用/性能及首轮交付仍待完成；自动回贴延期，原首轮进度保持 4/7。提交状态以 Git 记录为准。
 
 > 当前手动交付沿用[输入、浏览与显式复制契约](pinfeather_explicit_copy_stage.md#manual-m1)，复制后面板保持打开；主窗口 X 在托盘可用时隐藏，否则保留可见入口，明确退出走统一关闭流程，见[M2 设计](pinfeather_m2_design.md)。面板 X/Esc/失焦隐藏。下文带日期的旧版本行为及失败证据保留，不外推到当前候选。
 
