@@ -1,6 +1,6 @@
 # 片羽首轮验证、真机验收与测量计划
 
-> 2026-11-02 当前状态：M2 两个切片已完成实现和负责人独立离线复核；托盘、暂停、持久排除、显式复制与重启核心现场通过，见[验收记录](pinfeather_acceptance_plan.md#m2-core-field)。提交状态以 Git 记录为准，完整 M2/T5 未验收。M1 已合并，有限证据及中文输入缺口见[两步输入记录](pinfeather_explicit_copy_stage.md#manual-m1-current-evidence)。优先交付手动版，自动回贴延期；原首轮仍为 4/7。
+> 2026-11-03 当前状态：M2 核心现场通过；托盘丢失时主窗口误隐藏已完成[修复、独立离线复核及有限现场验收](#m2-tray-entry-fix)，该缺陷阻塞解除，完整 M2/T5 未验收。提交状态以 Git 记录为准。M1 已合并，有限证据及中文输入缺口见[两步输入记录](pinfeather_explicit_copy_stage.md#manual-m1-current-evidence)。优先交付手动版，自动回贴延期；原首轮仍为 4/7。
 
 > 当前手动交付沿用[输入、浏览与显式复制契约](pinfeather_explicit_copy_stage.md#manual-m1)，复制后面板保持打开；主窗口 X 在托盘可用时隐藏，否则保留可见入口，明确退出走统一关闭流程，见[M2 设计](pinfeather_m2_design.md)。面板 X/Esc/失焦隐藏。下文带日期的旧版本行为及失败证据保留，不外推到当前候选。
 
@@ -305,6 +305,34 @@ C 设置的前后 SHA256 均为 `894e8a9b1dbb5e509cc62ef38186214cce1f479ad0fb871
 最小修复要求：在允许主窗口隐藏前，通过真实托盘端口重新确认当前实例图标可用；缺失、查询失败或无法确认时保留可见入口并反馈错误。锁定 Tauri 已提供 `TrayIcon::rect()`，Windows 下走 Shell_NotifyIconGetRect；可作为实现候选，但需证明关闭顺序和主线程调用安全，不能只改缓存或测试返回。先补“缓存 true、原生缺失/查询失败时不隐藏”的失败回归，再修复并验证正常隐藏、恢复后可用性及退出并发。图标在主窗口已隐藏后才消失的自动恢复属于另一时序，不以本修复自动关闭。
 
 证据与修复任务：`D:/Develop/Misc Workspace/archive/pinfeather-m2-tray-loss/run-20261102-v1/FIELD-ACCEPTANCE.md`、`FIX-TASK.md`，以及同目录移除/恢复回执、用户时序确认、退出回执和最终观察。生产代码未改；启动和一次图标移除许可已消费，修复后的新候选现场须另行冻结范围。
+
+<a id="m2-tray-entry-fix"></a>
+
+### 6.11 M2 关闭前核查托盘：修复及有限现场通过（2026-11-03）
+
+基线 `c5038de`；生产和测试修改限于 `src-tauri/src/residency.rs`。`CloseRequested` 仍进入 `Residency::close_main`，通过自身托盘 ID 的 `TrayIcon::rect()` 查询 Windows 当前注册状态。缺失或查询失败时保留主窗口并反馈错误；后续查询成功可恢复正常隐藏，并保留已有错误记录。查询在驻留状态锁之外执行，返回后重新检查退出阶段；已进入退出流程时不允许隐藏。
+
+新增两条回归在保留旧关闭逻辑时实际运行失败，均为隐藏次数 1、预期 0；修复后负责人独立执行 `cargo test --offline --locked --manifest-path src-tauri/Cargo.toml --features test-fixtures --lib <filter> -- --test-threads=1`，三个筛选器 `residency::tests::`、`host::shutdown_tests::`、`host::residency_tests::` 分别通过 12、7、5 项。普通 `cargo check --offline --locked --manifest-path src-tauri/Cargo.toml --lib` 与 `git diff --check` 通过；检查前后源码 SHA256 均为 `92BEDB5304A6F5CD7E4B941AED11F4735A3A5186B118FC8FBA25EE820CA6BFFF`。
+
+已覆盖缓存成功但当前图标缺失/查询失败、恢复后再次隐藏、保留既有错误，以及查询阻塞期间退出先行的顺序。负责人核对锁定的 Tauri 主线程派发和 Windows `Shell_NotifyIconGetRect` 调用链；这些是源码及离线测试证据，不是实际图标移除后的现场通过。查询成功后图标又丢失仍有时序窗口；窗口已隐藏后才丢失图标的自动恢复不在此修复范围。
+
+现场使用普通 release 候选，SHA256 `98A4D4DECF7830FDF667B3DDD0883EF9604443EAF9F82B1C7BF312BEECCE4783`，一次启动、全新隔离目录、默认暂停和历史 0。用户确认正常 X 隐藏与托盘重开。前两次图标移除分别因用户错过时段、主窗口事先已隐藏而未覆盖目标操作，均恢复成功；用户逐次明确要求重试，没有重启产品。第三次在用户确认主窗口打开后移除图标，用户点 X 后确认“窗口可见 提示托盘不可用”；助手记录反馈时尚无恢复回执，随后提前恢复并确认注册成功。恢复后用户确认正常隐藏、托盘重开和明确退出。
+
+产品退出码 0；初始记录的主进程及 7 个后代身份均消失，三次辅助退出码均为 0且身份消失，无 Pinfeather 进程。没有机器记录的精确点击时间；界面结果由用户确认，原生移除/恢复与进程由回执支持。未穷尽短命或后续新建后代。日志仍有托盘移除错误及 WebView 注销错误 1412，未关闭这些诊断。**6.10 的特定缺陷阻塞解除，不据此宣称完整 M2/T5 完成。**
+
+证据目录：`D:/Develop/Misc Workspace/archive/pinfeather-m2-tray-fix/run-20261103-v1/`，包括 `red/cargo-test-actual.log`、执行者 `RESULT.md`、负责人 `owner-verification/CHECKS.json`、`FIELD-ACCEPTANCE.md`、`FIELD-FINAL-CHECKS.json`，以及根目录和 `tray-retry-01`、`tray-retry-02` 的逐次授权、移除/恢复及用户结果。旧离线报告的现场待验状态由本节补充，保留各版本边界。
+
+<a id="m2-skip-feedback-fix"></a>
+
+### 6.12 M2 暂停后保留最近跳过原因：离线修复（2026-11-03）
+
+“最近一次跳过”曾直接读取瞬时 `CaptureState.notice`，暂停的策略失效处理会清空该字段，而累计忽略数保留。三条真实宿主回归在修复前实际断言失败，覆盖暂停后原因消失、其他提示覆盖原因、提交前来源复查后再暂停。修复将最近应用排除原因存为当前进程内的独立只读诊断状态，仅由既有 `owner_allowed` 拒绝路径更新；初次过滤和提交前复查共用该生产者，`HostRuntime::settings` 仍返回原有两个字符串或 null。
+
+该原因在暂停/恢复、规则变更、允许收录及其他瞬时提示之后保留，下一次真实来源拒绝更新它；新宿主初始化为空，不写入 settings.json。原瞬时提示、暂停取消队列、epoch、计数及接纳规则保持原语义。未改变 IPC 字段、前端、数据库或持久设置格式。
+
+负责人独立复跑设置测试 10 项、存储/暂停定向测试 3 项、抓取/策略定向测试 7 项、退出测试 7 项，共 27 项通过；普通 `cargo check --offline --locked --manifest-path src-tauri/Cargo.toml --lib` 与 `git diff --check` 通过。三份变更源码及已有托盘修复的哈希一致。首次负责人汇总脚本把单行结果字符串当作数组，误报计数不匹配；实际设置测试为 10/10，通过修正后的完整复跑确认，原日志保留。
+
+证据：`D:/Develop/Misc Workspace/archive/pinfeather-m2-skip-feedback/run-20261103-v1/RESULT.md`、`logs/red-settings.log`、`owner/CHECKS.json` 及逐条命令日志。本节仅为源码和离线证据；尚未构建包含本修复的新普通候选或做真实界面复测，6.11 的旧候选不包含本修复。整体 M2/T5 仍未全部验收。
 
 ## 7. R1可控阶段测试与真实边界
 
