@@ -1,6 +1,6 @@
 # 片羽首轮任务清单：规格修订与单机纵向原型
 
-> 2026-11-03 当前状态：M2 最小范围已完成实现、独立离线复核及本机有限现场验收，证据与保留限制见[收口记录](pinfeather_acceptance_plan.md#m2-closeout)。M1 输入边界、完整 T5、跨应用/性能及首轮交付仍待完成；自动回贴延期，原首轮进度保持 4/7。提交状态以 Git 记录为准。
+> 2026-11-04 当前状态：M1 短样本手动链路已通过本机有限现场，P2 首次独立键盘动作修复及退出检查器修复已获接受，范围见[最新有限证据](pinfeather_acceptance_plan.md#m1-manual-chain-20261104)。M2 最小范围已完成，见[收口记录与保留限制](pinfeather_acceptance_plan.md#m2-closeout)。M1 整体、完整 T5、跨应用/性能及首轮交付仍未完成；自动回贴延期，原首轮进度保持 4/7。下一步准备跨应用手动矩阵与 Release 测量，见[收尾顺序第4项](pinfeather_execution_tasks.md#manual-delivery-closeout)。提交状态以 Git 记录为准。
 
 > 当前手动交付沿用[输入、浏览与显式复制契约](pinfeather_explicit_copy_stage.md#manual-m1)，复制后面板保持打开；主窗口 X 在托盘可用时隐藏，否则保留可见入口，明确退出走统一关闭流程，见[M2 设计](pinfeather_m2_design.md)。面板 X/Esc/失焦隐藏。下文带日期的旧版本行为及失败证据保留，不外推到当前候选。
 
@@ -154,7 +154,7 @@ R1 的 API 边界见 [SetForegroundWindow](https://learn.microsoft.com/en-us/win
 
 ## 9. 当前执行状态
 
-M2 两个切片的实现、独立离线复核和核心现场已完成，本地提交状态以 Git 记录为准；[最新验收](pinfeather_acceptance_plan.md#m2-core-field)补充下表的历史阶段记录。T5 仅部分验收，T4/T6 未整体完成，仍为 4/7；后续按[手动版收尾顺序](pinfeather_execution_tasks.md#manual-delivery-closeout)推进。
+M2 最小范围已[收口](pinfeather_acceptance_plan.md#m2-closeout)；M1 短手动链路、P2 修复及独立退出工具的[最新有限证据](pinfeather_acceptance_plan.md#m1-manual-chain-20261104)补充下表历史记录。M1 整体、完整 T5、T4/T6 与首轮仍未完成，进度保持 4/7；下一步按[手动版收尾顺序第4项](pinfeather_execution_tasks.md#manual-delivery-closeout)离线准备跨应用手动矩阵与 Release 测量。本地提交状态以 Git 记录为准。
 
 | 任务 | 状态与证据边界 |
 | --- | --- |
@@ -170,7 +170,7 @@ M2 两个切片的实现、独立离线复核和核心现场已完成，本地�
 | E07 / T2 | 本机基础链路通过。Windows 11家庭版x64 build26200、Edge156.0.4314.42、WebView2 155.0.4283.62；Release主界面完成5条/7载荷及两轮重启核对，用户另行执行debug test-fixtures原生内部写回1项通过。记录见 archive/runs/20261024-095055-e07-user-acceptance，[操作指南](pinfeather_development.md)可复跑。退出两次出现WebView2窗口类注销错误1412，未发现数据/进程残留影响，根因待查 |
 | E08–E09 / T3 | 字面全文查询、稳定分页、UTF8分帧及迟到响应保护已有自动证据；普通Release真实WebView的6份合成文本搜索、预览、续读和重启通过，范围见[验收计划6.2节](pinfeather_acceptance_plan.md#62-e09-本机搜索与正文预览) |
 | 显式复制独立增量 | 实现、负责人独立离线验收及一次最小人工现场通过，见[阶段记录](pinfeather_explicit_copy_stage.md)及[验收计划6.4节](pinfeather_acceptance_plan.md#64-显式复制最小人工现场)；不计为T4或增加原4/7完成数，故障/兼容性矩阵未完成 |
-| T4–T6、A1–A11剩余矩阵 | 快捷面板/回贴、完整生命周期及性能未验收；快速复制/交错/占用/隐私标记等扩展真机矩阵仍待办，R2/R3及R6规模测量保持未关闭 |
+| T4–T6、A1–A11剩余矩阵 | 快捷面板手动子集见[有限证据](pinfeather_acceptance_plan.md#m1-manual-chain-20261104)，M2 最小范围见[收口](pinfeather_acceptance_plan.md#m2-closeout)；自动回贴延期，完整 T5/性能及跨应用、快速复制/交错/占用/隐私标记等扩展矩阵仍待办，R2/R3及R6规模测量保持未关闭 |
 
 执行细分见[完整方案](pinfeather_implementation_plan.md)、[E00–E15任务卡](pinfeather_execution_tasks.md)和[验收计划](pinfeather_acceptance_plan.md)。当前负责人为 Codex gpt-6-astra/high，负责协调、独立审查与验收；执行者为 Codex gpt-6.1-sol/high，仅在明确任务范围内写入，交回后停写。同一范围仅一个写者；带日期的历史角色与执行证据保持原样。W3仍受IME可行性阻塞，人工关卡保持。
 

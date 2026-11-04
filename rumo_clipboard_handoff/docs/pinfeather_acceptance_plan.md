@@ -1,6 +1,6 @@
 # 片羽首轮验证、真机验收与测量计划
 
-> 2026-11-03 当前状态：M2 最小范围已完成实现、独立离线复核及本机有限现场验收，证据与保留限制见[收口记录](pinfeather_acceptance_plan.md#m2-closeout)。M1 输入边界、完整 T5、跨应用/性能及首轮交付仍待完成；自动回贴延期，原首轮进度保持 4/7。提交状态以 Git 记录为准。
+> 2026-11-04 当前状态：M1 短样本手动链路已通过本机有限现场，P2 首次独立键盘动作修复及退出检查器修复已获接受，范围见[最新有限证据](pinfeather_acceptance_plan.md#m1-manual-chain-20261104)。M2 最小范围已完成，见[收口记录与保留限制](pinfeather_acceptance_plan.md#m2-closeout)。M1 整体、完整 T5、跨应用/性能及首轮交付仍未完成；自动回贴延期，原首轮进度保持 4/7。下一步准备跨应用手动矩阵与 Release 测量，见[收尾顺序第4项](pinfeather_execution_tasks.md#manual-delivery-closeout)。提交状态以 Git 记录为准。
 
 > 当前手动交付沿用[输入、浏览与显式复制契约](pinfeather_explicit_copy_stage.md#manual-m1)，复制后面板保持打开；主窗口 X 在托盘可用时隐藏，否则保留可见入口，明确退出走统一关闭流程，见[M2 设计](pinfeather_m2_design.md)。面板 X/Esc/失焦隐藏。下文带日期的旧版本行为及失败证据保留，不外推到当前候选。
 
@@ -363,6 +363,37 @@ C 设置的前后 SHA256 均为 `894e8a9b1dbb5e509cc62ef38186214cce1f479ad0fb871
 后续按[手动版收尾顺序](pinfeather_execution_tasks.md#manual-delivery-closeout)处理 M1 输入边界、跨应用/性能矩阵和交付说明。若发现新的实际缺陷，独立登记范围和失败证据；不以泛称“完整故障矩阵”反复重开已通过的 M2 测试。
 
 收口核查：`D:/Develop/Misc Workspace/archive/pinfeather-m2-closeout/run-20261103-v1/EVIDENCE-CHECKS.json`。本节完成不代表提交、推送、并入 main、发布或删除 worktree；这些操作按各自授权执行。
+
+<a id="m1-manual-chain-20261104"></a>
+
+### 6.14 M1 短手动链路与 P2 后续证据（2026-11-04）
+
+**本机、该普通候选、一个短合成文本的手动链路通过；M1 尚未整体验收。** 普通候选 EXE SHA256 为 `20597605da31ddf94086311823d18f5d90c5dc59f0d63a2996b5f5739a2b6012`，165 项源码经 CRLF/LF 归一核对绑定产品保存提交 `5639c90244b4806e121d6706b18c2e1587535f58`，没有旧诊断功能。状态文档同步不改变产品源码。用户按卡完成“收录并暂停 → 中文完成输入 → 另一次独立 Enter 浏览/正文预览 → 明确复制 → 手动粘贴 → 新标记保留 → 明确退出”。普通包没有旧事件 trace，中文选字、首次 Enter 和面板行为来自用户观察，不代表独立采集了全部 IME 顺序。[A]
+
+| 阶段 | 用户观察与保存输出 | 有限结论 |
+| --- | --- | --- |
+| A 收录并暂停 | 历史 1、队列 0、已暂停 | 用户观察，不冒充数据库独立计数 |
+| B 独立浏览 | 首次 Enter 打开正文、首尾正确；浏览前保存标记 36 字节逐字节一致 | 该次浏览/预览及浏览前标记保持通过 |
+| C 显式复制与手动粘贴 | 成功反馈，面板保持打开；原样本 222 字节、保存输出 227 字节，五行及末尾换行完整 | 仅 LF/CRLF 差异，不声称正文逐字节相同 |
+| D 新标记与退出 | 用户确认暂停 1/0、已退出；退出后保存标记 34 字节逐字节一致 | 该次最终标记保持通过 |
+
+主程序退出码 0。旧检查器因“已终止对象仍可查询”保留 `collectionComplete=false`；后续同一创建身份的 Windows 非阻塞 Wait 为 signaled、退出码 0，结合其余身份已消失的补充证据，确认采样记录的 11 个产品/WebView 进程终止。原始失败不改写，不声称全部在旧 5 秒回收窗口内结束，也不穷尽未采样的短命后代。[A]
+
+P2 鼠标完成后首次独立键盘动作被吞的窄缺陷已修复：明确完成且已观察到 compositionEnd 后，同轮次匹配物理释放、无剩余持键/未知释放保护时恢复独立动作；未知、错配、迟到释放和持键保护保留，不承诺跨 composition episode 追踪。负责人定向 4 文件 705 项及 TypeScript 通过，执行者最终全量 16 文件 880 项、类型检查和构建通过；这是同轮不同范围，不累加。诊断候选 `19bbbb00…` 的首次独立 Enter/Space 隐藏分别通过有限现场，普通候选另补上述 Enter 浏览；三个修复文件已保存于 `5639c90`。[B] 相邻最终值对照中，两侧完成前 trusted=true 的 input/DOM 已为 `yang'ben`，完成后保留，没有“产品把已提交中文变拼音”的证据；compositionend 的 trusted=false 生产者仍未知，不据此强改最终值。[C]
+
+独立归档退出检查器已修复并由负责人验证：42 项检查及 4 个真实 Windows 无 GUI 合成 helper 通过，schema 2 分别报告进程终止与身份不可查询，未知保持失败关闭。这是工具修复，不是新的产品现场，也不回填旧 5 秒门槛；旧冻结工具、诊断日志和数据库不随状态文档进入 Git。[D]
+
+保留边界：pending-end 未自然触发，“修改搜索”恢复继续未覆盖，不强造；候选活跃首次手势、候选导航、复杂持键/释放、全部输入顺序与兼容矩阵未全覆盖。P3 ready 空结果未同时提示“输入已完成”仍为低优先级未改；旧 M1 早退、WebView 1412 与托盘日志根因不强判为数据丢失或退出失败。自动回贴及搜索框 Space 提交后首个 ArrowDown/Esc 直接动作仍延期/NOT_FIXED。M2 按[6.13节](#m2-closeout)完成最小范围，完整 T5、跨应用/规定测量和首轮交付未完成，原 4/7 不变。[E]
+
+[收尾顺序](pinfeather_execution_tasks.md#manual-delivery-closeout)第3项中本次短链路、标记保持及 P2 窄场景已关闭；接续第4项离线准备浏览器、编辑器、安全终端手动矩阵和 Release 测量，再按实际结果完成人工、测量与交付整理。不重复本次短链路或 M2 已验场景；原第9节及 E13–E15 门槛不变，未测项如实保留。[E]
+
+证据定位根为 `D:/Develop/Misc Workspace/archive/`；下列本机归档仅作来源定位，保留各候选与日期边界：
+
+- [A] `pinfeather-m1-manual-chain/run-20261103-v1/` 下的 `FIELD-ACCEPTANCE.md`、`field/round1/OWNER-ACCEPTANCE.json`。
+- [B] `pinfeather-m1-p2-repair/run-20261103-v1/OWNER-REVIEW-R4.md`；`pinfeather-m1-p2-field/P2-FIELD-SUMMARY.md`；`pinfeather-m1-rest-save/run-20261103-v1/COMMIT-RECEIPT.json`。
+- [C] `pinfeather-m1-native-value-comparison/run-20261103-retry1/FIELD-COMPARISON.md`。
+- [D] `pinfeather-m1-exit-checker-repair/run-20261104-v1/` 下的 `OWNER-ACCEPTANCE.md`、`OWNER-REVIEW.md`、`verification-runs/verify-lyejp_y1/VERIFY-RESULT.json`。
+- [E] `pinfeather-m1-closeout-status/run-20261104-v1/` 下的 `REMAINING.md`、`OWNER-ACCEPTANCE.md`；正式门槛见本文第9节及任务卡 E13–E15。
 
 ## 7. R1可控阶段测试与真实边界
 

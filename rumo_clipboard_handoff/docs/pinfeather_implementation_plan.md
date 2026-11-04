@@ -1,6 +1,6 @@
 # 片羽首轮完整实施方案
 
-> 2026-11-03 当前状态：M2 最小范围已完成实现、独立离线复核及本机有限现场验收，证据与保留限制见[收口记录](pinfeather_acceptance_plan.md#m2-closeout)。M1 输入边界、完整 T5、跨应用/性能及首轮交付仍待完成；自动回贴延期，原首轮进度保持 4/7。提交状态以 Git 记录为准。
+> 2026-11-04 当前状态：M1 短样本手动链路已通过本机有限现场，P2 首次独立键盘动作修复及退出检查器修复已获接受，范围见[最新有限证据](pinfeather_acceptance_plan.md#m1-manual-chain-20261104)。M2 最小范围已完成，见[收口记录与保留限制](pinfeather_acceptance_plan.md#m2-closeout)。M1 整体、完整 T5、跨应用/性能及首轮交付仍未完成；自动回贴延期，原首轮进度保持 4/7。下一步准备跨应用手动矩阵与 Release 测量，见[收尾顺序第4项](pinfeather_execution_tasks.md#manual-delivery-closeout)。提交状态以 Git 记录为准。
 
 > 当前手动交付沿用[输入、浏览与显式复制契约](pinfeather_explicit_copy_stage.md#manual-m1)，复制后面板保持打开；主窗口 X 在托盘可用时隐藏，否则保留可见入口，明确退出走统一关闭流程，见[M2 设计](pinfeather_m2_design.md)。面板 X/Esc/失焦隐藏。下文带日期的旧版本行为及失败证据保留，不外推到当前候选。
 
@@ -395,7 +395,7 @@ W0 必须先在用户实际配置上做只读探针：浏览器、编辑器、�
 
 已有最小 Tauri/Rust/React 工程、锁文件、契约与 fixture supervisor。E03a 的 F2/F3 已按失败回归修复；本会话自审及新进程重跑为 Rust lib 34 项、worker 集成 37 项、前端 28 项、typecheck 和正常 release 构建通过，未发现 fixture 残留。证据在 archive 的 runs/20261023-e03a-codex-owner-fixes/{execution,review}.md；这不是另一模型的独立 review。rustfmt/clippy 缺组件，未安装；保留检查缺口。此前复审报告保留原失败事实。
 
-首轮仍要求启动默认暂停、一个用户一个宿主、W0 先验 IME 可行性、按包 review 以及真实应用人工验收。监听/SQLite基础收录、搜索/预览及显式复制的本机接受范围见[验收计划6.1–6.4节](pinfeather_acceptance_plan.md#6-真实应用用例映射)；热键/回贴、完整生命周期、启动性能及完整进程树内存仍未验收，其余Windows组合不得宣称已支持。
+首轮仍要求启动默认暂停、一个用户一个宿主、W0 先验 IME 可行性、按包 review 以及真实应用人工验收。监听/SQLite基础收录、搜索/预览及显式复制的早期本机接受范围见[验收计划6.1–6.4节](pinfeather_acceptance_plan.md#6-真实应用用例映射)；M2 最小范围见[收口](pinfeather_acceptance_plan.md#m2-closeout)，当前普通候选与产品保存提交的绑定、M1 短链路、P2 及独立退出工具修复见[最新有限证据](pinfeather_acceptance_plan.md#m1-manual-chain-20261104)。M1 整体、自动回贴、完整生命周期、启动性能及完整进程树内存未验收，其余 Windows 组合不得宣称已支持；原 4/7 不变。下一步为[收尾顺序第4项](pinfeather_execution_tasks.md#manual-delivery-closeout)的离线准备。
 
 E03b 自动部分已实现，见[只读探针说明](pinfeather_w0_probe_guide.md)。该阶段检查为 Rust lib 38、worker 集成 37、诊断 CLI 2 项；普通 release 构建通过。用户本次授权代运行工程壳复验后，无 UIA/只读 UIA 各 3 次相同单次 WM_CLOSE 均观察到进程树退出，UIA 核对真实目录和暂停状态；不等同人工点击或历史滞留根因已关闭。三目标真实候选已由用户确认，外部 IMM 方法无法判定；用户已批准独立 W1/W2 先行、W3 仍阻塞，W0 不标整体通过。
 
