@@ -57,7 +57,7 @@ impl PanelSessions {
 /// Tauri is only the effects adapter; all session decisions above are shared with tests.
 pub struct TauriPanelWindow(pub tauri::AppHandle);
 impl PanelWindow for TauriPanelWindow {
-    fn hide(&self)->Result<(),String>{use tauri::Manager;if let Some(w)=self.0.get_webview_window("quick-panel"){w.hide().map_err(|_|"快捷面板隐藏失败。".into())}else{Ok(())}}
+    fn hide(&self)->Result<(),String>{use tauri::Manager;if let Some(m)=self.0.try_state::<crate::measurement::Measurement>(){if let Some(host)=&m.0{let _=host.panel_hiding();}}if let Some(w)=self.0.get_webview_window("quick-panel"){w.hide().map_err(|_|"快捷面板隐藏失败。".into())}else{Ok(())}}
     fn show(&self)->Result<(),String>{use tauri::Manager;self.0.get_webview_window("quick-panel").ok_or("快捷面板不可用。".to_string())?.show().map_err(|_|"快捷面板显示失败。".into())}
     fn focus(&self)->Result<(),String>{
         use tauri::Manager;
@@ -74,15 +74,35 @@ pub struct PanelHost {
     pub hotkey:Mutex<Option<crate::platform::hotkey::HotkeyOwner>>,
     dispatch_pending:std::sync::atomic::AtomicBool,
 }
+fn measured_hotkey_admission(host:&crate::measurement::MeasureHost,ticks:Vec<u64>,pending:&std::sync::atomic::AtomicBool)->(bool,Option<(String,u64)>){
+    use std::sync::atomic::Ordering;
+    let busy=pending.swap(true,Ordering::AcqRel);let mut accepted=None;
+    for(index,tick)in ticks.into_iter().enumerate(){let reason=if busy{Some("dispatch_busy")}else if index>0{Some("coalesced")}else{None};if let Ok(attempt)=host.hotkey(tick,reason){if reason.is_none(){accepted=Some((attempt,tick));}}}
+    (!busy,accepted)
+}
 impl PanelHost {
     pub fn new(handle:tauri::AppHandle,available:bool)->Self{Self{sessions:PanelSessions::new(available),window:TauriPanelWindow(handle),hotkey:Mutex::new(None),dispatch_pending:std::sync::atomic::AtomicBool::new(false)}}
     pub fn start_hotkey(self:&std::sync::Arc<Self>){
+        use tauri::Manager;
+        if let Some(measurement)=self.window.0.try_state::<crate::measurement::Measurement>(){if measurement.0.is_some(){self.start_measured_hotkey(measurement.inner().clone());return;}}
         use std::sync::{Arc,atomic::Ordering};let weak=Arc::downgrade(self);let report=weak.clone();
         let(owner,result)=crate::platform::hotkey::HotkeyOwner::start(Box::new(crate::platform::hotkey::WindowsHotkey),Arc::new(move||{
             if let Some(panel)=weak.upgrade(){if panel.dispatch_pending.swap(true,Ordering::AcqRel){return;}let target=panel.clone();if panel.window.0.run_on_main_thread(move||{let _=target.sessions.open(&target.window);target.dispatch_pending.store(false,Ordering::Release);}).is_err(){panel.dispatch_pending.store(false,Ordering::Release);panel.sessions.hotkey("failed",Some("快捷键派发失败，可使用主窗口入口。".into()),&panel.window);}}
         }),Arc::new(move|error|{if let Some(panel)=report.upgrade(){panel.sessions.hotkey("failed",Some(error),&panel.window);}}));
         *self.hotkey.lock().unwrap_or_else(|e|e.into_inner())=Some(owner);
         self.sessions.hotkey(if result.is_ok(){"ready"}else{"failed"},result.err(),&self.window);
+    }
+    fn start_measured_hotkey(self:&std::sync::Arc<Self>,measurement:crate::measurement::Measurement){
+        use std::sync::{Arc,atomic::Ordering};let weak=Arc::downgrade(self);let report=weak.clone();let failures=measurement.clone();
+        let(owner,result)=crate::platform::hotkey::HotkeyOwner::start_measured(Box::new(crate::platform::hotkey::WindowsHotkey),Arc::new(move|ticks|{
+            if let Some(panel)=weak.upgrade(){
+                let Some(host)=&measurement.0 else{return;};let(dispatch,accepted)=measured_hotkey_admission(host,ticks,&panel.dispatch_pending);
+                if !dispatch{return;}
+                let target=panel.clone();let m=measurement.clone();
+                if panel.window.0.run_on_main_thread(move||{match target.sessions.open(&target.window){Ok(snapshot)=>{if let(Some(host),Some(session),Some((attempt,tick)))=(&m.0,snapshot.session_id,accepted){if host.panel_open(&attempt,tick,session).is_err(){m.invalidate_window("quick-panel","open_failed");}}},Err(_)=>m.invalidate_window("quick-panel","open_failed")};target.dispatch_pending.store(false,Ordering::Release);}).is_err(){panel.dispatch_pending.store(false,Ordering::Release);measurement.invalidate_window("quick-panel","dispatch_failed");panel.sessions.hotkey("failed",Some("快捷键派发失败，可使用主窗口入口。".into()),&panel.window);}
+            }
+        }),Arc::new(move|error|{failures.fail();if let Some(panel)=report.upgrade(){panel.sessions.hotkey("failed",Some(error),&panel.window);}}));
+        *self.hotkey.lock().unwrap_or_else(|e|e.into_inner())=Some(owner);self.sessions.hotkey(if result.is_ok(){"ready"}else{"failed"},result.err(),&self.window);
     }
     pub fn stop(&self)->ContractResult<()> {
         self.stop_until(std::time::Instant::now()+std::time::Duration::from_secs(3))
@@ -102,6 +122,13 @@ impl State {
 mod tests {
     use super::*;
     use std::sync::atomic::{AtomicUsize,Ordering};
+    #[test]fn measurement_real_dispatch_gate_accounts_for_coalesced_and_pending_messages(){
+        use crate::measurement::*;use std::sync::Arc;struct Clock;impl crate::measurement::Clock for Clock{fn now(&self)->crate::measurement::Result<u64>{Ok(10)}fn frequency(&self)->crate::measurement::Result<u64>{Ok(10)}}
+        #[derive(Clone)]struct Writer(Arc<Mutex<Vec<u8>>>);impl std::io::Write for Writer{fn write(&mut self,b:&[u8])->std::io::Result<usize>{self.0.lock().unwrap().extend_from_slice(b);Ok(b.len())}fn flush(&mut self)->std::io::Result<()>{Ok(())}}
+        let bytes=Arc::new(Mutex::new(Vec::new()));let host=MeasureHost::new(MeasureArgs{run_id:"test".into(),output:std::path::PathBuf::new(),cold:1,frequency:10},Arc::new(Clock),Box::new(Writer(bytes.clone()))).unwrap();let pending=std::sync::atomic::AtomicBool::new(false);
+        let(dispatch,accepted)=measured_hotkey_admission(&host,vec![9,10,10],&pending);assert!(dispatch);assert!(accepted.is_some());let(dispatch,accepted)=measured_hotkey_admission(&host,vec![10,10],&pending);assert!(!dispatch);assert!(accepted.is_none());let events=String::from_utf8(bytes.lock().unwrap().clone()).unwrap().lines().map(|x|serde_json::from_str::<serde_json::Value>(x).unwrap()).collect::<Vec<_>>();assert_eq!(events.iter().filter(|e|e["event"]=="native_hotkey_dequeued").count(),5);assert_eq!(events.iter().filter(|e|e["reason"]=="coalesced").count(),2);assert_eq!(events.iter().filter(|e|e["reason"]=="dispatch_busy").count(),2);
+        host.end().unwrap();pending.store(false,Ordering::SeqCst);let(dispatch,accepted)=measured_hotkey_admission(&host,vec![10],&pending);assert!(dispatch,"closed measurement must retain the ordinary UI dispatch");assert!(accepted.is_none());
+    }
     #[derive(Default)]struct Window {fail:AtomicUsize,shown:AtomicUsize,focused:AtomicUsize}
     impl PanelWindow for Window {
         fn hide(&self)->Result<(),String>{if self.fail.load(Ordering::SeqCst)==1{Err("hide failed".into())}else{Ok(())}}

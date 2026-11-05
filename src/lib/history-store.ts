@@ -2,11 +2,29 @@ import { createStore } from "zustand/vanilla";
 import type { ClipSummary, ListCursor, StatusResult } from "./ipc";
 import { normalizeQuery, parseGetClipTextRequest, parseGetClipTextResult, parseCopyClipTextResult } from "./ipc";
 import { readableError, type DesktopBridge } from "./desktop";
+import type { Identity, Receipt } from "./measurement";
 export interface HistoryState { status: StatusResult | null; summaries: ClipSummary[]; cursor: ListCursor | null; loading: boolean; changing: boolean; error: string | null; hostMissing: boolean; query: string; selectedId: string | null; previewText: string; previewLoading: boolean; previewError: string | null; previewNextOffset: number | null; copyBusy: boolean; copyMessage: string | null; copyAvailable: boolean; }
 const QUERY_DEBOUNCE_MS = 50;
 const MAX_LIST_CALLS = 2;
 const MAX_PREVIEW_CALLS = 2;
 export function createHistoryModel(bridge: DesktopBridge) {
+  const measurement = bridge.measurement;
+  let measuredIdentity: Identity | null = null;
+  let measuredStart: Promise<Identity> | null = null;
+  let measuredSerial: Promise<unknown> = Promise.resolve();
+  let measuredSequence = 0n;
+  let committedReceipt: Receipt | null = null;
+  let submittedReceipt: Receipt | null = null;
+  // Clears synchronously at the initiating event, before debounce/IPC can yield.
+  function invalidateMeasurement() {
+    committedReceipt = null;
+    measuredSequence++;
+    if (measurement && measuredStart) {
+      const started = measuredStart, gen = String(generation), sequence = String(measuredSequence);
+      measuredSerial = measuredSerial.then(async () => measurement.invalidate(await started, gen, sequence));
+      void measuredSerial.catch(() => { committedReceipt = null; });
+    }
+  }
   const store = createStore<HistoryState>(() => ({ status: null, summaries: [], cursor: null, loading: false, changing: false, error: null, hostMissing: !bridge.available, query: "", selectedId: null, previewText: "", previewLoading: false, previewError: null, previewNextOffset: null, copyBusy: false, copyMessage: null, copyAvailable: bridge.available && typeof bridge.copyText === "function" }));
   let active = false, ready = false, lifetime = 0, generation = 0, request = 0;
   let timer: ReturnType<typeof setTimeout> | null = null, wantPage1 = false, statusBusy = false, statusAgain = false;
@@ -88,18 +106,39 @@ export function createHistoryModel(bridge: DesktopBridge) {
     const id = `${cursor ? "more" : "page1"}-${++request}`;
     inflight.push({ token, gen });
     store.setState({ loading: true, error: null });
+    if (!cursor) invalidateMeasurement();
+    const measuredVersion = measuredSequence;
+    const identityPromise = measuredStart;
+    const invalidated = measuredSerial;
     try {
-      const page = await bridge.list(id, cursor, normalized);
+      let receipt: Receipt | null = null;
+      const page = measurement && identityPromise ? await (async () => {
+        try {
+          await invalidated;
+          const identity = await identityPromise;
+          const measured = await measurement.list(identity, String(gen), String(measuredVersion), id, cursor, normalized);
+          receipt = measured.receipt;
+          return measured.result;
+        } catch (error) {
+          // A closed/failed measurement must not disable the ordinary history UI.
+          // No receipt survives this path and it cannot produce a sample.
+          if (["stopped", "expired", "limit", "output", "clock", "stale"].includes(String(error))) return bridge.list(id, cursor, normalized);
+          throw error;
+        }
+      })() : await bridge.list(id, cursor, normalized);
       if (!owns(token, gen)) return;
+      if (measurement && measuredVersion !== measuredSequence) return;
       if (page.request_id !== id || page.normalized_query !== normalized) throw new Error("invalid list correlation");
       if (cursor) {
         const seen = new Set(store.getState().summaries.map(item => item.id));
         store.setState({ summaries: [...store.getState().summaries, ...page.summaries.filter(item => !seen.has(item.id))], cursor: page.next_cursor });
       } else {
+        committedReceipt = receipt;
         store.setState({ summaries: page.summaries, cursor: page.next_cursor });
       }
       syncSelectionWithRows();
     } catch (error) {
+      if (owns(token, gen)) committedReceipt = null;
       if (owns(token, gen)) store.setState({ error: readableError(error) });
     } finally {
       releaseSlot(token, gen);
@@ -153,6 +192,7 @@ export function createHistoryModel(bridge: DesktopBridge) {
         const missedHistory = previous !== null && BigInt(status.revision) >= BigInt(previous.revision) && (status.history.items !== previous.history.items || status.history.payload_bytes !== previous.history.payload_bytes);
         acceptStatus(status);
         if (missedHistory) {
+          invalidateMeasurement();
           clearSelection();
           store.setState({ cursor: null });
           wantPage1 = true;
@@ -160,7 +200,7 @@ export function createHistoryModel(bridge: DesktopBridge) {
         }
       } while (statusAgain && active && token === lifetime);
     } catch (error) {
-      if (active && token === lifetime) store.setState({ error: readableError(error) });
+      if (active && token === lifetime) { invalidateMeasurement(); store.setState({ error: readableError(error) }); }
     } finally {
       statusBusy = false;
       if (active && statusAgain) { statusAgain = false; void refreshStatus(); }
@@ -171,6 +211,7 @@ export function createHistoryModel(bridge: DesktopBridge) {
     clearSelection();
     if (!bridge.available) { store.setState({ query: value }); return; }
     generation += 1;
+    invalidateMeasurement();
     clearTimer();
     wantPage1 = false;
     store.setState({ query: value, summaries: [], cursor: null });
@@ -186,6 +227,7 @@ export function createHistoryModel(bridge: DesktopBridge) {
     if (!active || !bridge.available) return;
     void refreshStatus();
     if (history) {
+      invalidateMeasurement();
       clearSelection();
       store.setState({ cursor: null });
       wantPage1 = true;
@@ -231,6 +273,13 @@ export function createHistoryModel(bridge: DesktopBridge) {
     if (!bridge.available) return () => {};
     active = true;
     const token = ++lifetime;
+    if (measurement) {
+      committedReceipt = null; submittedReceipt = null;
+      measuredStart = measurement.start();
+      const started = measuredStart;
+      measuredSerial = started.then(identity => { if (active && token === lifetime) measuredIdentity = identity; });
+      void measuredSerial.catch(() => { committedReceipt = null; });
+    }
     const disposers: Array<() => void> = [];
     store.setState({ loading: true });
     void (async () => {
@@ -253,6 +302,10 @@ export function createHistoryModel(bridge: DesktopBridge) {
       clearTimer();
       ready = false;
       if (token === lifetime) {
+        committedReceipt = null;
+        const started = measuredStart;
+        measuredStart = null; measuredIdentity = null;
+        if (measurement && started) void started.then(identity => measurement.stop(identity)).catch(() => {});
         active = false;
         lifetime++;
         clearSelection();
@@ -318,5 +371,17 @@ export function createHistoryModel(bridge: DesktopBridge) {
       if (ownsPreview(token, sel, gen)) store.setState({ copyMessage: message });
     }
   }
-  return { store, start, refresh, more, toggle, setEnabled, setQuery, selectClip, retryPreview, morePreview, copyText };
+  function measurementReceipt() { return committedReceipt; }
+  function acknowledgeMeasurement(receipt: Receipt, inputFocused: boolean) {
+    const state = store.getState();
+    if (!measurement || !active || committedReceipt !== receipt || submittedReceipt === receipt || measuredIdentity?.model !== receipt.model || state.loading || state.error || receipt.generation !== String(generation) || receipt.sequence !== String(measuredSequence)) return;
+    submittedReceipt = receipt;
+    const token = lifetime;
+    // No await between the authoritative state check and transport invocation.
+    // Submission is at most once; rejection is never an accepted host ACK.
+    void measurement.ack(receipt, inputFocused).catch(() => {
+      if (active && lifetime === token && committedReceipt === receipt) committedReceipt = null;
+    });
+  }
+  return { store, start, refresh, more, toggle, setEnabled, setQuery, selectClip, retryPreview, morePreview, copyText, measurementReceipt, acknowledgeMeasurement };
 }

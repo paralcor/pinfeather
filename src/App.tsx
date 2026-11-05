@@ -8,6 +8,7 @@ import { useManualPanel } from "./lib/manual-panel-state";
 import { ManualPanelInput } from "./lib/manual-panel-input";
 import { createHistoryModel } from "./lib/history-store";
 import { normalizeQuery, type ClipSummary } from "./lib/ipc";
+import { interactiveInput } from "./lib/measurement";
 
 function HistoryItem({ item, selected, disabled, onSelect }: { item: ClipSummary; selected: boolean; disabled: boolean; onSelect: (id: string) => void }) {
   const date = new Date(item.captured_at_ms);
@@ -44,6 +45,16 @@ export default function App({ bridge = nativeBridge, panel, panelControl = nativ
   const frozen = !!panel && (browsing || completion === "pending" || completion === "ready");
   const actionsAllowed = !closing && (!panel || input.actionsAllowed);
   useEffect(() => { if (panel) searchRef.current?.focus(); }, [panel !== undefined]);
+  useEffect(() => {
+    const receipt = model.measurementReceipt();
+    if (!receipt) return;
+    const check = () => {
+      if (interactiveInput(searchRef.current, listRef.current, !!panel, receipt.content, actionsAllowed)) model.acknowledgeMeasurement(receipt, document.activeElement === searchRef.current);
+    };
+    check();
+    window.addEventListener("focus", check); document.addEventListener("focusin", check); document.addEventListener("visibilitychange", check);
+    return () => { window.removeEventListener("focus", check); document.removeEventListener("focusin", check); document.removeEventListener("visibilitychange", check); };
+  }, [model, view, panel, actionsAllowed]);
   function enterBrowse(id?: string) {
     if (panel && !input.actionsAllowed) return;
     if (view.loading || view.error || view.summaries.length === 0) return;

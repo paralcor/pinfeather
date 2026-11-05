@@ -8,6 +8,7 @@ pub mod host;
 pub mod commands;
 pub mod manual_panel;
 pub mod residency;
+pub mod measurement;
 
 use config::HostArgs;
 
@@ -63,6 +64,7 @@ mod tests {
 
 pub fn run(args: HostArgs) {
     use tauri::{Manager,Emitter};
+    let measurement=match args.measurement.as_ref().map(|m|m.open(&args.data_dir,&measurement::Qpc)).transpose(){Ok(host)=>measurement::Measurement(host.map(std::sync::Arc::new)),Err(error)=>{eprintln!("pinfeather measurement: {error:?}");std::process::exit(1);}};
     let prepared = match config::prepare_data_dir(&args.data_dir) {
         Ok(prepared) => prepared,
         Err(message) => {
@@ -74,8 +76,9 @@ pub fn run(args: HostArgs) {
     let webview_dir = prepared.webview_dir;
 
     tauri::Builder::default()
-        .invoke_handler(tauri::generate_handler![commands::get_status,commands::list_clips,commands::get_clip_text,commands::copy_clip_text,commands::set_capture_enabled,commands::get_manual_panel_state,commands::open_manual_panel,commands::ready_manual_panel,commands::hide_manual_panel,commands::copy_manual_panel_text,commands::get_residency_state,commands::request_exit,commands::retry_exit_saving,commands::get_settings_state,commands::apply_excluded_apps])
+        .invoke_handler(tauri::generate_handler![commands::get_status,commands::list_clips,commands::get_clip_text,commands::copy_clip_text,commands::set_capture_enabled,commands::get_manual_panel_state,commands::open_manual_panel,commands::ready_manual_panel,commands::hide_manual_panel,commands::copy_manual_panel_text,commands::get_residency_state,commands::request_exit,commands::retry_exit_saving,commands::get_settings_state,commands::apply_excluded_apps,commands::measure_start_model,commands::measure_invalidate,commands::measure_stop_model,commands::measure_list_clips,commands::measure_ready])
         .setup(move |app| {
+            app.manage(measurement.clone());
             let handle=app.handle().clone();
             let runtime=std::sync::Arc::new(host::HostRuntime::start(data_dir.clone(),std::sync::Arc::new(move|name,revision|{
                 let _=handle.emit(name,serde_json::json!({"revision":revision.to_string()}));
@@ -92,26 +95,32 @@ pub fn run(args: HostArgs) {
             .title("片羽")
             .inner_size(720.0, 520.0)
             .data_directory(webview_dir.clone())
+            .initialization_script(measurement.script())
             .on_navigation(|url| navigation_allowed(url, cfg!(debug_assertions)))
             .build()?;
             let quick=tauri::WebviewWindowBuilder::new(app,"quick-panel",tauri::WebviewUrl::App("index.html?panel=1".into()))
                 .title("片羽 · 快捷面板").inner_size(620.0,560.0).visible(false).focused(false).data_directory(webview_dir)
+                .initialization_script(measurement.script())
                 .on_navigation(|url|navigation_allowed(url,cfg!(debug_assertions))).build();
             let panel=std::sync::Arc::new(manual_panel::PanelHost::new(app.handle().clone(),quick.is_ok()));
             app.manage(panel.clone());
             if let Ok(quick)=quick {
                 let p=panel.clone();
+                let m=measurement.clone();
                 quick.on_window_event(move|event|match event{
                     tauri::WindowEvent::CloseRequested{api,..}=>{api.prevent_close();p.sessions.dismiss(&p.window);},
                     tauri::WindowEvent::Focused(false)=>{if p.sessions.snapshot().phase=="ready"&&p.window.0.get_webview_window("quick-panel").and_then(|w|w.is_focused().ok())==Some(false){p.sessions.dismiss(&p.window);}},
-                    tauri::WindowEvent::Destroyed=>{let _=p.stop();},
+                    tauri::WindowEvent::Destroyed=>{m.invalidate_window("quick-panel","destroyed");let _=p.stop();},
                     _=>{},
                 });
                 panel.start_hotkey();
             }
             let residency=residency::DesktopResidency::new(app.handle().clone(),runtime,panel);
             app.manage(residency.clone());residency.install_tray();
+            if let Some(host)=&measurement.0{let ready=residency.coordinator.snapshot().tray_available&&residency.effects.panel.sessions.snapshot().hotkey=="ready";let _=host.native_ready(ready,||measurement::native_state(&window));}
+            let m=measurement.clone();
             window.on_window_event(move|event|{
+                if let tauri::WindowEvent::Destroyed=event{m.invalidate_window("main","destroyed");}
                 if let tauri::WindowEvent::CloseRequested{api,..}=event {
                     if residency.coordinator.exited(){return;}
                     api.prevent_close();
@@ -122,9 +131,9 @@ pub fn run(args: HostArgs) {
         })
         .build(tauri::generate_context!())
         .expect("pinfeather: Tauri 运行失败")
-        .run(|handle,event|if let tauri::RunEvent::ExitRequested{api,..}=event{
+        .run(|handle,event|{if let tauri::RunEvent::Exit=event{if let Some(m)=handle.try_state::<measurement::Measurement>(){m.end();}}if let tauri::RunEvent::ExitRequested{api,..}=event{
             if let Some(owner)=handle.try_state::<std::sync::Arc<residency::DesktopResidency>>(){
                 if !owner.coordinator.exited(){api.prevent_exit();let _=owner.coordinator.request_exit(owner.effects.clone());}
             }
-        });
+        }});
 }

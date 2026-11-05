@@ -3,6 +3,7 @@ use std::{sync::{Arc,Mutex,mpsc::{self,SyncSender}},sync::atomic::{AtomicBool,Or
 pub trait HotkeyApi:Send {
     fn register(&mut self)->Result<(),String>;
     fn poll(&mut self)->Result<bool,String>;
+    fn poll_measured(&mut self)->Result<Vec<u64>,String>{if self.poll()?{use crate::measurement::Clock;Ok(vec![crate::measurement::Qpc.now().map_err(|_|"measurement clock failed")?])}else{Ok(Vec::new())}}
     fn unregister(&mut self)->Result<(),String>;
 }
 struct OwnedThread { stop:SyncSender<mpsc::Sender<Result<(),String>>>,thread:JoinHandle<()>,stopping:Arc<AtomicBool> }
@@ -12,7 +13,11 @@ impl HotkeyOwner {
     pub fn start(api:Box<dyn HotkeyApi>,dispatch:Arc<dyn Fn()+Send+Sync>,failure:Arc<dyn Fn(String)+Send+Sync>)->(Self,Result<(),String>) {
         Self::start_with_budget(api,dispatch,failure,Duration::from_secs(3))
     }
-    fn start_with_budget(mut api:Box<dyn HotkeyApi>,dispatch:Arc<dyn Fn()+Send+Sync>,failure:Arc<dyn Fn(String)+Send+Sync>,startup:Duration)->(Self,Result<(),String>) {
+    pub fn start_measured(api:Box<dyn HotkeyApi>,dispatch:Arc<dyn Fn(Vec<u64>)+Send+Sync>,failure:Arc<dyn Fn(String)+Send+Sync>)->(Self,Result<(),String>){Self::start_internal(api,Arc::new(||{}),Some(dispatch),failure,Duration::from_secs(3))}
+    fn start_with_budget(api:Box<dyn HotkeyApi>,dispatch:Arc<dyn Fn()+Send+Sync>,failure:Arc<dyn Fn(String)+Send+Sync>,startup:Duration)->(Self,Result<(),String>) {
+        Self::start_internal(api,dispatch,None,failure,startup)
+    }
+    fn start_internal(mut api:Box<dyn HotkeyApi>,dispatch:Arc<dyn Fn()+Send+Sync>,measured:Option<Arc<dyn Fn(Vec<u64>)+Send+Sync>>,failure:Arc<dyn Fn(String)+Send+Sync>,startup:Duration)->(Self,Result<(),String>) {
         let (stop,rx)=mpsc::sync_channel::<mpsc::Sender<Result<(),String>>>(1);let(tx,ready)=mpsc::sync_channel(1);let stopping=Arc::new(AtomicBool::new(false));let flag=stopping.clone();
         let thread=std::thread::Builder::new().name("manual-panel-hotkey".into()).spawn(move||{
             let registered=api.register();let _=tx.send(registered.clone());if registered.is_err(){return;}
@@ -22,7 +27,7 @@ impl HotkeyOwner {
                     Err(mpsc::RecvTimeoutError::Disconnected)=>{flag.store(true,Ordering::Release);if api.unregister().is_ok(){return;}std::thread::sleep(Duration::from_millis(15));},
                     Err(mpsc::RecvTimeoutError::Timeout)=>{},
                 }
-                if !flag.load(Ordering::Acquire){match api.poll(){Ok(true)=>dispatch(),Err(error)=>{flag.store(true,Ordering::Release);failure(error);},_=>{}}}
+                if !flag.load(Ordering::Acquire){if let Some(callback)=&measured{match api.poll_measured(){Ok(ticks)=>{if !ticks.is_empty(){callback(ticks);}},Err(error)=>{flag.store(true,Ordering::Release);failure(error);}}}else{match api.poll(){Ok(true)=>dispatch(),Err(error)=>{flag.store(true,Ordering::Release);failure(error);},_=>{}}}}
             }
         });
         match thread {Ok(thread)=>{let owner=Self{owned:Some(OwnedThread{stop,thread,stopping}),cleanup_failed:false};let result=ready.recv_timeout(startup).unwrap_or_else(|_|Err("快捷键线程启动未确认。".into()));if result.is_err(){owner.owned.as_ref().unwrap().stopping.store(true,Ordering::Release);}(owner,result)},Err(_)=>(Self{owned:None,cleanup_failed:false},Err("快捷键线程创建失败。".into()))}
@@ -46,14 +51,17 @@ impl HotkeyOwner {
 impl Drop for HotkeyOwner {fn drop(&mut self){if self.stop(Duration::from_millis(100)).is_err(){if let Some(owned)=self.owned.take(){RETAINED.lock().unwrap_or_else(|e|e.into_inner()).push(owned);}}}}
 
 pub struct WindowsHotkey;
+fn dequeue_hotkeys(mut next:impl FnMut()->Option<bool>,mut qpc:impl FnMut()->Result<u64,String>)->Result<Vec<u64>,String>{let mut ticks=Vec::new();for _ in 0..32{match next(){Some(true)=>ticks.push(qpc()?),Some(false)=>{},None=>break}}Ok(ticks)}
 impl HotkeyApi for WindowsHotkey {
     fn register(&mut self)->Result<(),String>{use windows_sys::Win32::UI::Input::KeyboardAndMouse::{RegisterHotKey,MOD_CONTROL,MOD_ALT,MOD_NOREPEAT};if unsafe{RegisterHotKey(std::ptr::null_mut(),1,MOD_CONTROL|MOD_ALT|MOD_NOREPEAT,b'V' as u32)}==0{Err("Ctrl+Alt+V 注册失败，可能已被占用；可使用主窗口入口。".into())}else{Ok(())}}
     fn poll(&mut self)->Result<bool,String>{use windows_sys::Win32::UI::WindowsAndMessaging::{PeekMessageW,MSG,PM_REMOVE,WM_HOTKEY};let mut msg:MSG=unsafe{std::mem::zeroed()};let mut pressed=false;for _ in 0..32{if unsafe{PeekMessageW(&mut msg,std::ptr::null_mut(),0,0,PM_REMOVE)}==0{break;}if msg.message==WM_HOTKEY&&msg.wParam==1{pressed=true;}}Ok(pressed)}
+    fn poll_measured(&mut self)->Result<Vec<u64>,String>{use crate::measurement::Clock;use windows_sys::Win32::UI::WindowsAndMessaging::{PeekMessageW,MSG,PM_REMOVE,WM_HOTKEY};let mut msg:MSG=unsafe{std::mem::zeroed()};dequeue_hotkeys(||{if unsafe{PeekMessageW(&mut msg,std::ptr::null_mut(),0,0,PM_REMOVE)}==0{None}else{Some(msg.message==WM_HOTKEY&&msg.wParam==1)}},||crate::measurement::Qpc.now().map_err(|_|"measurement clock failed".into()))}
     fn unregister(&mut self)->Result<(),String>{use windows_sys::Win32::UI::Input::KeyboardAndMouse::UnregisterHotKey;if unsafe{UnregisterHotKey(std::ptr::null_mut(),1)}==0{Err("快捷键注销失败，保留线程以便重试退出。".into())}else{Ok(())}}
 }
 
 #[cfg(test)]mod tests {
     use super::*;use std::sync::atomic::AtomicUsize;
+    #[test]fn measurement_qpc_taken_at_each_matching_dequeue_before_next_message(){use std::cell::RefCell;let events=RefCell::new(Vec::new());let mut messages=vec![true,false,true].into_iter();let ticks=dequeue_hotkeys(||{events.borrow_mut().push("dequeue");messages.next()},||{events.borrow_mut().push("qpc");Ok(10)}).unwrap();assert_eq!(ticks,vec![10,10]);assert_eq!(*events.borrow(),vec!["dequeue","qpc","dequeue","dequeue","qpc","dequeue"]);let mut reads=0;assert_eq!(dequeue_hotkeys(||{reads+=1;Some(true)},||Ok(10)).unwrap().len(),32);assert_eq!(reads,32);assert!(dequeue_hotkeys(||Some(true),||Err("clock failed".into())).is_err());}
     struct Fake {register_fail:bool,unregister_fail:Arc<AtomicBool>,registered:Arc<AtomicBool>,polls:Arc<AtomicUsize>}
     impl HotkeyApi for Fake {
         fn register(&mut self)->Result<(),String>{if self.register_fail{return Err("conflict".into());}self.registered.store(true,Ordering::SeqCst);Ok(())}

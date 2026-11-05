@@ -84,8 +84,8 @@ impl ResidencyEffects for TauriEffects {
         tray.rect().map(|rect|rect.is_some()).map_err(|_|"托盘状态查询失败，请使用主窗口处理。".into())
     }
     fn show_main(&self)->Result<(),String>{let w=self.handle.get_webview_window("main").ok_or("主窗口不可用。")?;w.show().and_then(|_|w.set_focus()).map_err(|_|"主窗口显示失败，请保留现有入口并重试退出。".into())}
-    fn hide_main(&self)->Result<(),String>{self.handle.get_webview_window("main").ok_or("主窗口不可用。")?.hide().map_err(|_|"主窗口隐藏失败，窗口将保留。".into())}
-    fn seal(&self,deadline:Instant){self.panel.sessions.seal();self.runtime.begin_shutdown(deadline);}
+    fn hide_main(&self)->Result<(),String>{if let Some(m)=self.handle.try_state::<crate::measurement::Measurement>(){m.invalidate_window("main","hidden");}self.handle.get_webview_window("main").ok_or("主窗口不可用。")?.hide().map_err(|_|"主窗口隐藏失败，窗口将保留。".into())}
+    fn seal(&self,deadline:Instant){if let Some(m)=self.handle.try_state::<crate::measurement::Measurement>(){m.invalidate_window("main","stopping");m.invalidate_window("quick-panel","stopping");}self.panel.sessions.seal();self.runtime.begin_shutdown(deadline);}
     fn cleanup(&self,deadline:Instant)->Result<(),CleanupError>{
         cleanup_owners(deadline,|until|self.panel.stop_until(until),|until|self.runtime.shutdown_until(until))
     }

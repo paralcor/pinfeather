@@ -102,19 +102,27 @@ pub enum LaunchMode {
 pub struct HostArgs {
     pub data_dir: PathBuf,
     pub start_paused: bool,
+    pub measurement: Option<crate::measurement::MeasureArgs>,
 }
 
 pub fn parse_args<I: IntoIterator<Item = String>>(args: I) -> Result<LaunchMode, String> {
     let args: Vec<String> = args.into_iter().collect();
     if args.iter().any(|arg| arg == WORKER_MODE_FLAG) {
+        if args.iter().any(|arg| arg.starts_with("--measure-")) { return Err("measurement parameters are not allowed in worker mode".into()); }
         return Ok(LaunchMode::Worker);
     }
 
     let mut data_dir: Option<PathBuf> = None;
     let mut start_paused = false;
+    let mut measurement = std::collections::HashMap::<String,String>::new();
     let mut index = 0;
     while index < args.len() {
         match args[index].as_str() {
+            name @ ("--measure-run-id"|"--measure-output"|"--measure-cold-start-qpc"|"--measure-qpc-frequency") => {
+                let value=args.get(index+1).ok_or("incomplete measurement parameters")?;
+                if measurement.insert(name.into(),value.clone()).is_some(){return Err("duplicate measurement parameter".into());}
+                index+=2;
+            }
             "--data-dir" => {
                 let value = args
                     .get(index + 1)
@@ -135,9 +143,14 @@ pub fn parse_args<I: IntoIterator<Item = String>>(args: I) -> Result<LaunchMode,
 
     let data_dir =
         data_dir.ok_or_else(|| String::from("缺少 --data-dir <绝对路径>；本程序不使用默认生产数据目录"))?;
+    let measurement=if measurement.is_empty(){None}else{
+        if measurement.len()!=4||!start_paused{return Err("measurement requires all four parameters and explicit start-paused".into());}
+        Some(crate::measurement::MeasureArgs::parse(&measurement["--measure-run-id"],&measurement["--measure-output"],&measurement["--measure-cold-start-qpc"],&measurement["--measure-qpc-frequency"]).map_err(|_|"invalid measurement parameters")?)
+    };
     Ok(LaunchMode::Host(HostArgs {
         data_dir,
         start_paused,
+        measurement,
     }))
 }
 

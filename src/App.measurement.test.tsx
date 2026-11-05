@@ -1,0 +1,82 @@
+// @vitest-environment jsdom
+import { act, cleanup, render, screen, waitFor } from "@testing-library/react";
+import { afterEach, beforeEach, expect, it, vi } from "vitest";
+import ManualPanel from "./ManualPanel";
+import App from "./App";
+import statusFixture from "../tests/fixtures/contracts/response_dtos.json";
+const mocks = vi.hoisted(() => ({ invoke: vi.fn(), listen: vi.fn() }));
+vi.mock("@tauri-apps/api/core", () => ({ invoke: mocks.invoke, isTauri: () => true }));
+vi.mock("@tauri-apps/api/event", () => ({ listen: mocks.listen }));
+const identity = { schema: 1, run_id: "test", attempt: "1", window: "2", session: "a".repeat(32), model: "3" };
+let finish: (value: unknown) => void;
+let currentIdentity = identity as { schema: number; run_id: string; attempt: string; window: string; session: string | null; model: string };
+beforeEach(() => {
+  currentIdentity = identity;
+  Object.defineProperty(globalThis, "__PINFEATHER_MEASUREMENT__", { configurable: true, value: { schema: 1, enabled: true } });
+  vi.spyOn(document, "hasFocus").mockReturnValue(true);
+  vi.spyOn(HTMLElement.prototype, "getBoundingClientRect").mockReturnValue({ width: 100, height: 20 } as DOMRect);
+  mocks.invoke.mockReset(); mocks.listen.mockReset().mockResolvedValue(() => {});
+  mocks.invoke.mockImplementation(async (name: string, args?: { request: Record<string, unknown> }) => {
+    if (name === "get_manual_panel_state" || name === "ready_manual_panel") return { revision: "1", session_id: identity.session, phase: "ready", hotkey: "ready", error: null };
+    if (name === "get_status") return statusFixture.status_cases.find(item => item.id === "st_ok")!.value;
+    if (name === "get_residency_state") return { revision: "1", phase: "running", tray_available: true, error: null };
+    if (name === "measure_start_model") return currentIdentity;
+    if (name === "measure_list_clips" || name === "list_clips") return new Promise(resolve => { finish = value => resolve(name === "measure_list_clips" ? { result: value, receipt: { ...currentIdentity, generation: args!.request.generation, sequence: args!.request.sequence, receipt: "4", content: (value as { summaries: unknown[] }).summaries.length ? "nonempty" : "empty" } } : value); });
+    if (name === "measure_invalidate" || name === "measure_stop_model" || name === "measure_ready") return null;
+    throw new Error(`unexpected transport ${name} ${Object.keys(args ?? {})}`);
+  });
+});
+it("main reports real empty commit without moving the search cursor, and unmount stops the model", async () => {
+  currentIdentity = { ...identity, session: null };
+  const mounted = render(<App />);
+  const editor = await screen.findByLabelText("搜索历史正文");
+  await waitFor(() => expect(mocks.invoke.mock.calls.some(call => call[0] === "measure_list_clips")).toBe(true));
+  expect(document.activeElement).not.toBe(editor);
+  const request = mocks.invoke.mock.calls.find(call => call[0] === "measure_list_clips")![1].request.query_request;
+  await act(async () => finish({ request_id: request.request_id, normalized_query: "", summaries: [], next_cursor: null }));
+  await waitFor(() => expect(mocks.invoke.mock.calls.filter(call => call[0] === "measure_ready")).toHaveLength(1));
+  const ack = mocks.invoke.mock.calls.find(call => call[0] === "measure_ready")![1].request;
+  expect(ack.content).toBe("empty"); expect(ack.input_focused).toBe(false); expect(document.activeElement).not.toBe(editor);
+  mounted.unmount(); await waitFor(() => expect(mocks.invoke.mock.calls.filter(call => call[0] === "measure_stop_model")).toHaveLength(1));
+});
+it("unmounted delayed result never acknowledges the destroyed React tree", async () => {
+  const mounted = render(<ManualPanel />);
+  await screen.findByLabelText("搜索历史正文");
+  await waitFor(() => expect(mocks.invoke.mock.calls.some(call => call[0] === "measure_list_clips")).toBe(true));
+  const request = mocks.invoke.mock.calls.find(call => call[0] === "measure_list_clips")![1].request.query_request;
+  mounted.unmount();
+  await act(async () => finish({ request_id: request.request_id, normalized_query: "", summaries: [], next_cursor: null }));
+  expect(mocks.invoke.mock.calls.filter(call => call[0] === "measure_ready")).toHaveLength(0);
+});
+afterEach(() => { cleanup(); vi.restoreAllMocks(); delete (globalThis as Record<string, unknown>).__PINFEATHER_MEASUREMENT__; });
+it("keeps presentation ready before results, then ACKs only the real React commit", async () => {
+  render(<ManualPanel />);
+  await screen.findByLabelText("搜索历史正文");
+  await waitFor(() => expect(typeof finish).toBe("function"));
+  expect(mocks.invoke.mock.calls.filter(call => call[0] === "ready_manual_panel")).toHaveLength(1);
+  expect(mocks.invoke.mock.calls.filter(call => call[0] === "measure_ready")).toHaveLength(0);
+  const call = mocks.invoke.mock.calls.find(call => call[0] === "measure_list_clips" || call[0] === "list_clips")!;
+  const request = call[1].request.query_request ?? call[1].request;
+  await act(async () => finish({ request_id: request.request_id, normalized_query: "", summaries: [{ id: "1", captured_at_ms: 1, kind: "text", preview: "actual committed row", format_names: ["CF_UNICODETEXT"], omitted_format_count: 0, payload_bytes: 10, source_process: null, source_confidence: "unknown" }], next_cursor: null }));
+  await screen.findByText("actual committed row");
+  await waitFor(() => expect(mocks.invoke.mock.calls.filter(call => call[0] === "measure_ready")).toHaveLength(1));
+});
+it.each(["not_interactive", "uncertain transport"])("does not retry a rejected %s submission through real App/model/native adapter", async reason => {
+  currentIdentity = { ...identity, session: null };
+  const original = mocks.invoke.getMockImplementation()!;
+  let reject!: (error: unknown) => void;
+  mocks.invoke.mockImplementation((name: string, args?: { request: Record<string, unknown> }) => name === "measure_ready" ? new Promise((_, fail) => { reject = fail; }) : original(name, args));
+  const mounted = render(<App />); await screen.findByLabelText("搜索历史正文");
+  await waitFor(() => expect(mocks.invoke.mock.calls.some(call => call[0] === "measure_list_clips")).toBe(true));
+  const request = mocks.invoke.mock.calls.find(call => call[0] === "measure_list_clips")![1].request.query_request;
+  await act(async () => finish({ request_id: request.request_id, normalized_query: "", summaries: [], next_cursor: null }));
+  await waitFor(() => expect(mocks.invoke.mock.calls.filter(call => call[0] === "measure_ready")).toHaveLength(1));
+  await act(async () => { window.dispatchEvent(new Event("focus")); document.dispatchEvent(new Event("visibilitychange")); });
+  expect(mocks.invoke.mock.calls.filter(call => call[0] === "measure_ready")).toHaveLength(1);
+  const alertsBefore = screen.queryAllByRole("alert").map(node => node.textContent);
+  await act(async () => reject(reason));
+  await act(async () => { window.dispatchEvent(new Event("focus")); document.dispatchEvent(new Event("focusin")); document.dispatchEvent(new Event("visibilitychange")); });
+  expect(mocks.invoke.mock.calls.filter(call => call[0] === "measure_ready")).toHaveLength(1);
+  expect(mocks.invoke.mock.calls.filter(call => call[0] === "measure_start_model")).toHaveLength(1);
+  expect(screen.queryAllByRole("alert").map(node => node.textContent)).toEqual(alertsBefore); mounted.unmount();
+});

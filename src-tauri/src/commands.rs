@@ -17,6 +17,29 @@ pub fn validate_panel_caller(label:&str,url:&tauri::Url)->ContractResult<()>{val
 fn authorize_panel(window:&tauri::WebviewWindow)->ContractResult<()>{validate_panel_caller(window.label(),&window.url().map_err(|_|ContractError::new(ErrorCode::PermissionUnknown,"caller is not allowed"))?)}
 fn join_failed()->ContractError{ContractError::new(ErrorCode::CleanupFailed,"runtime request failed")}
 
+fn measurement_caller(window:&tauri::WebviewWindow)->crate::measurement::Result<()> {authorize(window).map_err(|_|crate::measurement::MeasureError::WrongWindow)}
+fn measurement_request<T:serde::de::DeserializeOwned>(value:serde_json::Value)->crate::measurement::Result<T>{serde_json::from_value(value).map_err(|_|crate::measurement::MeasureError::InvalidContract)}
+#[tauri::command]
+pub fn measure_start_model(window:tauri::WebviewWindow,measurement:tauri::State<'_,crate::measurement::Measurement>,request:serde_json::Value)->crate::measurement::Result<crate::measurement::Identity>{
+    measurement_caller(&window)?;let request:crate::measurement::StartRequest=measurement_request(request)?;if request.schema!=1{return Err(crate::measurement::MeasureError::InvalidContract);}
+    let host=measurement.enabled()?;
+    if window.label()=="quick-panel"{use tauri::Manager;let panel=window.try_state::<Arc<crate::manual_panel::PanelHost>>().ok_or(crate::measurement::MeasureError::Stale)?;let snapshot=panel.sessions.snapshot();let session=snapshot.session_id.ok_or(crate::measurement::MeasureError::Stale)?;panel.sessions.admit(&session,||host.start_model(window.label())).map_err(|_|crate::measurement::MeasureError::Stale)?}else{host.start_model(window.label())}
+}
+#[tauri::command]
+pub fn measure_invalidate(window:tauri::WebviewWindow,measurement:tauri::State<'_,crate::measurement::Measurement>,request:serde_json::Value)->crate::measurement::Result<()>{measurement_caller(&window)?;measurement.enabled()?.invalidate(window.label(),&measurement_request(request)?)}
+#[tauri::command]
+pub fn measure_stop_model(window:tauri::WebviewWindow,measurement:tauri::State<'_,crate::measurement::Measurement>,request:serde_json::Value)->crate::measurement::Result<()>{measurement_caller(&window)?;measurement.enabled()?.stop_model(window.label(),&measurement_request(request)?)}
+#[tauri::command]
+pub async fn measure_list_clips(window:tauri::WebviewWindow,measurement:tauri::State<'_,crate::measurement::Measurement>,runtime:tauri::State<'_,Arc<HostRuntime>>,request:serde_json::Value)->crate::measurement::Result<crate::measurement::MeasuredPage>{
+    measurement_caller(&window)?;let host=measurement.enabled()?.clone();let label=window.label().to_string();let request=measurement_request(request)?;let runtime=runtime.inner().clone();
+    tauri::async_runtime::spawn_blocking(move||host.list(&label,request,&runtime)).await.map_err(|_|crate::measurement::MeasureError::Stopped)?
+}
+#[tauri::command]
+pub fn measure_ready(window:tauri::WebviewWindow,measurement:tauri::State<'_,crate::measurement::Measurement>,request:serde_json::Value)->crate::measurement::Result<()>{
+    measurement_caller(&window)?;let request:crate::measurement::ReadyRequest=measurement_request(request)?;let receipt=request.receipt();let host=measurement.enabled()?;
+    if window.label()=="quick-panel"{use tauri::Manager;let panel=window.try_state::<Arc<crate::manual_panel::PanelHost>>().ok_or(crate::measurement::MeasureError::Stale)?;let session=receipt.session.as_deref().ok_or(crate::measurement::MeasureError::Stale)?;panel.sessions.admit(session,||host.ack(window.label(),&receipt,request.input_focused,||crate::measurement::native_state(&window))).map_err(|_|crate::measurement::MeasureError::Stale)?}else{host.ack(window.label(),&receipt,request.input_focused,||crate::measurement::native_state(&window))}
+}
+
 #[tauri::command]
 pub fn get_settings_state(window:tauri::WebviewWindow,runtime:tauri::State<'_,Arc<HostRuntime>>)->ContractResult<SettingsSnapshot>{authorize(&window)?;Ok(runtime.settings())}
 fn settings_request(label:&str,url:&tauri::Url,request:&serde_json::Value)->ContractResult<Vec<String>>{validate_main_caller(label,url)?;parse_set_excluded_apps_request(request)}

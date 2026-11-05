@@ -6,6 +6,7 @@ import { parseManualPanelSnapshot, parseManualPanelSessionRequest, parseManualPa
 import { parseCopyClipTextRequest, parseCopyClipTextResult, type CopyClipTextResult } from "./ipc";
 import { parseStatusResult, parseListClipsRequest, parseListClipsResult, parseGetClipTextRequest, parseGetClipTextResult, parseRevisionEvent, type StatusResult, type ListClipsResult, type ListCursor, type GetClipTextResult, type ContractResult } from "./ipc";
 import { parseSetExcludedAppsRequest } from "./ipc";
+import { measurementEnabled, nativeMeasurement, type MeasurementTransport } from "./measurement";
 
 function settingsSnapshot(value: unknown) { const state = parseSettingsSnapshot(value); if (!state) throw new Error("invalid settings state"); return state; }
 export const nativeSettingsControl: SettingsControl = {
@@ -17,6 +18,7 @@ export const nativeSettingsControl: SettingsControl = {
 
 export interface DesktopBridge {
   available: boolean;
+  measurement?: MeasurementTransport;
   status(): Promise<StatusResult>;
   list(requestId: string, cursor: ListCursor | null, query?: string): Promise<ListClipsResult>;
   getText(requestId: string, clipId: string, offset: number): Promise<GetClipTextResult>;
@@ -72,6 +74,7 @@ function checked<T>(result: ContractResult<T>): T {
 }
 export const nativeBridge: DesktopBridge = {
   available: isTauri(),
+  get measurement() { return isTauri() && measurementEnabled() ? nativeMeasurement : undefined; },
   async status() { return checked(parseStatusResult(await invoke("get_status"))); },
   async list(requestId, cursor, query = "") {
     const request = checked(parseListClipsRequest({ request_id: requestId, query, limit: 50, cursor }));

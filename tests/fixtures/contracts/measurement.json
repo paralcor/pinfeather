@@ -1,0 +1,10 @@
+{
+  "identity": {"schema":1,"run_id":"fixture","attempt":"1","window":"2","session":null,"model":"3"},
+  "receipt": {"schema":1,"run_id":"fixture","attempt":"1","window":"2","session":null,"model":"3","generation":"0","sequence":"1","receipt":"4","content":"nonempty"},
+  "invalid_overrides": [
+    {"schema":2}, {"schema":"1"}, {"run_id":""}, {"run_id":"private query"},
+    {"attempt":"0"}, {"window":2}, {"model":"03"}, {"session":"forged"},
+    {"generation":"01"}, {"generation":"18446744073709551616"}, {"sequence":"0"},
+    {"receipt":4}, {"content":"loaded"}, {"query":"private"}
+  ]
+}
