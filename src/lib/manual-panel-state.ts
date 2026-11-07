@@ -7,7 +7,7 @@ export function useManualPanel(control: ManualPanelControl, enabled = true) {
   const [error, setError] = useState<string | null>(null);
   useEffect(() => {
     let active = true; let off: (() => void) | undefined;
-    const accept = (next: ManualPanelSnapshot) => { if (active) setSnapshot(old => !old || BigInt(next.revision) >= BigInt(old.revision) ? next : old); };
+    const accept = (next: ManualPanelSnapshot) => { if (active) { setSnapshot(old => !old || BigInt(next.revision) >= BigInt(old.revision) ? next : old); setError(old => old === "无法读取快捷面板状态，请重试打开。" ? null : old); } };
     if (enabled && control.available) void (async () => { try { const unsubscribe = await control.subscribe(accept); if (!active) { unsubscribe(); return; } off = unsubscribe; accept(await control.snapshot()); } catch { if (active) setError("无法读取快捷面板状态，请重试打开。"); } })();
     return () => { active = false; off?.(); };
   }, [control, enabled]);

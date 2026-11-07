@@ -363,6 +363,19 @@ function controller() {
   return { control, histories, unsubscribe, emit(next: ManualPanelSnapshot) { current = next; listener?.(next); } };
 }
 describe("manual panel sessions", () => {
+  it("recovers from an initial snapshot failure when a new session arrives", async () => {
+    const f = controller(); vi.mocked(f.control.snapshot).mockRejectedValueOnce(new Error("read failed"));
+    render(<ManualPanel control={f.control} />); await screen.findByText("无法读取快捷面板状态，请重试打开。");
+    act(() => f.emit({ revision: "2", session_id: b, phase: "waiting", hotkey: "ready", error: null }));
+    await screen.findByText("摘要1"); expect(screen.queryByText("无法读取快捷面板状态，请重试打开。")).toBeNull(); expect(f.control.ready).toHaveBeenCalledWith(b);
+  });
+  it("keeps an open failure visible in main when a snapshot arrives", async () => {
+    const f = controller(); vi.mocked(f.control.open).mockRejectedValueOnce(new Error("open failed"));
+    const h = fixture(); render(<App bridge={h.bridge} panelControl={f.control} />); await screen.findByText("摘要1");
+    fireEvent.click(screen.getByRole("button", { name: "打开快捷面板" })); await screen.findByText("快捷面板打开失败，主窗口仍可使用。");
+    act(() => f.emit({ revision: "2", session_id: b, phase: "waiting", hotkey: "ready", error: null }));
+    expect(screen.queryByText("快捷面板打开失败，主窗口仍可使用。")).toBeTruthy();
+  });
   it.each([false, true])("replaces IME acknowledgement (end observed: %s), rejects old controls and late query results", async ended => {
     const f = controller(); render(<ManualPanel control={f.control} />); await screen.findByText("摘要1");
     const oldSearch = screen.getByLabelText("搜索历史正文");
