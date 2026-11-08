@@ -1,5 +1,7 @@
 # M1 本地检查点：IME 调查与工具审阅（2026-11-08）
 
+> 后续状态见[诊断收敛与有限交付来源检查点](pinfeather_m1_checkpoint_20261108_delivery_reconciliation.md)；本文保留提交时的历史状态。
+
 本记录承接[热测量与进程归属检查点](pinfeather_m1_checkpoint_20261107_process_attribution.md)。当前 IME 完成输入仍受阻，产品交付及 M1 整体验收未完成。工具的离线测试通过不代表现场执行资格。
 
 ## 当前状态
