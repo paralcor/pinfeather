@@ -5,7 +5,7 @@ import { ExclusionSettings } from "./ExclusionSettings";
 import type { SettingsControl } from "./lib/settings";
 import { useResidency, type ResidencyControl } from "./lib/residency";
 import { useManualPanel } from "./lib/manual-panel-state";
-import { ManualPanelInput } from "./lib/manual-panel-input";
+import { ManualPanelInput, isImeKey, type PanelAction, type PanelIntent } from "./lib/manual-panel-input";
 import { createHistoryModel } from "./lib/history-store";
 import { normalizeQuery, type ClipSummary } from "./lib/ipc";
 import { interactiveInput } from "./lib/measurement";
@@ -36,15 +36,18 @@ export default function App({ bridge = nativeBridge, panel, panelControl = nativ
   const [settingsBlocked, setSettingsBlocked] = useState(settingsControl.available);
   const closing = residency.pending || (!!residency.snapshot && residency.snapshot.phase !== "running");
   const input = useMemo(() => new ManualPanelInput(), []);
-  const [completion, setCompletion] = useState(input.completion);
   const [mode, setMode] = useState<"search" | "browse">("search");
   const searchRef = useRef<HTMLInputElement>(null);
   const listRef = useRef<HTMLOListElement>(null);
-  const inputStatusRef = useRef<HTMLParagraphElement>(null);
   const browsing = !!panel && mode === "browse";
-  const frozen = !!panel && (browsing || completion === "pending" || completion === "ready");
-  const actionsAllowed = !closing && (!panel || input.actionsAllowed);
+  const actionsAllowed = !closing;
   useEffect(() => { if (panel) searchRef.current?.focus(); }, [panel !== undefined]);
+  useEffect(() => {
+    if (!panel) return;
+    const cancel = () => input.invalidate();
+    window.addEventListener("blur", cancel);
+    return () => { window.removeEventListener("blur", cancel); input.invalidate(); };
+  }, [input, panel !== undefined]);
   useEffect(() => {
     const receipt = model.measurementReceipt();
     if (!receipt) return;
@@ -56,45 +59,50 @@ export default function App({ bridge = nativeBridge, panel, panelControl = nativ
     return () => { window.removeEventListener("focus", check); document.removeEventListener("focusin", check); document.removeEventListener("visibilitychange", check); };
   }, [model, view, panel, actionsAllowed]);
   function enterBrowse(id?: string) {
-    if (panel && !input.actionsAllowed) return;
-    if (view.loading || view.error || view.summaries.length === 0) return;
-    model.selectClip(id ?? view.selectedId ?? view.summaries[0].id);
+    if (closing) return;
+    const state = model.store.getState();
+    if (state.loading || state.error || state.summaries.length === 0) return;
+    const selected = id ?? state.selectedId ?? state.summaries[0].id;
+    if (!state.summaries.some(item => item.id === selected)) return;
+    input.invalidate();
+    model.selectClip(selected);
     setMode("browse");
     listRef.current?.focus();
   }
   function returnToSearch() {
-    input.resumeEditing();
-    setCompletion(input.completion);
+    input.invalidate();
     setMode("search");
     model.selectClip(null);
     searchRef.current?.focus();
   }
-  function updateQuery(value: string, fromEditor = false) {
-    if (panel && input.completion === "pending" && fromEditor) { model.setQuery(value); return; }
-    if (panel && completion !== "ordinary" && frozen) return;
-    if (panel && (browsing || input.completion === "ordinary")) returnToSearch();
+  function updateQuery(value: string) {
+    if (closing || value === model.store.getState().query) return;
+    input.invalidate();
+    if (panel) setMode("search");
     model.setQuery(value);
   }
-  function observeInput() {
-    setCompletion(input.completion);
-    if (input.completion === "editing") {
-      setMode("search");
-      if (model.store.getState().selectedId !== null) model.selectClip(null);
-    }
+  function newInput() {
+    input.invalidate(); setMode("search");
+    if (model.store.getState().selectedId !== null) model.selectClip(null);
   }
   function compositionQuery(target: EventTarget) {
     const editor = searchRef.current;
     if (!editor || target !== editor) return undefined;
     return { value: editor.value, start: editor.selectionStart ?? editor.value.length, end: editor.selectionEnd ?? editor.value.length };
   }
-  function finishInput(action: "complete" | "edit") {
-    if (action === "edit") { returnToSearch(); return; }
-    input.acknowledge();
-    setCompletion(input.completion);
-    inputStatusRef.current?.focus();
+  function intent(action: PanelAction | null, target: EventTarget): PanelIntent | null {
+    if (!action || closing) return null;
+    const state = model.store.getState();
+    if (action === "copy" && (!browsing || state.loading || state.error || state.copyBusy || !state.summaries.some(item => item.id === state.selectedId && item.format_names.includes("CF_UNICODETEXT")) || !state.status || state.status.state === "stopping" || state.status.services.storage !== "ready")) return null;
+    if (action === "hide" && input.imeSeen && !browsing) return null;
+    return { action, target, context: model.copyIdentity() };
   }
-  function hidePanel() { if (input.actionsAllowed) panel?.hide(); }
-  function copyText() { if (actionsAllowed && (!panel || (input.actionsAllowed && mode === "browse"))) void model.copyText(); }
+  function control(target: EventTarget) {
+    const element = (target as HTMLElement).closest<HTMLElement>("button");
+    return element?.dataset.copyAction === "true" ? { action: "copy" as const, target: element } : element?.dataset.hideAction === "true" ? { action: "hide" as const, target: element } : null;
+  }
+  function perform(action: PanelAction) { if (action === "copy") void model.copyText(); else panel?.hide(); }
+  function copyText() { if (actionsAllowed && !panel) void model.copyText(); }
   const status = view.status;
   const normalizedQuery = normalizeQuery(view.query);
   const searching = normalizedQuery.ok && normalizedQuery.value.length > 0;
@@ -102,54 +110,52 @@ export default function App({ bridge = nativeBridge, panel, panelControl = nativ
   const retry = status?.services.storage === "failed" && status.queue.items > 0;
   const copyHasText = view.summaries.find(item => item.id === view.selectedId)?.format_names.includes("CF_UNICODETEXT") ?? false;
   return (
-    <main className="shell history-shell" onCompositionStartCapture={event => { if (panel) { input.compositionStart(compositionQuery(event.target)); observeInput(); } }} onCompositionUpdateCapture={event => { if (panel) { input.compositionUpdate(compositionQuery(event.target)); observeInput(); } }} onCompositionEndCapture={event => { if (panel) { const editor = searchRef.current; const query = input.compositionEnd(event.target === editor ? event.data : "", event.target === editor ? editor?.value : undefined); if (query !== null) model.setQuery(query); observeInput(); } }} onKeyUpCapture={event => {
+    <main className="shell history-shell" onCompositionStartCapture={event => { if (panel) { input.compositionStart(compositionQuery(event.target)); newInput(); } }} onCompositionUpdateCapture={event => { if (panel) { input.compositionUpdate(compositionQuery(event.target)); newInput(); } }} onCompositionEndCapture={event => { if (panel) { const editor = searchRef.current; const query = input.compositionEnd(event.target === editor ? event.data : "", event.target === editor ? editor?.value : undefined); if (query !== null) updateQuery(query); } }} onKeyUpCapture={event => {
       if (!panel) return;
-      const key = { key: event.key, code: event.code, isComposing: event.nativeEvent.isComposing };
-      input.keyUp(key);
-      const action = input.inputKeyUp(key);
-      if (action) { event.preventDefault(); event.stopPropagation(); finishInput(action); }
+      const target = event.target as HTMLElement, ctrl = control(target);
+      const action = ctrl?.action ?? (browsing && target.closest(".history-list") ? event.key === "Enter" ? "copy" : event.key === "Escape" ? "hide" : null : null);
+      const accepted = input.keyUp(event.nativeEvent, intent(action, ctrl?.target ?? target));
+      if (action) { event.preventDefault(); event.stopPropagation(); }
+      if (accepted) perform(accepted);
     }} onKeyDownCapture={event => {
       if (!panel) return;
-      const key = event.key;
-      const blocked = input.blocks({ key, code: event.code, keyCode: event.keyCode, isComposing: event.nativeEvent.isComposing, repeat: event.repeat }, compositionQuery(event.target));
-      observeInput();
+      const key = event.key, ime = isImeKey(event.nativeEvent);
       const target = event.target as HTMLElement;
-      const action = target.closest<HTMLElement>("[data-input-action]")?.dataset.inputAction;
-      if ((action === "complete" || action === "edit") && (key === "Enter" || key === " ")) {
-        input.inputKeyDown(action, { key, code: event.code, keyCode: event.keyCode, isComposing: event.nativeEvent.isComposing, repeat: event.repeat });
+      if (ime) newInput();
+      const ctrl = control(target);
+      const action = ctrl?.action ?? (browsing && target.closest(".history-list") ? key === "Enter" ? "copy" : key === "Escape" ? "hide" : null : null);
+      input.keyDown(event.nativeEvent, intent(action, ctrl?.target ?? target), compositionQuery(event.target));
+      if (action && (key === "Enter" || key === " " || key === "Escape")) {
         event.preventDefault(); event.stopPropagation(); return;
       }
-      if (!["Enter", "Escape", "ArrowUp", "ArrowDown", " ", "Process"].includes(key) && event.keyCode !== 229 && !event.nativeEvent.isComposing) return;
-      if (blocked || !input.actionsAllowed) { if (target.closest("button") || (event.repeat && target.id !== "history-search")) event.preventDefault(); event.stopPropagation(); return; }
-      if (browsing && key === "Escape") { event.preventDefault(); event.stopPropagation(); hidePanel(); return; }
       if (target.id === "history-search") {
-        if (key === "Enter") event.preventDefault();
+        if (key === "Enter" && !ime) event.preventDefault();
         return;
       }
-      if (browsing && key === "Enter" && (target.classList.contains("history-list") || target.dataset.copyAction === "true")) { event.preventDefault(); event.stopPropagation(); copyText(); }
+      if (ime || event.repeat || closing) { if (target.closest("button")) event.preventDefault(); event.stopPropagation(); return; }
       if (browsing && (key === "ArrowUp" || key === "ArrowDown") && target.closest(".history-list") !== null) {
+        input.invalidate();
         event.preventDefault(); const index = view.summaries.findIndex(item => item.id === view.selectedId);
         const next = index < 0 ? (key === "ArrowDown" ? 0 : view.summaries.length - 1) : Math.max(0, Math.min(view.summaries.length - 1, index + (key === "ArrowDown" ? 1 : -1)));
         if (view.summaries[next]) model.selectClip(view.summaries[next].id);
       }
     }} onPointerDownCapture={event => {
       if (!panel) return;
-      const action = (event.target as HTMLElement).closest<HTMLElement>("[data-input-action]")?.dataset.inputAction;
-      input.pointerDown(action === "complete" || action === "edit" ? action : null);
-    }} onClickCapture={event => {
+      const ctrl = control(event.target);
+      input.pointerDown(event.nativeEvent, ctrl ? intent(ctrl.action, ctrl.target) : null);
+    }} onPointerUpCapture={event => {
       if (!panel) return;
-      const target = (event.target as HTMLElement).closest<HTMLElement>("button");
-      if (!target) return;
-      const action = target.dataset.inputAction;
-      if (action === "complete" || action === "edit") {
-        event.preventDefault(); event.stopPropagation();
-        if (input.inputClick(action, event.detail)) finishInput(action);
-        return;
-      }
-      if (input.blocksActionClick(event.detail)) { event.preventDefault(); event.stopPropagation(); }
+      const ctrl = control(event.target);
+      input.pointerUp(event.nativeEvent, ctrl ? intent(ctrl.action, ctrl.target) : null);
+    }} onBlurCapture={event => input.focusLeft(event.target)} onPointerCancelCapture={() => input.invalidate()} onClickCapture={event => {
+      if (!panel) return;
+      const ctrl = control(event.target);
+      if (!ctrl) return;
+      event.preventDefault(); event.stopPropagation();
+      if (input.takeClick(event.detail, intent(ctrl.action, ctrl.target))) perform(ctrl.action);
     }}>
-      <header><h1>{panel ? "片羽 · 快捷面板" : "片羽"}</h1><p className="tagline">{panel ? browsing ? "上下键选择，Enter 复制，Esc 隐藏；复制后手动粘贴" : completion === "ordinary" ? "输入搜索词，再点击“浏览结果”；复制后手动粘贴" : "先完成输入，再另行浏览结果；复制后手动粘贴" : "剪贴板历史 · 隔离运行"}</p>
-        {panel ? <button type="button" disabled={!actionsAllowed} onClick={hidePanel}>隐藏快捷面板</button> : <><button type="button" disabled={closing || !panelControl.available || panelState.snapshot?.phase === "stopping" || panelState.snapshot?.phase === "unavailable"} onClick={() => void panelState.open()}>打开快捷面板</button><p role="status">{panelState.snapshot?.hotkey === "ready" ? "快捷键：Ctrl+Alt+V" : "可使用主窗口入口打开快捷面板。"}</p>{panelState.snapshot?.error && <p role="alert">{panelState.snapshot.error}</p>}{panelState.error && <p role="alert">{panelState.error}</p>}<button type="button" disabled={!residency.snapshot || residency.pending || residency.snapshot.phase === "stopping" || residency.snapshot.phase === "exited"} onClick={() => void residency.exit()}>{residency.snapshot?.phase === "failed" ? "重试退出片羽" : "退出片羽"}</button>{residency.snapshot?.phase === "stopping" && <p role="status">正在退出片羽，等待保存和资源回收。</p>}{residency.snapshot?.phase === "failed" && <p role="alert">退出未完成，仍有 {view.status?.queue.items ?? "待确认"} 条未保存内容；收录和复制保持关闭。</p>}{residency.snapshot?.error && <p role="alert">{residency.snapshot.error}</p>}{residency.error && <p role="alert">{residency.error}</p>}{!residencyControl.available && <p role="status">当前环境未提供驻留与退出控制。</p>}</>}
+      <header><h1>{panel ? "片羽 · 快捷面板" : "片羽"}</h1><p className="tagline">{panel ? browsing ? "上下键选择，Enter 复制，Esc 隐藏；复制后手动粘贴" : "输入搜索词，选择条目查看正文；明确复制后手动粘贴" : "剪贴板历史 · 隔离运行"}</p>
+        {panel ? <button type="button" data-hide-action="true" disabled={!actionsAllowed || (input.imeSeen && !browsing)}>隐藏快捷面板</button> : <><button type="button" disabled={closing || !panelControl.available || panelState.snapshot?.phase === "stopping" || panelState.snapshot?.phase === "unavailable"} onClick={() => void panelState.open()}>打开快捷面板</button><p role="status">{panelState.snapshot?.hotkey === "ready" ? "快捷键：Ctrl+Alt+V" : "可使用主窗口入口打开快捷面板。"}</p>{panelState.snapshot?.error && <p role="alert">{panelState.snapshot.error}</p>}{panelState.error && <p role="alert">{panelState.error}</p>}<button type="button" disabled={!residency.snapshot || residency.pending || residency.snapshot.phase === "stopping" || residency.snapshot.phase === "exited"} onClick={() => void residency.exit()}>{residency.snapshot?.phase === "failed" ? "重试退出片羽" : "退出片羽"}</button>{residency.snapshot?.phase === "stopping" && <p role="status">正在退出片羽，等待保存和资源回收。</p>}{residency.snapshot?.phase === "failed" && <p role="alert">退出未完成，仍有 {view.status?.queue.items ?? "待确认"} 条未保存内容；收录和复制保持关闭。</p>}{residency.snapshot?.error && <p role="alert">{residency.snapshot.error}</p>}{residency.error && <p role="alert">{residency.error}</p>}{!residencyControl.available && <p role="status">当前环境未提供驻留与退出控制。</p>}</>}
       </header>
       {view.hostMissing ? <p className="notice" role="status">需要桌面宿主。请从片羽桌面程序打开此界面。</p> : <>
         <section className="status-card" aria-label="收录状态">
@@ -167,13 +173,11 @@ export default function App({ bridge = nativeBridge, panel, panelControl = nativ
           <div className="toolbar"><h2 id="history-heading">最近历史</h2><button disabled={!actionsAllowed || view.loading} onClick={() => { if (actionsAllowed) void model.refresh(); }}>刷新</button></div>
           <div className="search-bar">
             <label className="search-label" htmlFor="history-search">搜索历史正文</label>
-            <input ref={searchRef} id="history-search" className="search-input" type="search" value={view.query} readOnly={frozen} onChange={event => updateQuery(event.target.value, true)} autoComplete="off" />
-            <button type="button" disabled={!actionsAllowed || (completion !== "ordinary" && frozen)} onClick={() => updateQuery("")}>清空搜索</button>
-            {panel && completion === "editing" && <button key="complete-input" type="button" data-input-action="complete">完成输入</button>}
-            {panel && !browsing && (completion === "pending" || completion === "ready") && <button key="edit-input" type="button" data-input-action="edit">修改搜索</button>}
+            <input ref={searchRef} id="history-search" className="search-input" type="search" value={view.query} onChange={event => updateQuery(event.target.value)} autoComplete="off" />
+            <button type="button" disabled={!actionsAllowed} onClick={() => { updateQuery(""); if (panel) searchRef.current?.focus(); }}>清空搜索</button>
             {panel && (browsing ? <button key="return-search" type="button" onClick={returnToSearch}>返回搜索</button> : <button key="enter-browse" type="button" disabled={!actionsAllowed || view.loading || !!view.error || view.summaries.length === 0} onClick={() => enterBrowse()}>浏览结果</button>)}
           </div>
-          {panel && <p ref={inputStatusRef} tabIndex={-1} className="notice input-status" role="status">{browsing ? "正在浏览结果。修改搜索词请先返回搜索。" : completion === "editing" ? "使用输入法后，请先点击“完成输入”，再浏览结果。" : completion === "pending" ? "正在等待输入结束；如需继续输入，请点击“修改搜索”。" : view.loading ? "等待搜索结果后可浏览。" : view.error ? "暂时无法浏览，请刷新后重试。" : view.summaries.length === 0 ? "当前没有可浏览的结果。" : completion === "ready" ? "输入已完成。请另行点击“浏览结果”或条目的“查看正文”。" : "输入完成后，点击“浏览结果”或条目的“查看正文”。"}</p>}
+          {panel && <p className="notice input-status" role="status">{view.loading ? "正在搜索，结果更新后可查看。" : view.error ? "暂时无法浏览，请刷新后重试。" : view.summaries.length === 0 ? "当前没有可浏览的结果。" : `结果对应搜索词：${view.query || "全部历史"}。选择条目可查看正文，复制需要另一次明确操作。`}</p>}
           {view.loading && <p role="status">正在读取历史…</p>}
           {!view.loading && !view.error && view.summaries.length === 0 && (searching
             ? <p className="notice" role="status">没有匹配的历史正文。</p>

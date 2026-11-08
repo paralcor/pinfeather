@@ -383,5 +383,6 @@ export function createHistoryModel(bridge: DesktopBridge) {
       if (active && lifetime === token && committedReceipt === receipt) committedReceipt = null;
     });
   }
-  return { store, start, refresh, more, toggle, setEnabled, setQuery, selectClip, retryPreview, morePreview, copyText, measurementReceipt, acknowledgeMeasurement };
+  function copyIdentity() { return `${lifetime}:${generation}:${selection}`; }
+  return { store, start, refresh, more, toggle, setEnabled, setQuery, selectClip, retryPreview, morePreview, copyText, copyIdentity, measurementReceipt, acknowledgeMeasurement };
 }
