@@ -1,5 +1,6 @@
 [package]
 name = "pinfeather"
+default-run = "pinfeather"
 version = "0.1.0"
 description = "片羽"
 edition = "2021"

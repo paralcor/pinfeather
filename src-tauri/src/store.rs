@@ -483,6 +483,40 @@ impl Store {
         parse_get_clip_text_result(&serde_json::to_value(&result).map_err(|_|unavailable())?,&request).map_err(|_|unavailable())
     }
 
+    pub fn clear_history(&mut self) -> ContractResult<u64> {
+        let tx = self.conn.transaction_with_behavior(TransactionBehavior::Immediate).map_err(sql_error)?;
+        let deleted = tx.execute("DELETE FROM clips", []).map_err(sql_error)?;
+        tx.commit().map_err(sql_error)?;
+        Ok(deleted as u64)
+    }
+    /// VACUUM INTO writes one self-contained consistent database, including WAL contents.
+    /// SQLite refuses any existing nonempty output; explicitly refuse empty files too.
+    pub fn backup_to(&self, path: &Path) -> ContractResult<()> {
+        if std::fs::symlink_metadata(path).is_ok() { return Err(ContractError::invalid_input("backup target already exists")); }
+        ensure_no_leftover_sidecars(path)?;
+        self.conn.execute("VACUUM INTO ?1", [path.to_str().ok_or_else(unavailable)?]).map_err(sql_error)?;
+        if preflight(path)? != SchemaState::Current { return Err(unavailable()); }
+        Ok(())
+    }
+    /// Offline restore only: refuse unknown input before creating the destination.
+    /// Keep a Windows read lease throughout validation/copy so the backup cannot change.
+    pub fn restore_to_new_directory(source: &Path, directory: &Path) -> ContractResult<()> {
+        if !source.is_absolute() || !directory.is_absolute() || std::fs::symlink_metadata(directory).is_ok() {
+            return Err(ContractError::invalid_input("restore requires a new absolute directory"));
+        }
+        ensure_no_leftover_sidecars(source)?;
+        #[cfg(windows)]
+        let _lease = { use std::os::windows::fs::OpenOptionsExt; std::fs::OpenOptions::new().read(true).share_mode(1).open(source).map_err(|_|unavailable())? };
+        if preflight(source)? != SchemaState::Current { return Err(unavailable()); }
+        let conn=Connection::open_with_flags(source,OpenFlags::SQLITE_OPEN_READ_ONLY).map_err(sql_error)?;
+        if check_database(&conn)? != SchemaState::Current { return Err(unavailable()); }
+        std::fs::create_dir(directory).map_err(|_|unavailable())?;
+        let target=directory.join("history.sqlite3");
+        conn.execute("VACUUM INTO ?1", [target.to_str().ok_or_else(unavailable)?]).map_err(sql_error)?;
+        if preflight(&target)? != SchemaState::Current { return Err(unavailable()); }
+        Ok(())
+    }
+
     /// Called only for explicitly selected test records in the first iteration.
     pub fn delete(&mut self, clip_id: i64) -> ContractResult<bool> {
         if clip_id <= 0 { return Err(ContractError::invalid_input("invalid history id")); }

@@ -119,3 +119,11 @@ mod tests {
         for (label,url) in [("evil","http://tauri.localhost/"),("main","https://example.invalid/"),("main","http://tauri.localhost:7777/")]{assert_eq!(validate_caller(label,&tauri::Url::parse(url).unwrap()).unwrap_err().code,ErrorCode::PermissionUnknown);}
     }
 }
+
+#[tauri::command]
+pub async fn manage_history(window:tauri::WebviewWindow,runtime:tauri::State<'_,Arc<HostRuntime>>,request:serde_json::Value)->ContractResult<crate::host::HistoryManagementResult>{
+    authorize_main(&window)?;
+    let request:crate::host::HistoryManagement=serde_json::from_value(request).map_err(|_|ContractError::invalid_input("invalid management request"))?;
+    let runtime=runtime.inner().clone();
+    tauri::async_runtime::spawn_blocking(move||runtime.manage_history(request)).await.map_err(|_|join_failed())?
+}

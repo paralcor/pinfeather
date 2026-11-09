@@ -1,0 +1,14 @@
+// @vitest-environment jsdom
+import { afterEach, it, expect, vi } from "vitest";
+import { cleanup, render, screen, fireEvent } from "@testing-library/react";
+import { HistoryManagement } from "./HistoryManagement";
+import type { ManagementControl } from "./lib/history-management";
+afterEach(cleanup);
+function setup(ready=true) { const control:ManagementControl={available:true,run:vi.fn(async()=>({items:1,deleted:1,backup_path:null}))}; const changed=vi.fn(); render(<HistoryManagement control={control} ready={ready} items={2} selectedId="12" onChanged={changed}/>);return {control,changed}; }
+it("requires a second explicit confirmation and preserves selected ID",async()=>{const f=setup();fireEvent.click(screen.getByRole("button",{name:"删除选中条目"}));expect(f.control.run).not.toHaveBeenCalled();fireEvent.click(screen.getByRole("button",{name:"确认删除"}));await screen.findByText("已删除 1 条历史。");expect(f.control.run).toHaveBeenCalledWith({action:"delete",clip_id:"12",expected_items:2});expect(f.changed).toHaveBeenCalledTimes(1);});
+it("clear names all history and supports cancel without dispatch",()=>{const f=setup();fireEvent.click(screen.getByRole("button",{name:"清空全部历史"}));expect(screen.getByText(/全部 2 条历史/)).toBeTruthy();fireEvent.click(screen.getByRole("button",{name:"取消"}));expect(f.control.run).not.toHaveBeenCalled();});
+it("requires paused empty queue readiness",()=>{const f=setup(false);fireEvent.click(screen.getByRole("button",{name:"删除选中条目"}));fireEvent.click(screen.getByRole("button",{name:"备份历史"}));expect(f.control.run).not.toHaveBeenCalled();});
+it("failures never claim successful deletion",async()=>{const f=setup();vi.mocked(f.control.run).mockRejectedValueOnce(new Error("unknown"));fireEvent.click(screen.getByRole("button",{name:"删除选中条目"}));fireEvent.click(screen.getByRole("button",{name:"确认删除"}));await screen.findByRole("alert");expect(screen.queryByText("已删除 1 条历史。")).toBeNull();expect(f.control.run).toHaveBeenCalledTimes(1);});
+
+it("selection change invalidates an old confirmation",()=>{const control:ManagementControl={available:true,run:vi.fn()};const props={control,ready:true,items:2,onChanged:vi.fn()};const v=render(<HistoryManagement {...props} selectedId="12"/>);fireEvent.click(screen.getByRole("button",{name:"删除选中条目"}));v.rerender(<HistoryManagement {...props} selectedId="13"/>);v.rerender(<HistoryManagement {...props} selectedId="12"/>);expect(screen.queryByRole("button",{name:"确认删除"})).toBeNull();expect(control.run).not.toHaveBeenCalled();});
+it("duplicate clicks dispatch once while result is pending",()=>{const control:ManagementControl={available:true,run:vi.fn(()=>new Promise<never>(()=>{}))};render(<HistoryManagement control={control} ready items={2} selectedId="12" onChanged={vi.fn()}/>);const button=screen.getByRole("button",{name:"备份历史"});fireEvent.click(button);fireEvent.click(button);expect(control.run).toHaveBeenCalledTimes(1);});

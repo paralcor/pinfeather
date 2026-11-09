@@ -76,7 +76,7 @@ pub fn run(args: HostArgs) {
     let webview_dir = prepared.webview_dir;
 
     tauri::Builder::default()
-        .invoke_handler(tauri::generate_handler![commands::get_status,commands::list_clips,commands::get_clip_text,commands::copy_clip_text,commands::set_capture_enabled,commands::get_manual_panel_state,commands::open_manual_panel,commands::ready_manual_panel,commands::hide_manual_panel,commands::copy_manual_panel_text,commands::get_residency_state,commands::request_exit,commands::retry_exit_saving,commands::get_settings_state,commands::apply_excluded_apps,commands::measure_start_model,commands::measure_invalidate,commands::measure_stop_model,commands::measure_list_clips,commands::measure_ready])
+        .invoke_handler(tauri::generate_handler![commands::manage_history,commands::get_status,commands::list_clips,commands::get_clip_text,commands::copy_clip_text,commands::set_capture_enabled,commands::get_manual_panel_state,commands::open_manual_panel,commands::ready_manual_panel,commands::hide_manual_panel,commands::copy_manual_panel_text,commands::get_residency_state,commands::request_exit,commands::retry_exit_saving,commands::get_settings_state,commands::apply_excluded_apps,commands::measure_start_model,commands::measure_invalidate,commands::measure_stop_model,commands::measure_list_clips,commands::measure_ready])
         .setup(move |app| {
             app.manage(measurement.clone());
             let handle=app.handle().clone();

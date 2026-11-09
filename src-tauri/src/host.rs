@@ -45,7 +45,18 @@ pub struct SharedRuntime {
     pub before_settings_replace:Mutex<Option<Arc<dyn Fn()+Send+Sync>>>,
 }
 enum Target {File(PathBuf),#[cfg(feature="test-fixtures")] Memory,#[cfg(feature="test-fixtures")] Manual{path:PathBuf,product:PathBuf}}
+#[derive(Debug,serde::Deserialize)]
+#[serde(tag="action",rename_all="snake_case",deny_unknown_fields)]
+pub enum HistoryManagement {
+    Delete { clip_id:String, expected_items:u64 },
+    Clear { expected_items:u64 },
+    Backup {},
+}
+#[derive(Debug,serde::Serialize)]
+pub struct HistoryManagementResult { pub items:u64, pub deleted:u64, pub backup_path:Option<String> }
+
 enum Query {
+    Manage(HistoryManagement,PathBuf,Instant,SyncSender<ContractResult<HistoryManagementResult>>),
     List(ListClipsRequest,SyncSender<ContractResult<ListClipsResult>>),
     Copy(i64,Instant,WritePermit,SyncSender<WriteReply>),
     Text(GetClipTextRequest,SyncSender<ContractResult<GetClipTextResult>>),
@@ -280,6 +291,15 @@ impl HostRuntime {
         }
         drop(s);drop(gate);self.shared.notify_status();Ok(self.status())
     }
+    pub fn manage_history(&self,request:HistoryManagement)->ContractResult<HistoryManagementResult>{
+        if let HistoryManagement::Delete{clip_id,..}=&request {
+            parse_copy_clip_text_request(&serde_json::json!({"request_id":"manage","clip_id":clip_id}))?;
+        }
+        let(tx,rx)=mpsc::sync_channel(1);
+        self.queries.try_send(Query::Manage(request,PathBuf::from(&self.data_dir),Instant::now()+Duration::from_secs(5),tx)).map_err(|_|ContractError::new(ErrorCode::Busy,"history query queue is full"))?;
+        self.shared.wake.notify_all();
+        rx.recv_timeout(Duration::from_secs(10)).map_err(|_|ContractError::new(ErrorCode::Timeout,"management result unknown; refresh before another operation"))?
+    }
     pub fn list(&self,request:ListClipsRequest)->ContractResult<ListClipsResult>{
         if self.shared.state.lock().unwrap_or_else(|e|e.into_inner()).stopping{return Err(ContractError::new(ErrorCode::Busy,"runtime is stopping"));}
         let(tx,rx)=mpsc::sync_channel(1);self.queries.try_send(Query::List(request,tx)).map_err(|_|ContractError::new(ErrorCode::Busy,"history query queue is full"))?;self.shared.wake.notify_all();rx.recv_timeout(Duration::from_secs(5)).map_err(|_|ContractError::new(ErrorCode::Timeout,"history query timed out"))?
@@ -468,9 +488,43 @@ fn finish_thread(slot:&Mutex<Option<JoinHandle<()>>>,deadline:Instant,cleanup_fa
 }
 impl Drop for HostRuntime {fn drop(&mut self){if !self.shared.closing.closing(){let _=self.shutdown(Duration::from_secs(3));}for slot in [&self.capture,&self.storage]{if let Some(thread)=slot.lock().unwrap_or_else(|e|e.into_inner()).take(){RETAINED.lock().unwrap_or_else(|e|e.into_inner()).push(thread);}}}}
 
+fn manage_on_storage(shared:&SharedRuntime,store:&mut Option<Store>,request:HistoryManagement,directory:&std::path::Path,deadline:Instant)->ContractResult<HistoryManagementResult>{
+    let _gate=shared.gate.lock().unwrap_or_else(|e|e.into_inner());
+    let mut state=shared.state.lock().unwrap_or_else(|e|e.into_inner());
+    if Instant::now()>deadline || state.stopping || shared.closing.closing() || state.user_enabled || state.queue_usage().0!=0 || state.storage_failed {
+        return Err(ContractError::new(ErrorCode::Busy,"pause capture and wait for an empty queue before managing history"));
+    }
+    let db=store.as_mut().ok_or_else(unavailable)?;
+    let usage=db.usage()?;
+    let mut backup_path=None;
+    let deleted=match request {
+        HistoryManagement::Delete{clip_id,expected_items}=>{
+            if usage.items as u64!=expected_items{return Err(ContractError::new(ErrorCode::Busy,"history changed; refresh before confirming"));}
+            db.delete(positive_id_as_i64(&clip_id))? as u64
+        },
+        HistoryManagement::Clear{expected_items}=>{
+            if usage.items as u64!=expected_items{return Err(ContractError::new(ErrorCode::Busy,"history changed; refresh before confirming"));}
+            db.clear_history()?
+        },
+        HistoryManagement::Backup{}=>{
+            let backups=directory.join("backups");std::fs::create_dir_all(&backups).map_err(|_|unavailable())?;
+            let path=backups.join(format!("history-{}.sqlite3",uuid::Uuid::new_v4()));db.backup_to(&path)?;backup_path=Some(path.display().to_string());0
+        },
+    };
+    state.history=db.usage()?;
+    Ok(HistoryManagementResult{items:state.history.items as u64,deleted,backup_path})
+}
+
 fn storage_loop(shared:&SharedRuntime,store:&mut Option<Store>,queries:Receiver<Query>){
     loop {
         for _ in 0..4 {match queries.try_recv(){
+            Ok(Query::Manage(request,directory,deadline,reply))=>{
+                let result=manage_on_storage(shared,store,request,&directory,deadline);
+                let changed=result.as_ref().is_ok_and(|r|r.deleted>0);
+                let _=reply.send(result);
+                if changed {let revision={let mut s=shared.state.lock().unwrap_or_else(|e|e.into_inner());s.history_revision+=1;s.history_revision};(shared.events)("history_changed",revision);}
+                shared.notify_status();
+            }
             Ok(Query::List(request,reply))=>{let _=reply.send(store.as_ref().ok_or_else(unavailable).and_then(|s|s.list_recent(&request)));}
             Ok(Query::Text(request,reply))=>{let _=reply.send(store.as_ref().ok_or_else(unavailable).and_then(|s|s.get_clip_text(&request)));}
             Ok(Query::Copy(id,deadline,permit,reply))=>{
