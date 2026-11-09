@@ -1,10 +1,24 @@
 import { invoke, isTauri } from "@tauri-apps/api/core";
 import { listen } from "@tauri-apps/api/event";
+import { parseResidencySnapshot, type ResidencyControl } from "./residency";
+import { parseSettingsSnapshot, type SettingsControl } from "./settings";
+import { parseManualPanelSnapshot, parseManualPanelSessionRequest, parseManualPanelCopyRequest, type ManualPanelSnapshot } from "./ipc";
 import { parseCopyClipTextRequest, parseCopyClipTextResult, type CopyClipTextResult } from "./ipc";
 import { parseStatusResult, parseListClipsRequest, parseListClipsResult, parseGetClipTextRequest, parseGetClipTextResult, parseRevisionEvent, type StatusResult, type ListClipsResult, type ListCursor, type GetClipTextResult, type ContractResult } from "./ipc";
+import { parseSetExcludedAppsRequest } from "./ipc";
+import { measurementEnabled, nativeMeasurement, type MeasurementTransport } from "./measurement";
+
+function settingsSnapshot(value: unknown) { const state = parseSettingsSnapshot(value); if (!state) throw new Error("invalid settings state"); return state; }
+export const nativeSettingsControl: SettingsControl = {
+  available: isTauri(),
+  async snapshot() { return settingsSnapshot(await invoke("get_settings_state")); },
+  async subscribe(callback) { return listen("settings_changed", event => { const revision = parseRevisionEvent(event.payload, "revision"); if (revision.ok) callback(revision.value); }); },
+  async apply(paths) { const request = { paths: checked(parseSetExcludedAppsRequest({ paths })) }; return settingsSnapshot(await invoke("apply_excluded_apps", { request })); },
+};
 
 export interface DesktopBridge {
   available: boolean;
+  measurement?: MeasurementTransport;
   status(): Promise<StatusResult>;
   list(requestId: string, cursor: ListCursor | null, query?: string): Promise<ListClipsResult>;
   getText(requestId: string, clipId: string, offset: number): Promise<GetClipTextResult>;
@@ -12,12 +26,55 @@ export interface DesktopBridge {
   setEnabled(enabled: boolean): Promise<StatusResult>;
   subscribe(name: "history_changed" | "status_changed", callback: () => void): Promise<() => void>;
 }
+function residencySnapshot(value: unknown) { const state = parseResidencySnapshot(value); if (!state) throw new Error("invalid residency state"); return state; }
+export const nativeResidencyControl: ResidencyControl = {
+  available: isTauri(),
+  async snapshot() { return residencySnapshot(await invoke("get_residency_state")); },
+  async subscribe(callback) { return listen("residency_changed", event => { const state = parseResidencySnapshot(event.payload); if (state) callback(state); }); },
+  async exit() { return residencySnapshot(await invoke("request_exit")); },
+  async retrySaving() { checked(parseStatusResult(await invoke("retry_exit_saving"))); },
+};
+export interface ManualPanelControl {
+  available: boolean;
+  snapshot(): Promise<ManualPanelSnapshot>;
+  subscribe(callback: (snapshot: ManualPanelSnapshot) => void): Promise<() => void>;
+  open(): Promise<ManualPanelSnapshot>;
+  ready(session: string): Promise<ManualPanelSnapshot>;
+  hide(session: string): Promise<ManualPanelSnapshot>;
+  history(session: string): DesktopBridge;
+}
+function panelSnapshot(value: unknown) { const result = parseManualPanelSnapshot(value); if (!result) throw new Error("invalid panel state"); return result; }
+// This WebView can replace its model on reopen while the old IPC is still unsettled.
+let manualPanelCopyPending = false;
+export const nativePanelControl: ManualPanelControl = {
+  available: isTauri(),
+  async snapshot() { return panelSnapshot(await invoke("get_manual_panel_state")); },
+  async subscribe(callback) { return listen("manual_panel_changed", event => { const result = parseManualPanelSnapshot(event.payload); if (result) callback(result); }); },
+  async open() { return panelSnapshot(await invoke("open_manual_panel")); },
+  async ready(session) { return panelSnapshot(await invoke("ready_manual_panel", { request: checked(parseManualPanelSessionRequest({ session_id: session })) })); },
+  async hide(session) { return panelSnapshot(await invoke("hide_manual_panel", { request: checked(parseManualPanelSessionRequest({ session_id: session })) })); },
+  history(session) { return { ...nativeBridge, async copyText(requestId, clipId) {
+    const request = checked(parseCopyClipTextRequest({ request_id: requestId, clip_id: clipId }));
+    const envelope = checked(parseManualPanelCopyRequest({ session_id: session, request }));
+    if (manualPanelCopyPending) return { ...request, outcome: "not_written", reason: "busy" };
+    manualPanelCopyPending = true;
+    try {
+      const raw: unknown = await invoke("copy_manual_panel_text", { request: envelope });
+      if (typeof raw === "object" && raw !== null && "session_id" in raw && raw.session_id === session && "result" in raw && Object.keys(raw).sort().join(",") === "result,session_id") {
+        const parsed = parseCopyClipTextResult(raw.result, request); if (parsed.ok) return parsed.value;
+      }
+    } catch { /* An accepted write is not cancelled by window/session teardown. */ }
+    finally { manualPanelCopyPending = false; }
+    return { ...request, outcome: "unknown", reason: "protocol_error" };
+  } }; },
+};
 function checked<T>(result: ContractResult<T>): T {
   if (!result.ok) throw new Error("无法读取宿主数据，请重试。");
   return result.value;
 }
 export const nativeBridge: DesktopBridge = {
   available: isTauri(),
+  get measurement() { return isTauri() && measurementEnabled() ? nativeMeasurement : undefined; },
   async status() { return checked(parseStatusResult(await invoke("get_status"))); },
   async list(requestId, cursor, query = "") {
     const request = checked(parseListClipsRequest({ request_id: requestId, query, limit: 50, cursor }));

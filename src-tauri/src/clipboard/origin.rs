@@ -7,6 +7,8 @@ pub const MAX_OPERATIONS:usize=128;
 #[derive(Debug,Clone,Copy,PartialEq,Eq)]
 pub enum Classification {External,Pending,Internal}
 struct Operation {counter:u64,sequence:Option<u32>,finished:bool,associated:bool}
+// Only finish can advance current: snapshots may predate the latest write.
+// Keep that write pinned even after external observations or pre-write failure.
 pub struct OriginRegistry {instance:[u8;16],owner:usize,next:u64,operations:VecDeque<Operation>,current:Option<u64>}
 impl OriginRegistry {
     pub fn new(instance:[u8;16],owner:usize)->Self{Self{instance,owner,next:0,operations:VecDeque::new(),current:None}}
@@ -24,16 +26,21 @@ impl OriginRegistry {
         Ok((self.next,marker))
     }
     pub fn finish(&mut self,counter:u64,sequence:Option<u32>){if let Some(op)=self.operations.iter_mut().find(|o|o.counter==counter){op.finished=true;op.sequence=sequence.filter(|s|*s!=0);op.associated=op.sequence.is_none();if op.sequence.is_some(){self.current=Some(counter);}}}
+    /// Only after pausing has invalidated queued and in-flight captures.
+    /// Retain the last confirmed write, not the last snapshot classified.
+    pub(crate) fn retire_finished_noncurrent(&mut self){
+        let current=self.current;
+        self.operations.retain(|op|!op.finished||Some(op.counter)==current);
+    }
     pub fn classify(&mut self,raw:Option<&[u8]>,owner:Option<usize>,sequence:u32)->Classification{
         if sequence==0{return Classification::External;}
-        if self.current.is_some_and(|id|self.operations.iter().any(|op|op.counter==id&&op.sequence!=Some(sequence))){self.current=None;}
         let Some(raw)=raw else{return Classification::External;};
         if !(28..=256).contains(&raw.len())||raw[..4]!=1u32.to_le_bytes()||raw[4..20]!=self.instance||self.owner==0||owner!=Some(self.owner){return Classification::External;}
         let counter=u64::from_le_bytes(raw[20..28].try_into().unwrap());
         let Some(op)=self.operations.iter_mut().find(|o|o.counter==counter) else{return Classification::External;};
         if !op.finished{return Classification::Pending;}
         if op.sequence!=Some(sequence){return Classification::External;}
-        op.associated=true;self.current=Some(counter);Classification::Internal
+        op.associated=true;Classification::Internal
     }
     pub fn len(&self)->usize{self.operations.len()}
 }

@@ -1,0 +1,17 @@
+{
+  "valid": [
+    {"revision":"0","phase":"running","tray_available":false,"error":null},
+    {"revision":"2","phase":"stopping","tray_available":true,"error":null},
+    {"revision":"18446744073709551615","phase":"failed","tray_available":false,"error":"cleanup pending"},
+    {"revision":"3","phase":"exited","tray_available":true,"error":null}
+  ],
+  "invalid": [
+    {},
+    {"revision":"01","phase":"running","tray_available":false,"error":null},
+    {"revision":"18446744073709551616","phase":"running","tray_available":false,"error":null},
+    {"revision":"1","phase":"hidden","tray_available":false,"error":null},
+    {"revision":"1","phase":["running"],"tray_available":false,"error":null},
+    {"revision":"1","phase":"running","tray_available":0,"error":null},
+    {"revision":"1","phase":"running","tray_available":false,"error":null,"capture_enabled":true}
+  ]
+}

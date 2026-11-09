@@ -1,0 +1,6 @@
+{
+  "identifier": "quick-panel-capability",
+  "description": "快捷面板仅订阅本地宿主事件；窗口及会话动作由受校验命令执行",
+  "windows": ["quick-panel"],
+  "permissions": ["core:event:allow-listen", "core:event:allow-unlisten"]
+}

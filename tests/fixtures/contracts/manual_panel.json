@@ -1,0 +1,125 @@
+{
+  "sessions": [
+    {
+      "value": {
+        "session_id": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+      },
+      "valid": true
+    },
+    {
+      "value": {
+        "session_id": "forged"
+      },
+      "valid": false
+    },
+    {
+      "value": {
+        "session_id": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+        "label": "quick-panel"
+      },
+      "valid": false
+    },
+    {
+      "value": {
+        "session_id": null
+      },
+      "valid": false
+    }
+  ],
+  "copies": [
+    {
+      "value": {
+        "session_id": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+        "request": {
+          "request_id": "panel-copy-1",
+          "clip_id": "1"
+        }
+      },
+      "valid": true
+    },
+    {
+      "value": {
+        "session_id": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+        "request": {
+          "request_id": "panel-copy-1",
+          "clip_id": "0"
+        }
+      },
+      "valid": false
+    },
+    {
+      "value": {
+        "session_id": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+        "request": {
+          "request_id": "panel-copy-1",
+          "clip_id": "1",
+          "text": "injected"
+        }
+      },
+      "valid": false
+    },
+    {
+      "value": {
+        "session_id": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+        "request": {
+          "request_id": "panel-copy-1",
+          "clip_id": "1"
+        },
+        "label": "quick-panel"
+      },
+      "valid": false
+    }
+  ],
+  "snapshots": [
+    {
+      "value": {
+        "revision": "1",
+        "session_id": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+        "phase": "waiting",
+        "hotkey": "ready",
+        "error": null
+      },
+      "valid": true
+    },
+    {
+      "value": {
+        "revision": "2",
+        "session_id": null,
+        "phase": "hidden",
+        "hotkey": "failed",
+        "error": "conflict"
+      },
+      "valid": true
+    },
+    {
+      "value": {
+        "revision": "3",
+        "session_id": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+        "phase": "hidden",
+        "hotkey": "ready",
+        "error": null
+      },
+      "valid": false
+    },
+    {
+      "value": {
+        "revision": "01",
+        "session_id": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+        "phase": "ready",
+        "hotkey": "ready",
+        "error": null
+      },
+      "valid": false
+    },
+    {
+      "value": {
+        "revision": "4",
+        "session_id": null,
+        "phase": "ready",
+        "hotkey": "ready",
+        "error": null
+      },
+      "valid": false
+    }
+  ]
+}

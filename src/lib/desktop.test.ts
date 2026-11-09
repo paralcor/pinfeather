@@ -3,8 +3,27 @@ import fixture from "../../tests/fixtures/contracts/response_dtos.json";
 const mocks = vi.hoisted(() => ({ invoke: vi.fn<(...args: unknown[]) => Promise<unknown>>(), listen: vi.fn<(name: string, callback: (event: { payload: unknown }) => void) => Promise<() => void>>() }));
 vi.mock("@tauri-apps/api/core", () => ({ invoke: mocks.invoke, isTauri: () => true }));
 vi.mock("@tauri-apps/api/event", () => ({ listen: mocks.listen }));
-import { nativeBridge } from "./desktop";
+import { nativeBridge, nativeResidencyControl, nativeSettingsControl } from "./desktop";
+import settingsFixture from "../../tests/fixtures/contracts/settings.json";
 beforeEach(() => { mocks.invoke.mockReset(); mocks.listen.mockReset(); });
+it("m2 settings uses separate strict commands and rejects invalid requests before invoke",async()=>{
+  mocks.invoke.mockResolvedValue(settingsFixture.snapshot);expect(await nativeSettingsControl.snapshot()).toEqual(settingsFixture.snapshot);expect(mocks.invoke).toHaveBeenLastCalledWith("get_settings_state");
+  await nativeSettingsControl.apply(["c:/Private/old/../vault.exe"]);expect(mocks.invoke).toHaveBeenLastCalledWith("apply_excluded_apps",{request:{paths:["C:\\Private\\vault.exe"]}});
+  mocks.invoke.mockClear();await expect(nativeSettingsControl.apply(["vault.exe"])).rejects.toThrow();expect(mocks.invoke).not.toHaveBeenCalled();
+  mocks.invoke.mockResolvedValue({...settingsFixture.snapshot,capture_enabled:true});await expect(nativeSettingsControl.snapshot()).rejects.toThrow("invalid settings");
+});
+it("m2 settings revision events reject invalid and extra fields",async()=>{
+  const callback=vi.fn();mocks.listen.mockResolvedValue(()=>{});await nativeSettingsControl.subscribe(callback);expect(mocks.listen.mock.calls[0][0]).toBe("settings_changed");
+  const emit=mocks.listen.mock.calls[0][1];for(const payload of [{revision:"01"},{revision:"1",enabled:true},{revision:1}])emit({payload});expect(callback).not.toHaveBeenCalled();emit({payload:{revision:"7"}});expect(callback).toHaveBeenCalledWith("7");
+});
+it("m2 residency uses separate strict commands and retains the old status shape for save retry", async()=>{
+  const state={revision:"1",phase:"running",tray_available:true,error:null};mocks.invoke.mockResolvedValue(state);expect(await nativeResidencyControl.snapshot()).toEqual(state);expect(mocks.invoke).toHaveBeenLastCalledWith("get_residency_state");await nativeResidencyControl.exit();expect(mocks.invoke).toHaveBeenLastCalledWith("request_exit");
+  mocks.invoke.mockResolvedValue({...state,enabled:true});await expect(nativeResidencyControl.snapshot()).rejects.toThrow("invalid residency");
+  mocks.invoke.mockResolvedValue(fixture.status_cases.find(item=>item.id==="st_ok")!.value);await nativeResidencyControl.retrySaving();expect(mocks.invoke).toHaveBeenLastCalledWith("retry_exit_saving");
+});
+it("m2 residency events reject malformed states before reaching consumers",async()=>{
+  const callback=vi.fn();const off=vi.fn();mocks.listen.mockResolvedValue(off);const dispose=await nativeResidencyControl.subscribe(callback);expect(mocks.listen.mock.calls[0][0]).toBe("residency_changed");const listener=mocks.listen.mock.calls[0][1];listener({payload:{revision:"1",phase:"running",tray_available:true,error:null,extra:true}});expect(callback).not.toHaveBeenCalled();listener({payload:{revision:"2",phase:"stopping",tray_available:true,error:null}});expect(callback).toHaveBeenCalledTimes(1);dispose();expect(off).toHaveBeenCalledTimes(1);
+});
 it("uses the existing status contract and one request argument for changes", async () => {
   mocks.invoke.mockResolvedValue(fixture.status_cases.find(item => item.id === "st_ok")!.value);
   const status = await nativeBridge.status(); expect(status.revision).toBe("3");

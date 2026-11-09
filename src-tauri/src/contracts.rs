@@ -379,6 +379,17 @@ pub struct CopyClipTextRequest {
     pub clip_id: String,
 }
 
+pub fn parse_panel_session(value:&serde_json::Value)->ContractResult<String>{
+    let obj=expect_object(value)?;reject_unknown_fields(obj,&["session_id"])?;
+    let session=require_field(obj,"session_id")?.as_str().ok_or_else(||reject("invalid panel session"))?;
+    if session.len()!=32||!session.bytes().all(|b|b.is_ascii_hexdigit()){return Err(reject("invalid panel session"));}Ok(session.into())
+}
+pub fn parse_panel_copy(value:&serde_json::Value)->ContractResult<(String,CopyClipTextRequest)>{
+    let obj=expect_object(value)?;reject_unknown_fields(obj,&["session_id","request"])?;
+    let session=parse_panel_session(&serde_json::json!({"session_id":require_field(obj,"session_id")?}))?;
+    Ok((session,parse_copy_clip_text_request(require_field(obj,"request")?)?))
+}
+
 pub fn parse_copy_clip_text_request(value: &serde_json::Value) -> ContractResult<CopyClipTextRequest> {
     let obj = expect_object(value)?;
     reject_unknown_fields(obj, &["request_id", "clip_id"])?;
@@ -559,6 +570,31 @@ fn validate_path_segment(seg: &str) -> ContractResult<()> {
 
 pub fn normalize_windows_exe_path(input: &str) -> ContractResult<String> {
     normalize_windows_path(input, true, false)
+}
+
+pub(crate) fn windows_path_equal(left: &str, right: &str) -> bool {
+    // Owner matching fails closed; policy deduplication requires a successful comparison.
+    compare_windows_paths(left, right).unwrap_or(true)
+}
+
+pub(crate) fn compare_windows_paths(left: &str, right: &str) -> ContractResult<bool> {
+    use windows_sys::Win32::Globalization::CompareStringOrdinal;
+    let left: Vec<u16> = left.encode_utf16().collect();
+    let right: Vec<u16> = right.encode_utf16().collect();
+    match unsafe { CompareStringOrdinal(left.as_ptr(), left.len() as i32, right.as_ptr(), right.len() as i32, 1) } {
+        2 => Ok(true), 1 | 3 => Ok(false), _ => Err(ContractError::invalid_input("Windows path comparison failed")),
+    }
+}
+
+#[derive(Debug, Clone, serde::Serialize)]
+pub struct SettingsSnapshot {
+    pub revision: String,
+    pub schema_version: u32,
+    pub excluded_apps: Vec<String>,
+    pub saving: bool,
+    pub blocked: bool,
+    pub error: Option<String>,
+    pub last_skip: Option<String>,
 }
 
 pub fn normalize_windows_dir_path(input: &str) -> ContractResult<String> {

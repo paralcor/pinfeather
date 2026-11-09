@@ -30,12 +30,19 @@ pub struct SharedRuntime {
     // Live resource authority; OriginRegistry also retains historical attribution.
     copy_owner:Mutex<CopyOwner>,
     owner_idle:Condvar,
+    closing:Arc<crate::runtime::CloseControl>,
+    cleanup_errors:Mutex<Vec<String>>,
+    settings_file:Mutex<Option<crate::config::SettingsFile>>,
+    #[cfg(all(test,feature="test-fixtures"))]
+    test_cleanup_attempt:Mutex<Option<SyncSender<(u64,usize,bool)>>>,
     #[cfg(feature="test-fixtures")]
     test_writer:Mutex<Option<Arc<dyn Fn()->ContractResult<Box<dyn WriteApi+Send>>+Send+Sync>>>,
     #[cfg(feature="test-fixtures")]
     pub before_commit:Mutex<Option<Arc<dyn Fn()+Send+Sync>>>,
     #[cfg(feature="test-fixtures")]
     pub before_policy:Mutex<Option<Arc<dyn Fn()+Send+Sync>>>,
+    #[cfg(feature="test-fixtures")]
+    pub before_settings_replace:Mutex<Option<Arc<dyn Fn()+Send+Sync>>>,
 }
 enum Target {File(PathBuf),#[cfg(feature="test-fixtures")] Memory,#[cfg(feature="test-fixtures")] Manual{path:PathBuf,product:PathBuf}}
 enum Query {
@@ -84,6 +91,7 @@ impl SharedRuntime {
         self.copy_stopping.store(true,Ordering::Release);
         self.copy_owner.lock().unwrap_or_else(|e|e.into_inner()).owner=None;
     }
+    #[cfg(all(test,feature="test-fixtures"))]
     fn close_capture(&self,close:impl FnOnce()->ContractResult<()>){
         self.revoke_copy_owner();
         let mut owner=self.copy_owner.lock().unwrap_or_else(|e|e.into_inner());
@@ -91,11 +99,35 @@ impl SharedRuntime {
         while owner.borrowers!=0{owner=self.owner_idle.wait(owner).unwrap_or_else(|e|e.into_inner());}
         drop(owner);self.capture_closed(close());
     }
+    fn await_copy_borrowers(&self,deadline:Instant)->bool{
+        let mut owner=self.copy_owner.lock().unwrap_or_else(|e|e.into_inner());
+        while owner.borrowers!=0{
+            let budget=deadline.saturating_duration_since(Instant::now());if budget.is_zero(){return false;}
+            owner=self.owner_idle.wait_timeout(owner,budget).unwrap_or_else(|e|e.into_inner()).0;
+        }
+        true
+    }
+    fn close_pipeline(&self,pipeline:&mut CapturePipeline){
+        self.revoke_copy_owner();let mut generation=0;
+        loop {
+            let(next,deadline)=self.closing.next(generation);generation=next;
+            let worker=pipeline.cancel_worker_until(deadline);
+            self.record_cleanup(&worker);
+            if !self.await_copy_borrowers(deadline){#[cfg(all(test,feature="test-fixtures"))]self.m2_report_attempt(generation,pipeline);continue;}
+            let result=pipeline.close_until(deadline);
+            self.record_cleanup(&result);
+            #[cfg(all(test,feature="test-fixtures"))]self.m2_report_attempt(generation,pipeline);
+            if !pipeline.cleanup_pending(){self.capture_closed(result);break;}
+        }
+    }
+    #[cfg(all(test,feature="test-fixtures"))]
+    fn m2_report_attempt(&self,generation:u64,pipeline:&CapturePipeline){if let Some(tx)=self.test_cleanup_attempt.lock().unwrap().as_ref(){let _=tx.try_send((generation,pipeline as *const _ as usize,pipeline.m2_listener_pending()));}}
+    fn record_cleanup(&self,result:&ContractResult<()>){if let Err(error)=result{if error.code==ErrorCode::CleanupFailed{self.cleanup_failed.store(true,Ordering::Release);let mut errors=self.cleanup_errors.lock().unwrap_or_else(|e|e.into_inner());if !errors.contains(&error.message){errors.push(error.message.clone());}}}}
     fn capture_closed(&self,result:ContractResult<()>){
         if result.is_err(){self.cleanup_failed.store(true,std::sync::atomic::Ordering::Release);}
         let mut s=self.state.lock().unwrap_or_else(|e|e.into_inner());s.listener_ready=false;s.worker_service=if result.is_ok(){"stopped"}else{"failed"}.into();drop(s);self.notify_status();
     }
-    fn notify_status(&self){let revision={let mut s=self.state.lock().unwrap_or_else(|e|e.into_inner());s.revision+=1;s.revision};(self.events)("status_changed",revision);self.wake.notify_all();}
+    fn notify_status(&self){let revision={let mut s=self.state.lock().unwrap_or_else(|e|e.into_inner());s.revision+=1;s.revision};(self.events)("status_changed",revision);(self.events)("settings_changed",revision);self.wake.notify_all();}
     fn commit_one(&self,store:&mut Store)->bool{
         let gate=self.gate.lock().unwrap_or_else(|e|e.into_inner());
         let mut s=self.state.lock().unwrap_or_else(|e|e.into_inner());
@@ -162,13 +194,25 @@ impl HostRuntime {
         let shared=Arc::new(SharedRuntime{state,gate:Mutex::new(()),wake:Condvar::new(),events,_instance:instance,listener_failed:std::sync::atomic::AtomicBool::new(false),cleanup_failed:std::sync::atomic::AtomicBool::new(false),native_writes:production,
             copy_busy:Arc::new(AtomicBool::new(false)),copy_stopping:AtomicBool::new(false),
             copy_owner:Mutex::new(CopyOwner{owner:None,borrowers:0}),owner_idle:Condvar::new(),
+            closing:Arc::new(crate::runtime::CloseControl::default()),
+            cleanup_errors:Mutex::new(Vec::new()),
+            settings_file:Mutex::new(None),
+            #[cfg(all(test,feature="test-fixtures"))]test_cleanup_attempt:Mutex::new(None),
             #[cfg(feature="test-fixtures")]test_writer:Mutex::new(None),
             #[cfg(feature="test-fixtures")]before_commit:Mutex::new(None),
             #[cfg(feature="test-fixtures")]before_policy:Mutex::new(None),
+            #[cfg(feature="test-fixtures")]before_settings_replace:Mutex::new(None),
         });
         #[cfg(feature="test-fixtures")]let test_product=match &target{Target::Manual{product,..}=>Some(product.clone()),_=>None};
         let(tx,rx)=mpsc::sync_channel(16);let(ready_tx,ready_rx)=mpsc::sync_channel(1);let storage_shared=shared.clone();
         let storage=std::thread::Builder::new().name("history-storage".into()).spawn(move||{
+            let settings_path=match &target{Target::File(path)=>Some(path.with_file_name("settings.json")),#[cfg(feature="test-fixtures")]Target::Manual{path,..}=>Some(path.with_file_name("settings.json")),#[cfg(feature="test-fixtures")]Target::Memory=>None};
+            if let Some(path)=settings_path {
+                let(file,loaded)=crate::config::SettingsFile::load(path);
+                let mut state=storage_shared.state.lock().unwrap_or_else(|e|e.into_inner());
+                match loaded{Ok(paths)=>state.exclusions=paths,Err(error)=>{state.settings_blocked=true;state.settings_error=Some(error.message);}}
+                *storage_shared.settings_file.lock().unwrap_or_else(|e|e.into_inner())=Some(file);
+            }
             let opened=match target{Target::File(path)=>Store::open(&path),#[cfg(feature="test-fixtures")]Target::Memory=>Store::open_in_memory(),#[cfg(feature="test-fixtures")]Target::Manual{path,..}=>Store::open(&path)};
             let mut store=opened.ok();
             {let mut s=storage_shared.state.lock().unwrap_or_else(|e|e.into_inner());if let Some(db)=store.as_ref(){match db.usage(){Ok(usage)=>{s.history=usage;s.storage_ready=true;},Err(_)=>{s.storage_failed=true;s.admission=Admission::Failed;}}}else{s.storage_failed=true;s.admission=Admission::Failed;}}
@@ -183,7 +227,7 @@ impl HostRuntime {
             let shared=runtime.shared.clone();let(ready_tx,ready_rx)=mpsc::sync_channel(1);
             let capture=std::thread::Builder::new().name("clipboard-capture".into()).spawn(move||{
                 let wake=shared.clone();
-                let mut pipeline=match CapturePipeline::start_shared(shared.state.clone(),Arc::new(move||wake.wake.notify_all())){
+                let mut pipeline=match CapturePipeline::start_controlled(shared.state.clone(),Arc::new(move||wake.wake.notify_all()),shared.closing.clone()){
                     Ok(pipeline)=>pipeline,Err(_)=>{shared.listener_failed.store(true,std::sync::atomic::Ordering::Release);let mut s=shared.state.lock().unwrap_or_else(|e|e.into_inner());s.admission=Admission::Failed;drop(s);let _=ready_tx.send(());shared.notify_status();return;}
                 };
                 #[cfg(feature="test-fixtures")]if let Some(exe)=test_product{pipeline.use_test_product(exe);}
@@ -205,7 +249,9 @@ impl HostRuntime {
                     let _=shared.wake.wait_timeout(s,Duration::from_millis(20));
                 }
                 }));
-                shared.close_capture(||pipeline.close());
+                // Listener failure also closes through the same owner and borrower order.
+                if !shared.closing.closing(){shared.closing.publish(Instant::now()+Duration::from_secs(3));}
+                shared.close_pipeline(&mut pipeline);
                 if let Err(panic)=capture_result{std::panic::resume_unwind(panic);}
             }).map_err(|_|cleanup())?;
             *runtime.capture.lock().unwrap_or_else(|e|e.into_inner())=Some(capture);
@@ -222,9 +268,10 @@ impl HostRuntime {
         #[cfg(feature="test-fixtures")]if let Some(hook)=self.shared.before_policy.lock().unwrap_or_else(|e|e.into_inner()).clone(){hook();}
         let gate=self.shared.gate.lock().unwrap_or_else(|e|e.into_inner());
         let mut s=self.shared.state.lock().unwrap_or_else(|e|e.into_inner());
+        if s.stopping||self.shared.closing.closing(){return Err(ContractError::new(ErrorCode::Busy,"runtime is stopping"));}
+        if enabled && s.settings_blocked{return Err(ContractError::new(ErrorCode::StorageUnavailable,"设置文件需要核对；收录已阻止，请退出后修正并重新启动。"));}
         if enabled && !s.storage_ready{return Err(unavailable());}
         if enabled && s.storage_failed{s.storage_retry=true;s.user_enabled=true;}
-        else if s.stopping{return Err(ContractError::new(ErrorCode::Busy,"runtime is stopping"));}
         else{
             if enabled && self.production && !s.listener_ready{return Err(cleanup());}
             let(count,bytes)=s.queue_usage();
@@ -263,7 +310,57 @@ impl HostRuntime {
         let result=self.copy_with_budget(positive_id_as_i64(&request.clip_id),Instant::now()+Duration::from_secs(3),Duration::from_secs(3));
         Ok(copy_result(&request,result))
     }
-    pub fn set_exclusions(&self,paths:Vec<String>)->ContractResult<StatusResult>{let paths=parse_set_excluded_apps_request(&serde_json::json!({"paths":paths}))?;let gate=self.shared.gate.lock().unwrap_or_else(|e|e.into_inner());let mut s=self.shared.state.lock().unwrap_or_else(|e|e.into_inner());if s.stopping{return Err(ContractError::new(ErrorCode::Busy,"runtime is stopping"));}s.set_exclusions(paths);drop(s);drop(gate);self.shared.notify_status();Ok(self.status())}
+    pub fn copy_panel_text(&self,panel:&crate::manual_panel::PanelSessions,session:&str,request:CopyClipTextRequest)->ContractResult<CopyClipTextResult>{
+        let request=parse_copy_clip_text_request(&serde_json::json!({"request_id":request.request_id,"clip_id":request.clip_id}))?;
+        // Linearization point: hide/new-session cannot pass between validation and try_send.
+        let admitted=panel.admit(session,||self.queue_copy(positive_id_as_i64(&request.clip_id),Instant::now()+Duration::from_secs(3)));
+        let result=match admitted {
+            Err(error)=>Err(error.into()),
+            Ok(Err(error))=>Err(error),
+            Ok(Ok(reply))=>reply.recv_timeout(Duration::from_secs(3)).unwrap_or_else(|_|Err(WriteFailure{error:ContractError::new(ErrorCode::Timeout,"clipboard write result is unknown"),may_have_written:true})),
+        };
+        Ok(copy_result(&request,result))
+    }
+    pub fn settings(&self)->SettingsSnapshot {
+        let s=self.shared.state.lock().unwrap_or_else(|e|e.into_inner());
+        SettingsSnapshot{revision:s.revision.to_string(),schema_version:1,excluded_apps:s.exclusions.clone(),saving:s.settings_saving,blocked:s.settings_blocked,error:s.settings_error.clone(),last_skip:s.last_application_skip().map(|reason|match reason{crate::runtime::ApplicationSkip::ExcludedOwner=>"excluded_owner",crate::runtime::ApplicationSkip::UnknownOwner=>"unknown_owner"}.into())}
+    }
+    pub fn set_exclusions(&self,paths:Vec<String>)->ContractResult<StatusResult>{self.apply_exclusions(paths)?;Ok(self.status())}
+    pub fn apply_exclusions(&self,paths:Vec<String>)->ContractResult<SettingsSnapshot>{
+        let mut paths=crate::config::normalize_exclusions(paths)?;
+        let unchanged={
+            let mut s=self.shared.state.lock().unwrap_or_else(|e|e.into_inner());
+            if s.stopping||self.shared.closing.closing()||s.settings_saving{return Err(ContractError::new(ErrorCode::Busy,"runtime is stopping or settings save is pending"));}
+            if s.settings_blocked{return Err(ContractError::new(ErrorCode::StorageUnavailable,"设置文件需要核对；当前实例不会覆盖该文件。请退出后修正并重新启动。"));}
+            let unchanged=crate::config::same_exclusions(&s.exclusions,&paths)?;
+            if unchanged{paths=s.exclusions.clone();}
+            s.settings_saving=true;unchanged
+        };
+        self.shared.notify_status();
+        // All file work runs in the command's spawn_blocking worker, outside the GUI thread.
+        let prepared=self.shared.settings_file.lock().unwrap_or_else(|e|e.into_inner()).as_ref().map(|file|file.prepare(&paths)).transpose();
+        let result=(||{
+            let staged=prepared?;
+            let _gate=self.shared.gate.lock().unwrap_or_else(|e|e.into_inner());
+            if self.shared.state.lock().unwrap_or_else(|e|e.into_inner()).stopping{return Err(ContractError::new(ErrorCode::Busy,"runtime is stopping"));}
+            #[cfg(feature="test-fixtures")]if let Some(hook)=self.shared.before_settings_replace.lock().unwrap_or_else(|e|e.into_inner()).clone(){hook();}
+            // Shutdown may fence during IO. It must not wait for IO on the GUI thread.
+            let saved=if let Some(staged)=staged.as_ref(){self.shared.settings_file.lock().unwrap_or_else(|e|e.into_inner()).as_mut().expect("settings file owner").replace(staged)}else{Ok(())};
+            let mut s=self.shared.state.lock().unwrap_or_else(|e|e.into_inner());
+            if let Err(failure)=saved {
+                if failure.uncertain{s.settings_blocked=true;s.settings_error=Some(failure.error.message.clone());if !s.stopping{s.set_enabled(false);}}
+                return Err(failure.error);
+            }
+            if s.stopping {
+                s.settings_blocked=true;s.settings_error=Some("设置保存与退出重叠；本次没有发布新规则。请在下次启动时核对保存的排除列表。".into());
+                return Err(ContractError::new(ErrorCode::Busy,"runtime stopped before settings publication; review settings on next startup"));
+            }
+            // Publication and the shutdown fence share this state lock; commits share gate.
+            if !unchanged{s.set_exclusions(paths);}Ok(())
+        })();
+        self.shared.state.lock().unwrap_or_else(|e|e.into_inner()).settings_saving=false;self.shared.notify_status();
+        result.map(|_|self.settings())
+    }
     #[cfg(feature="test-fixtures")]
     pub fn queue_test_query(&self,request:ListClipsRequest)->ContractResult<Receiver<ContractResult<ListClipsResult>>>{let(tx,rx)=mpsc::sync_channel(1);self.queries.try_send(Query::List(request,tx)).map_err(|_|ContractError::new(ErrorCode::Busy,"history query queue is full"))?;self.shared.wake.notify_all();Ok(rx)}
     #[cfg(feature="test-fixtures")]
@@ -276,14 +373,37 @@ impl HostRuntime {
     }
     #[cfg(feature="test-fixtures")]
     pub fn set_test_fault(&self,enabled:bool)->ContractResult<()> {let(tx,rx)=mpsc::sync_channel(1);self.queries.try_send(Query::Fault(enabled,tx)).map_err(|_|unavailable())?;self.shared.wake.notify_all();rx.recv_timeout(Duration::from_secs(3)).map_err(|_|unavailable())?}
-    pub fn shutdown(&self,budget:Duration)->ContractResult<()> {
+    pub fn begin_shutdown(&self,deadline:Instant){
+        {let mut state=self.shared.state.lock().unwrap_or_else(|e|e.into_inner());self.shared.closing.publish(deadline);state.stop_observing();}
         self.shared.revoke_copy_owner();
-        self.shared.state.lock().unwrap_or_else(|e|e.into_inner()).stop_observing();self.shared.wake.notify_all();
-        let deadline=Instant::now()+budget;
+        self.shared.wake.notify_all();
+        self.shared.notify_status();
+    }
+    pub fn retry_saving(&self)->ContractResult<StatusResult>{
+        let mut s=self.shared.state.lock().unwrap_or_else(|e|e.into_inner());
+        if !s.stopping{return Err(ContractError::new(ErrorCode::Busy,"save retry requires closing runtime"));}
+        if s.storage_failed{s.storage_retry=true;}
+        drop(s);self.shared.notify_status();Ok(self.status())
+    }
+    pub fn shutdown(&self,budget:Duration)->ContractResult<()> {self.shutdown_until(Instant::now()+budget).map_err(|e|if e.code==ErrorCode::Timeout{cleanup()}else{e})}
+    pub fn shutdown_until(&self,deadline:Instant)->ContractResult<()> {
+        if self.shared.closing.current().1!=Some(deadline){self.begin_shutdown(deadline);}
+        let mut state=self.shared.state.lock().unwrap_or_else(|e|e.into_inner());
+        while state.settings_saving {
+            let remaining=deadline.saturating_duration_since(Instant::now());if remaining.is_zero(){break;}
+            state=self.shared.wake.wait_timeout(state,remaining).unwrap_or_else(|e|e.into_inner()).0;
+        }
+        let settings_pending=state.settings_saving;drop(state);
         let capture=finish_thread(&self.capture,deadline,&self.shared.cleanup_failed);
         let storage=finish_thread(&self.storage,deadline,&self.shared.cleanup_failed);
-        capture?;storage?;
-        if self.shared.cleanup_failed.load(std::sync::atomic::Ordering::Acquire){return Err(cleanup());}
+        let terminal=self.shared.cleanup_failed.load(Ordering::Acquire);
+        if capture.is_err()||storage.is_err()||terminal||settings_pending{
+            let mut errors=self.shared.cleanup_errors.lock().unwrap_or_else(|e|e.into_inner()).clone();
+            if capture.is_err(){errors.push("抓取资源仍在回收或已失败".into());}if storage.is_err(){errors.push("存储资源仍在回收或已失败".into());}
+            if settings_pending{errors.push("设置保存仍在结束；尚不能退出".into());}
+            if self.shared.state.lock().unwrap_or_else(|e|e.into_inner()).storage_failed{errors.push("保存失败，已接纳队列仍保留".into());}
+            return Err(ContractError::new(if terminal{ErrorCode::CleanupFailed}else{ErrorCode::Timeout},&format!("资源回收未完成：{}",errors.join("; "))));
+        }
         self.exit_ready.store(true,std::sync::atomic::Ordering::Release);Ok(())
     }
     pub fn exit_failed(&self){self.shared.state.lock().unwrap_or_else(|e|e.into_inner()).admission=Admission::Failed;self.shared.notify_status();}
@@ -325,6 +445,8 @@ fn execute_copy(shared:&SharedRuntime,store:&Option<Store>,id:i64,deadline:Insta
         before_write()?;
         if s.stopping{return Err(ContractError::new(ErrorCode::Busy,"runtime is stopping").into());}
         if s.origins.owner()!=owner.owner{return Err(ContractError::new(ErrorCode::InjectionFailed,"clipboard owner unavailable").into());}
+        // Pausing clears queued snapshots and invalidates in-flight captures by epoch.
+        if !s.user_enabled&&s.origins.len()>=crate::clipboard::origin::MAX_OPERATIONS{s.origins.retire_finished_noncurrent();}
         s.origins.begin()?
     };
     let attempt=crate::clipboard::origin::write_registered_text(writer.as_mut(),owner.owner,counter,&marker,&text.data,before_write);
@@ -344,7 +466,7 @@ fn finish_thread(slot:&Mutex<Option<JoinHandle<()>>>,deadline:Instant,cleanup_fa
     // A consumed failed join must not become success on the next shutdown call.
     slot.take().unwrap().join().map_err(|_|{cleanup_failed.store(true,std::sync::atomic::Ordering::Release);cleanup()})
 }
-impl Drop for HostRuntime {fn drop(&mut self){let _=self.shutdown(Duration::from_secs(3));for slot in [&self.capture,&self.storage]{if let Some(thread)=slot.lock().unwrap_or_else(|e|e.into_inner()).take(){RETAINED.lock().unwrap_or_else(|e|e.into_inner()).push(thread);}}}}
+impl Drop for HostRuntime {fn drop(&mut self){if !self.shared.closing.closing(){let _=self.shutdown(Duration::from_secs(3));}for slot in [&self.capture,&self.storage]{if let Some(thread)=slot.lock().unwrap_or_else(|e|e.into_inner()).take(){RETAINED.lock().unwrap_or_else(|e|e.into_inner()).push(thread);}}}}
 
 fn storage_loop(shared:&SharedRuntime,store:&mut Option<Store>,queries:Receiver<Query>){
     loop {
@@ -370,6 +492,14 @@ fn storage_loop(shared:&SharedRuntime,store:&mut Option<Store>,queries:Receiver<
 #[cfg(all(test,feature="test-fixtures"))]
 #[path="host_explicit_copy_tests.rs"]
 mod explicit_copy_tests;
+
+#[cfg(all(test,feature="test-fixtures"))]
+#[path="host_residency_tests.rs"]
+mod residency_tests;
+
+#[cfg(all(test,feature="test-fixtures"))]
+#[path="host_settings_tests.rs"]
+mod settings_tests;
 
 #[cfg(all(test,feature="test-fixtures"))]
 mod shutdown_tests {
@@ -447,5 +577,21 @@ mod shutdown_tests {
         assert_eq!(timed_out.unwrap_err().code,ErrorCode::CleanupFailed);
         assert_failed(&runtime,runtime.shutdown(Duration::from_secs(2)));assert_joined(&runtime);
         assert_failed(&runtime,runtime.shutdown(Duration::ZERO));
+    }
+}
+
+#[cfg(all(test,feature="test-fixtures"))]
+mod m2_retry_baseline_tests {
+    use super::*;
+    #[test]
+    fn m2_save_retry_cannot_reopen_capture_after_stopping(){
+        let runtime=HostRuntime::for_test_memory(Arc::new(|_,_|{})).unwrap();
+        {let mut s=runtime.shared.state.lock().unwrap();s.stop_observing();s.storage_failed=true;}
+        let result=runtime.set_enabled(true);
+        let reopened=runtime.status().capture.user_enabled;
+        {let mut s=runtime.shared.state.lock().unwrap();s.storage_failed=false;s.storage_retry=false;}
+        runtime.shutdown(Duration::from_secs(1)).unwrap();
+        assert!(result.is_err(),"management capture intent must reject after closing");
+        assert!(!reopened,"save retry must never reopen capture");
     }
 }

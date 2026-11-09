@@ -2,11 +2,11 @@
 use super::*;
 use crate::clipboard::{capture::*,origin::Classification,protocol::WorkerMessage};
 use base64::{Engine,engine::general_purpose::STANDARD};
-use std::{collections::BTreeMap,sync::atomic::AtomicUsize};
+use std::{collections::BTreeMap,sync::atomic::{AtomicUsize,AtomicU32}};
 
 #[derive(Default)]
 struct Written { calls:usize,created:usize,next:usize,owned:BTreeMap<usize,Vec<u8>>,transferred:Vec<(String,Vec<u8>)>,freed:usize,closed:usize,dropped:usize }
-struct Control { fail:AtomicUsize,block:AtomicUsize,entered:mpsc::SyncSender<()>,release:Mutex<mpsc::Receiver<()>>,written:Mutex<Written>,owner_alive:Arc<AtomicBool>,owner_violation:AtomicBool }
+struct Control { fail:AtomicUsize,block:AtomicUsize,sequence:AtomicU32,entered:mpsc::SyncSender<()>,release:Mutex<mpsc::Receiver<()>>,written:Mutex<Written>,owner_alive:Arc<AtomicBool>,owner_violation:AtomicBool }
 struct MockWriter {control:Arc<Control>,step:usize}
 impl MockWriter {
     fn check(&mut self)->ContractResult<()> {
@@ -31,7 +31,7 @@ impl WriteApi for MockWriter {
     fn set(&mut self,name:&str,handle:usize)->ContractResult<()>{self.check()?;let mut w=self.control.written.lock().unwrap();let bytes=w.owned.remove(&handle).expect("transfer an owned handle once");w.transferred.push((name.into(),bytes));Ok(())}
     fn free(&mut self,handle:usize){let mut w=self.control.written.lock().unwrap();assert!(w.owned.remove(&handle).is_some());w.freed+=1;}
     fn close(&mut self)->ContractResult<()>{self.control.written.lock().unwrap().closed+=1;self.check()}
-    fn sequence(&mut self)->u32{50}
+    fn sequence(&mut self)->u32{self.control.sequence.load(Ordering::Acquire)}
 }
 impl Drop for MockWriter {
     fn drop(&mut self){
@@ -46,7 +46,7 @@ fn fixture(formats:Vec<WireFormat>)->Fixture {
     let(tx,rx)=mpsc::sync_channel(8);
     let runtime=Arc::new(HostRuntime::for_test_memory(Arc::new(move|name,_|{if name=="history_changed"{let _=tx.try_send(());}})).unwrap());
     let(entered_tx,entered)=mpsc::sync_channel(1);let(release,release_rx)=mpsc::sync_channel(1);
-    let control=Arc::new(Control{fail:AtomicUsize::new(0),block:AtomicUsize::new(0),entered:entered_tx,release:Mutex::new(release_rx),written:Mutex::new(Written::default()),owner_alive:Arc::new(AtomicBool::new(true)),owner_violation:AtomicBool::new(false)});
+    let control=Arc::new(Control{fail:AtomicUsize::new(0),block:AtomicUsize::new(0),sequence:AtomicU32::new(50),entered:entered_tx,release:Mutex::new(release_rx),written:Mutex::new(Written::default()),owner_alive:Arc::new(AtomicBool::new(true)),owner_violation:AtomicBool::new(false)});
     let c=control.clone();*runtime.shared.test_writer.lock().unwrap()=Some(Arc::new(move||{c.written.lock().unwrap().created+=1;Ok(Box::new(MockWriter{control:c.clone(),step:0}))}));
     runtime.shared.state.lock().unwrap().origins.set_owner(99);
     runtime.shared.publish_copy_owner(99);
@@ -59,8 +59,60 @@ fn response(formats:Vec<WireFormat>)->CaptureResponse {
     r.result=CaptureResult::Captured;r.reason=None;r.attempts=1;r.sequence_before=1;r.sequence_locked=1;r.sequence_after=1;r.formats=formats;r
 }
 fn request()->CopyClipTextRequest{CopyClipTextRequest{request_id:"copy-1".into(),clip_id:"1".into()}}
+#[test]
+fn m2_pipeline_timeout_retains_borrowed_listener_and_same_capture_owner_on_retry(){
+    let f=fixture(vec![text("m2 writer Drop")]);f.control.block.store(12,Ordering::Release);
+    let reply=f.runtime.queue_copy(1,Instant::now()+Duration::from_secs(5)).unwrap();f.entered.recv_timeout(Duration::from_secs(2)).unwrap();
+    let(listener_release,listener_wait)=mpsc::channel();let listener_thread=std::thread::spawn(move||{listener_wait.recv().unwrap();});
+    let listener=crate::clipboard::listener::ClipboardListener::m2_synthetic(listener_thread);
+    let worker=crate::clipboard::worker::WorkerSupervisor::m2_synthetic(&[0]);let shared=f.runtime.shared.clone();
+    let(attempt_tx,attempt_rx)=mpsc::sync_channel(4);*shared.test_cleanup_attempt.lock().unwrap()=Some(attempt_tx);
+    let capture=std::thread::spawn(move||{let mut pipeline=CapturePipeline::m2_synthetic(shared.state.clone(),listener,worker,shared.closing.clone());shared.close_pipeline(&mut pipeline);});
+    let capture_id=capture.thread().id();*f.runtime.capture.lock().unwrap()=Some(capture);
+    let expired=Instant::now();assert_eq!(f.runtime.shutdown_until(expired).unwrap_err().code,ErrorCode::Timeout);
+    let first=attempt_rx.recv_timeout(Duration::from_secs(2)).unwrap();assert!(first.2,"borrowed listener must never enter close or Drop on timeout");
+    assert_eq!(f.runtime.capture.lock().unwrap().as_ref().unwrap().thread().id(),capture_id);
+    assert!(f.runtime.storage.lock().unwrap().is_some());assert_eq!(f.runtime.shared.copy_owner.lock().unwrap().borrowers,1);
+    assert_outcome(copied(&f),CopyOutcome::NotWritten,Some(ErrorCode::Busy));assert!(f.runtime.set_enabled(true).is_err());
+    f.release.send(()).unwrap();reply.recv_timeout(Duration::from_secs(2)).unwrap().unwrap();
+    assert_eq!(f.control.written.lock().unwrap().dropped,1);assert_eq!(f.runtime.shared.copy_owner.lock().unwrap().borrowers,0);
+    listener_release.send(()).unwrap();f.runtime.shutdown_until(Instant::now()+Duration::from_secs(2)).unwrap();
+    let second=attempt_rx.recv_timeout(Duration::from_secs(2)).unwrap();assert!(second.0>first.0);assert_eq!(first.1,second.1,"retry must reuse the pipeline stack owner");assert!(!second.2);
+    assert!(!f.control.owner_violation.load(Ordering::Acquire));
+}
 fn copied(f:&Fixture)->CopyClipTextResult{f.runtime.copy_clip_text(request()).unwrap()}
 fn list()->ListClipsRequest{parse_list_clips_request(&serde_json::json!({"request_id":"list","query":""})).unwrap()}
+struct ManualPanelWindow;
+impl crate::manual_panel::PanelWindow for ManualPanelWindow {
+    fn hide(&self)->Result<(),String>{Ok(())}fn show(&self)->Result<(),String>{Ok(())}fn focus(&self)->Result<(),String>{Ok(())}fn publish(&self,_:&crate::manual_panel::PanelSnapshot)->Result<(),String>{Ok(())}
+}
+#[test]
+fn manual_panel_real_queue_rejects_invalid_sessions_and_shares_main_permit_through_hide(){
+    let f=fixture(vec![text(&"长正文😀".repeat(20000))]);let panel=Arc::new(crate::manual_panel::PanelSessions::new(true));let window=ManualPanelWindow;
+    let old=panel.open(&window).unwrap().session_id.unwrap();
+    for session in [&old,"forged"]{assert_outcome(f.runtime.copy_panel_text(&panel,session,request()).unwrap(),CopyOutcome::NotWritten,Some(ErrorCode::PermissionUnknown));}
+    assert_eq!(f.control.written.lock().unwrap().created,0);panel.ready(&old,&window).unwrap();
+    f.control.block.store(2,Ordering::Release);let runtime=f.runtime.clone();let p=panel.clone();let id=old.clone();let copying=std::thread::spawn(move||runtime.copy_panel_text(&p,&id,request()).unwrap());
+    f.entered.recv_timeout(Duration::from_secs(2)).unwrap();panel.hide(&old,&window).unwrap();
+    let fresh=panel.open(&window).unwrap().session_id.unwrap();panel.ready(&fresh,&window).unwrap();
+    assert_outcome(copied(&f),CopyOutcome::NotWritten,Some(ErrorCode::Busy));
+    assert_outcome(f.runtime.copy_panel_text(&panel,&fresh,request()).unwrap(),CopyOutcome::NotWritten,Some(ErrorCode::Busy));
+    assert_outcome(f.runtime.copy_panel_text(&panel,&old,request()).unwrap(),CopyOutcome::NotWritten,Some(ErrorCode::PermissionUnknown));
+    f.release.send(()).unwrap();assert_outcome(copying.join().unwrap(),CopyOutcome::Copied,None);
+    assert_eq!(panel.snapshot().session_id.as_deref(),Some(fresh.as_str()));f.control.block.store(0,Ordering::Release);
+    assert_outcome(f.runtime.copy_panel_text(&panel,&fresh,request()).unwrap(),CopyOutcome::Copied,None);assert_eq!(f.control.written.lock().unwrap().created,2);
+}
+#[test]
+fn manual_panel_timeout_does_not_release_permit_or_claim_hidden_write_cancelled(){
+    let f=fixture(vec![text("synthetic panel timeout")]);let panel=Arc::new(crate::manual_panel::PanelSessions::new(true));let window=ManualPanelWindow;
+    let session=panel.open(&window).unwrap().session_id.unwrap();panel.ready(&session,&window).unwrap();f.control.block.store(2,Ordering::Release);
+    let runtime=f.runtime.clone();let p=panel.clone();let id=session.clone();let copying=std::thread::spawn(move||runtime.copy_panel_text(&p,&id,request()).unwrap());
+    f.entered.recv_timeout(Duration::from_secs(2)).unwrap();panel.hide(&session,&window).unwrap();assert_outcome(copying.join().unwrap(),CopyOutcome::Unknown,Some(ErrorCode::Timeout));
+    assert_outcome(copied(&f),CopyOutcome::NotWritten,Some(ErrorCode::Busy));assert_eq!(f.control.written.lock().unwrap().created,1);f.release.send(()).unwrap();
+    // The storage query behind the accepted write is the deterministic completion barrier.
+    f.runtime.list(list()).unwrap();assert!(!f.runtime.shared.copy_busy.load(Ordering::Acquire));assert_eq!(f.control.written.lock().unwrap().dropped,1);
+    assert_outcome(f.runtime.copy_panel_text(&panel,&session,request()).unwrap(),CopyOutcome::NotWritten,Some(ErrorCode::PermissionUnknown));
+}
 fn assert_outcome(result:CopyClipTextResult,outcome:CopyOutcome,reason:Option<ErrorCode>){assert_eq!(result,CopyClipTextResult::new(&request(),outcome,reason));}
 
 struct PauseCommit {shared:Arc<SharedRuntime>,release:Option<mpsc::SyncSender<()>>}
@@ -100,6 +152,75 @@ fn explicit_copy_full_unicode_multi_format_payload_and_self_filter(){
     let mut external=response(vec![text(&body)]);external.sequence_before=51;external.sequence_locked=51;external.sequence_after=51;external.owner.hwnd=Some("99".into());
     f.runtime.inject_response(51,external).unwrap();f.committed.recv_timeout(Duration::from_secs(2)).unwrap();assert_eq!(f.runtime.status().history.items,2,"equal external text without the registered marker remains collectable");
 }
+#[test]
+fn explicit_copy_paused_registry_reclaims_capacity_and_resumes_self_filter(){
+    let body="paused registry";
+    let f=fixture(vec![text(body)]);
+    for sequence in 50..350 {
+        f.control.sequence.store(sequence,Ordering::Release);
+        let result=copied(&f);
+        assert_eq!(result.outcome,CopyOutcome::Copied,"copy {}: {result:?}",sequence-49);
+        assert!(f.runtime.shared.state.lock().unwrap().origins.len()<=crate::clipboard::origin::MAX_OPERATIONS);
+    }
+    assert_eq!(f.control.written.lock().unwrap().created,300);
+    assert_eq!(f.runtime.status().history.items,1);
+    let marker=f.control.written.lock().unwrap().transferred.iter().rev().find(|(name,_)|name==INTERNAL).unwrap().1.clone();
+    f.runtime.set_enabled(true).unwrap();
+    let mut internal=response(vec![text(body)]);internal.sequence_before=349;internal.sequence_locked=349;internal.sequence_after=349;
+    internal.owner.hwnd=Some("99".into());internal.internal_origin=Some(STANDARD.encode(&marker));
+    f.runtime.inject_response(349,internal).unwrap();
+    assert_eq!(f.runtime.status().counters.ignored,"1");assert_eq!(f.runtime.status().history.items,1);
+    let mut external=response(vec![text(body)]);external.sequence_before=350;external.sequence_locked=350;external.sequence_after=350;external.owner.hwnd=Some("99".into());
+    f.runtime.inject_response(350,external).unwrap();f.committed.recv_timeout(Duration::from_secs(2)).unwrap();
+    assert_eq!(f.runtime.status().history.items,2,"equal external text remains collectable after reclamation");
+}
+
+#[test]
+fn explicit_copy_paused_registry_keeps_pending_and_current_operations(){
+    let f=fixture(vec![text("protected origins")]);
+    let(pending,current)={
+        let mut state=f.runtime.shared.state.lock().unwrap();
+        let(_,pending)=state.origins.begin().unwrap();let mut current=None;
+        for sequence in 1..128 {let(id,marker)=state.origins.begin().unwrap();state.origins.finish(id,Some(sequence));current=Some(marker);}
+        (pending,current.unwrap())
+    };
+    f.control.sequence.store(128,Ordering::Release);
+    assert_outcome(copied(&f),CopyOutcome::Copied,None);
+    let mut state=f.runtime.shared.state.lock().unwrap();assert_eq!(state.origins.len(),3);
+    assert_eq!(state.origins.classify(Some(&current),Some(99),127),Classification::Internal,"the previous current operation survives reclamation");
+    assert_eq!(state.origins.classify(Some(&pending),Some(99),128),Classification::Pending,"unfinished operations survive reclamation");
+}
+
+#[test]
+fn explicit_copy_listening_registry_preserves_unclassified_operations(){
+    let f=fixture(vec![text("active registry")]);
+    for sequence in 50..178 {f.control.sequence.store(sequence,Ordering::Release);assert_outcome(copied(&f),CopyOutcome::Copied,None);}
+    f.runtime.set_enabled(true).unwrap();
+    assert_outcome(copied(&f),CopyOutcome::NotWritten,Some(ErrorCode::Busy));
+    assert_eq!(f.runtime.shared.state.lock().unwrap().origins.len(),crate::clipboard::origin::MAX_OPERATIONS);
+    let written=f.control.written.lock().unwrap();assert_eq!(written.calls,128*11,"capacity rejection must precede native OpenClipboard");
+}
+
+#[test]
+fn explicit_copy_paused_registry_rejects_old_epoch_before_classification(){
+    let f=fixture(vec![text("old epoch")]);assert_outcome(copied(&f),CopyOutcome::Copied,None);
+    let marker=f.control.written.lock().unwrap().transferred[0].1.clone();
+    f.runtime.set_enabled(true).unwrap();
+    let ticket={let mut state=f.runtime.shared.state.lock().unwrap();state.observe(50,0);state.begin_current(50).unwrap()};
+    let mut late=response(vec![text("old epoch")]);late.capture_id=ticket.message.capture_id.clone();late.policy_epoch=ticket.message.policy_epoch;
+    late.sequence_before=50;late.sequence_locked=50;late.sequence_after=50;late.owner.hwnd=Some("99".into());late.internal_origin=Some(STANDARD.encode(&marker));
+    let late=crate::clipboard::protocol::decode_snapshot(&serde_json::to_vec(&late).unwrap(),&ticket.message).unwrap();
+    f.runtime.set_enabled(false).unwrap();
+    for sequence in 51..179 {f.control.sequence.store(sequence,Ordering::Release);assert_outcome(copied(&f),CopyOutcome::Copied,None);}
+    // Resume first: rejection must depend on the old epoch, rather than the pause flag.
+    f.runtime.set_enabled(true).unwrap();
+    let mut state=f.runtime.shared.state.lock().unwrap();let cancelled=state.counters.cancelled;let captured=state.counters.captured;
+    state.complete(ticket,late);
+    assert_eq!(state.counters.cancelled,cancelled+1);assert_eq!(state.counters.captured,captured);
+    assert_eq!(state.internal_ignored,0,"a retired old marker must never reach classification");
+    assert!(state.queue.is_empty());assert_eq!(state.history.items,1);
+}
+
 #[test]
 fn explicit_copy_each_os_failure_has_conservative_outcome_and_owned_handles(){
     for fail in 1..=11 {
@@ -333,4 +454,80 @@ fn explicit_copy_listener_owner_live_while_user_paused_and_cleanup_failure_stays
     capture.end.send(()).unwrap();capture.started.recv_timeout(Duration::from_secs(2)).unwrap();capture.destroyed.recv_timeout(Duration::from_secs(2)).unwrap();
     for budget in [Duration::from_secs(2),Duration::ZERO]{assert_eq!(f.runtime.shutdown(budget).unwrap_err().code,ErrorCode::CleanupFailed);assert!(!f.runtime.exit_ready.load(Ordering::Acquire));}
     assert_eq!(f.runtime.status().services.worker,"failed");assert!(f.runtime.capture.lock().unwrap().is_none());assert!(f.runtime.storage.lock().unwrap().is_none());
+}
+
+#[test]
+fn explicit_copy_late_capture_then_paused_failed_write_retains_actual_clipboard_origin(){
+    let body="owner synthetic delayed capture";
+    let f=fixture(vec![text(body)]);
+    for sequence in 50..177 {
+        f.control.sequence.store(sequence,Ordering::Release);
+        assert_outcome(copied(&f),CopyOutcome::Copied,None);
+    }
+    let old_marker=f.control.written.lock().unwrap().transferred.iter().rev().find(|(name,_)|name==INTERNAL).unwrap().1.clone();
+    f.runtime.set_enabled(true).unwrap();
+    let ticket={let mut state=f.runtime.shared.state.lock().unwrap();state.observe(176,0);state.begin_current(176).unwrap()};
+    let mut late=response(vec![text(body)]);
+    late.capture_id=ticket.message.capture_id.clone();late.policy_epoch=ticket.message.policy_epoch;
+    late.sequence_before=176;late.sequence_locked=176;late.sequence_after=176;
+    late.owner.hwnd=Some("99".into());late.internal_origin=Some(STANDARD.encode(&old_marker));
+    let late=crate::clipboard::protocol::decode_snapshot(&serde_json::to_vec(&late).unwrap(),&ticket.message).unwrap();
+    // Snapshot 176 is already read; its completion waits while copy 177 finishes.
+    f.control.sequence.store(177,Ordering::Release);
+    assert_outcome(copied(&f),CopyOutcome::Copied,None);
+    let current_marker=f.control.written.lock().unwrap().transferred.iter().rev().find(|(name,_)|name==INTERNAL).unwrap().1.clone();
+    f.runtime.shared.state.lock().unwrap().complete(ticket,late);
+    assert_eq!(f.runtime.status().counters.ignored,"1");
+    f.runtime.set_enabled(false).unwrap();
+    // Open fails before EmptyClipboard; actual clipboard still contains copy 177.
+    f.control.fail.store(1,Ordering::Release);
+    let result=copied(&f);
+    assert_eq!(result.outcome,CopyOutcome::NotWritten);
+    assert!(matches!(result.reason,Some(ErrorCode::Busy)|Some(ErrorCode::InjectionFailed)));
+    f.runtime.set_enabled(true).unwrap();
+    let mut current=response(vec![text(body)]);
+    current.sequence_before=177;current.sequence_locked=177;current.sequence_after=177;
+    current.owner.hwnd=Some("99".into());current.internal_origin=Some(STANDARD.encode(&current_marker));
+    f.runtime.inject_response(177,current).unwrap();
+    // A FIFO query waits for any queued storage work, without sleeps.
+    f.runtime.list(list()).unwrap();
+    assert_eq!(f.runtime.status().history.items,1,"current internal clipboard must not be stored as external after a failed paused copy");
+    assert_eq!(f.runtime.status().counters.ignored,"2");
+}
+
+#[test]
+fn explicit_copy_late_external_capture_then_paused_failed_write_retains_internal_origin(){
+    let f=fixture(vec![text("synthetic stored text")]);
+    for sequence in 50..177 {
+        f.control.sequence.store(sequence,Ordering::Release);
+        assert_outcome(copied(&f),CopyOutcome::Copied,None);
+    }
+    f.runtime.set_enabled(true).unwrap();
+    let ticket={let mut state=f.runtime.shared.state.lock().unwrap();state.observe(177,0);state.begin_current(177).unwrap()};
+    let mut late=response(vec![text("synthetic external capture")]);
+    late.capture_id=ticket.message.capture_id.clone();late.policy_epoch=ticket.message.policy_epoch;
+    late.sequence_before=177;late.sequence_locked=177;late.sequence_after=177;
+    late.owner.hwnd=Some("98".into());
+    let late=crate::clipboard::protocol::decode_snapshot(&serde_json::to_vec(&late).unwrap(),&ticket.message).unwrap();
+    // The external read predates the new internal write; both completion and
+    // storage classify it after that write has finished.
+    f.control.sequence.store(178,Ordering::Release);
+    assert_outcome(copied(&f),CopyOutcome::Copied,None);
+    let current_marker=f.control.written.lock().unwrap().transferred.iter().rev().find(|(name,_)|name==INTERNAL).unwrap().1.clone();
+    f.runtime.shared.state.lock().unwrap().complete(ticket,late);
+    f.committed.recv_timeout(Duration::from_secs(2)).unwrap();
+    assert_eq!(f.runtime.status().history.items,2,"the older external snapshot remains collectable");
+    f.runtime.set_enabled(false).unwrap();
+    let calls=f.control.written.lock().unwrap().calls;
+    f.control.fail.store(1,Ordering::Release);
+    assert_outcome(copied(&f),CopyOutcome::NotWritten,Some(ErrorCode::InjectionFailed));
+    assert_eq!(f.control.written.lock().unwrap().calls,calls+1,"failed Open never reaches EmptyClipboard");
+    f.runtime.set_enabled(true).unwrap();
+    let mut current=response(vec![text("synthetic stored text")]);
+    current.sequence_before=178;current.sequence_locked=178;current.sequence_after=178;
+    current.owner.hwnd=Some("99".into());current.internal_origin=Some(STANDARD.encode(&current_marker));
+    f.runtime.inject_response(178,current).unwrap();
+    f.runtime.list(list()).unwrap();
+    assert_eq!(f.runtime.status().history.items,2,"late external classification cannot unprotect the current internal clipboard");
+    assert_eq!(f.runtime.status().counters.ignored,"1");
 }
