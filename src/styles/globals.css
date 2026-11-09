@@ -83,7 +83,9 @@ body {
 }
 .shell .error { margin: 0; color: var(--destructive); font-size: 12px; }
 
-.history-shell { max-width: 880px; padding: 28px 24px; gap: 20px; }
+.history-shell { max-width: 880px; padding: 28px 24px; padding-bottom: calc(92px + env(safe-area-inset-bottom, 0px)); gap: 20px; }
+.history-shell h1:focus-visible { outline: 2px solid var(--ring); outline-offset: 4px; border-radius: var(--radius-sm); }
+.back-to-top { position: fixed; right: max(16px, env(safe-area-inset-right, 0px)); bottom: max(16px, env(safe-area-inset-bottom, 0px)); max-width: calc(100vw - 32px); z-index: 10; box-shadow: var(--shadow); }
 .toolbar { display: flex; align-items: center; justify-content: space-between; flex-wrap: wrap; gap: 12px; }
 .toolbar h2 { margin: 0; font-size: 16px; }
 .toolbar p { margin: 0; }
@@ -111,4 +113,4 @@ button:focus-visible, summary:focus-visible { outline: 2px solid var(--ring); ou
 .item-meta { display: flex; flex-wrap: wrap; gap: 4px 14px; color: var(--muted-foreground); margin: 0; font-size: 12px; }
 .data-path { overflow-wrap: anywhere; margin: 8px 0 0; color: var(--muted-foreground); }
 summary { cursor: pointer; color: var(--muted-foreground); }
-@media (max-width: 480px) { .history-shell { padding: 20px 14px; } .counts { gap: 12px; } }
+@media (max-width: 480px) { .history-shell { padding: 20px 14px; padding-bottom: calc(84px + env(safe-area-inset-bottom, 0px)); } .counts { gap: 12px; } }

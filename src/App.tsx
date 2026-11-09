@@ -39,11 +39,24 @@ export default function App({ bridge = nativeBridge, panel, panelControl = nativ
   const closing = residency.pending || (!!residency.snapshot && residency.snapshot.phase !== "running");
   const input = useMemo(() => new ManualPanelInput(), []);
   const [mode, setMode] = useState<"search" | "browse">("search");
+  const titleRef = useRef<HTMLHeadingElement>(null);
+  const [showBackToTop, setShowBackToTop] = useState(false);
   const searchRef = useRef<HTMLInputElement>(null);
   const listRef = useRef<HTMLOListElement>(null);
   const viewportRef = useRef<HTMLDivElement>(null);
   const browsing = !!panel && mode === "browse";
   const actionsAllowed = !closing;
+  useEffect(() => {
+    const syncPageScroll = () => setShowBackToTop(window.scrollY > 200);
+    syncPageScroll();
+    window.addEventListener("scroll", syncPageScroll, { passive: true });
+    return () => window.removeEventListener("scroll", syncPageScroll);
+  }, []);
+  function backToTop() {
+    if (!actionsAllowed || view.status?.state === "stopping") return;
+    window.scrollTo({ top: 0, behavior: "instant" });
+    titleRef.current?.focus({ preventScroll: true });
+  }
   useLayoutEffect(() => {
     if (viewportRef.current) viewportRef.current.scrollTop = 0;
   }, [view.query, view.listRevision]);
@@ -174,7 +187,7 @@ export default function App({ bridge = nativeBridge, panel, panelControl = nativ
       event.preventDefault(); event.stopPropagation();
       if (input.takeClick(event.detail, intent(ctrl.action, ctrl.target))) perform(ctrl.action);
     }}>
-      <header><h1>{panel ? "片羽 · 快捷面板" : "片羽"}</h1><p className="tagline">{panel ? browsing ? "上下键选择，Enter 复制，Esc 隐藏；复制后手动粘贴" : "输入搜索词，选择条目查看正文；明确复制后手动粘贴" : "本地剪贴板历史"}</p>
+      <header><h1 ref={titleRef} tabIndex={-1}>{panel ? "片羽 · 快捷面板" : "片羽"}</h1><p className="tagline">{panel ? browsing ? "上下键选择，Enter 复制，Esc 隐藏；复制后手动粘贴" : "输入搜索词，选择条目查看正文；明确复制后手动粘贴" : "本地剪贴板历史"}</p>
         {panel ? <button type="button" data-hide-action="true" disabled={!actionsAllowed || (input.imeSeen && !browsing)}>隐藏快捷面板</button> : <><button type="button" disabled={closing || !panelControl.available || panelState.snapshot?.phase === "stopping" || panelState.snapshot?.phase === "unavailable"} onClick={() => void panelState.open()}>打开快捷面板</button><p role="status">{panelState.snapshot?.hotkey === "ready" ? "快捷键：Ctrl+Alt+V" : "可使用主窗口入口打开快捷面板。"}</p>{panelState.snapshot?.error && <p role="alert">{panelState.snapshot.error}</p>}{panelState.error && <p role="alert">{panelState.error}</p>}<button type="button" disabled={!residency.snapshot || residency.pending || residency.snapshot.phase === "stopping" || residency.snapshot.phase === "exited"} onClick={() => void residency.exit()}>{residency.snapshot?.phase === "failed" ? "重试退出片羽" : "退出片羽"}</button>{residency.snapshot?.phase === "stopping" && <p role="status">正在退出片羽，等待保存和资源回收。</p>}{residency.snapshot?.phase === "failed" && <p role="alert">退出未完成，仍有 {view.status?.queue.items ?? "待确认"} 条未保存内容；收录和复制保持关闭。</p>}{residency.snapshot?.error && <p role="alert">{residency.snapshot.error}</p>}{residency.error && <p role="alert">{residency.error}</p>}{!residencyControl.available && <p role="status">当前环境未提供驻留与退出控制。</p>}</>}
       </header>
       {view.hostMissing ? <p className="notice" role="status">需要桌面宿主。请从片羽桌面程序打开此界面。</p> : <>
@@ -231,6 +244,7 @@ export default function App({ bridge = nativeBridge, panel, panelControl = nativ
         </section>
         <p className="notice">列表只显示已提交的历史；未保存队列单独计数。隐私标记、内部写回及应用排除会跳过收录。复制后请自行切回目标应用粘贴。</p>
       </>}
+      {showBackToTop && <button type="button" className="back-to-top" disabled={!actionsAllowed || status?.state === "stopping"} onClick={backToTop}>返回顶部</button>}
     </main>
   );
 }
