@@ -3,7 +3,7 @@ import type { ClipSummary, ListCursor, StatusResult } from "./ipc";
 import { normalizeQuery, parseGetClipTextRequest, parseGetClipTextResult, parseCopyClipTextResult } from "./ipc";
 import { readableError, type DesktopBridge } from "./desktop";
 import type { Identity, Receipt } from "./measurement";
-export interface HistoryState { status: StatusResult | null; summaries: ClipSummary[]; cursor: ListCursor | null; loading: boolean; changing: boolean; error: string | null; hostMissing: boolean; query: string; selectedId: string | null; previewText: string; previewLoading: boolean; previewError: string | null; previewNextOffset: number | null; copyBusy: boolean; copyMessage: string | null; copyAvailable: boolean; }
+export interface HistoryState { status: StatusResult | null; summaries: ClipSummary[]; listRevision: number; cursor: ListCursor | null; loading: boolean; changing: boolean; error: string | null; hostMissing: boolean; query: string; selectedId: string | null; previewText: string; previewLoading: boolean; previewError: string | null; previewNextOffset: number | null; copyBusy: boolean; copyMessage: string | null; copyAvailable: boolean; }
 const QUERY_DEBOUNCE_MS = 50;
 const MAX_LIST_CALLS = 2;
 const MAX_PREVIEW_CALLS = 2;
@@ -25,7 +25,7 @@ export function createHistoryModel(bridge: DesktopBridge) {
       void measuredSerial.catch(() => { committedReceipt = null; });
     }
   }
-  const store = createStore<HistoryState>(() => ({ status: null, summaries: [], cursor: null, loading: false, changing: false, error: null, hostMissing: !bridge.available, query: "", selectedId: null, previewText: "", previewLoading: false, previewError: null, previewNextOffset: null, copyBusy: false, copyMessage: null, copyAvailable: bridge.available && typeof bridge.copyText === "function" }));
+  const store = createStore<HistoryState>(() => ({ status: null, summaries: [], listRevision: 0, cursor: null, loading: false, changing: false, error: null, hostMissing: !bridge.available, query: "", selectedId: null, previewText: "", previewLoading: false, previewError: null, previewNextOffset: null, copyBusy: false, copyMessage: null, copyAvailable: bridge.available && typeof bridge.copyText === "function" }));
   let active = false, ready = false, lifetime = 0, generation = 0, request = 0;
   let timer: ReturnType<typeof setTimeout> | null = null, wantPage1 = false, statusBusy = false, statusAgain = false;
   let selection = 0, previewRequest = 0;
@@ -134,7 +134,7 @@ export function createHistoryModel(bridge: DesktopBridge) {
         store.setState({ summaries: [...store.getState().summaries, ...page.summaries.filter(item => !seen.has(item.id))], cursor: page.next_cursor });
       } else {
         committedReceipt = receipt;
-        store.setState({ summaries: page.summaries, cursor: page.next_cursor });
+        store.setState(state => ({ summaries: page.summaries, cursor: page.next_cursor, listRevision: state.listRevision + 1 }));
       }
       syncSelectionWithRows();
     } catch (error) {

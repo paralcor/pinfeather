@@ -1,6 +1,6 @@
 import { HistoryManagement } from "./HistoryManagement";
 import { nativeManagement } from "./lib/history-management";
-import { useEffect, useMemo, useRef, useState } from "react";
+import { useEffect, useLayoutEffect, useMemo, useRef, useState } from "react";
 import { useStore } from "zustand";
 import { nativeBridge, nativePanelControl, nativeResidencyControl, nativeSettingsControl, type DesktopBridge, type ManualPanelControl } from "./lib/desktop";
 import { ExclusionSettings } from "./ExclusionSettings";
@@ -16,7 +16,7 @@ function HistoryItem({ item, selected, disabled, onSelect }: { item: ClipSummary
   const date = new Date(item.captured_at_ms);
   const validTime = Number.isFinite(date.getTime());
   return (
-    <li>
+    <li data-history-id={item.id}>
       <p className="preview">{item.preview || (item.kind === "png" ? "已保存 PNG 样本" : "已保存非文本内容")}</p>
       <p className="item-meta">
         <time dateTime={validTime ? date.toISOString() : undefined}>{validTime ? date.toLocaleString() : "时间超出可显示范围"}</time>
@@ -41,9 +41,23 @@ export default function App({ bridge = nativeBridge, panel, panelControl = nativ
   const [mode, setMode] = useState<"search" | "browse">("search");
   const searchRef = useRef<HTMLInputElement>(null);
   const listRef = useRef<HTMLOListElement>(null);
+  const viewportRef = useRef<HTMLDivElement>(null);
   const browsing = !!panel && mode === "browse";
   const actionsAllowed = !closing;
-  useEffect(() => { if (panel) searchRef.current?.focus(); }, [panel !== undefined]);
+  useLayoutEffect(() => {
+    if (viewportRef.current) viewportRef.current.scrollTop = 0;
+  }, [view.query, view.listRevision]);
+  function revealSelection(id: string | null) {
+    const viewport = viewportRef.current;
+    const row = listRef.current?.querySelector<HTMLElement>(`[data-history-id="${id}"]`);
+    if (!viewport || !row || viewport.clientHeight === 0) return;
+    const bounds = viewport.getBoundingClientRect(), item = row.getBoundingClientRect();
+    const top = bounds.top + viewport.clientTop, bottom = top + viewport.clientHeight;
+    if (item.height > viewport.clientHeight || item.top < top) viewport.scrollTop += item.top - top;
+    else if (item.bottom > bottom) viewport.scrollTop += item.bottom - bottom;
+  }
+  useLayoutEffect(() => { revealSelection(view.selectedId); }, [view.selectedId]);
+  useEffect(() => { if (panel) searchRef.current?.focus({ preventScroll: true }); }, [panel !== undefined]);
   useEffect(() => {
     if (!panel) return;
     const cancel = () => input.invalidate();
@@ -69,13 +83,13 @@ export default function App({ bridge = nativeBridge, panel, panelControl = nativ
     input.invalidate();
     model.selectClip(selected);
     setMode("browse");
-    listRef.current?.focus();
+    listRef.current?.focus({ preventScroll: true });
   }
   function returnToSearch() {
     input.invalidate();
     setMode("search");
     model.selectClip(null);
-    searchRef.current?.focus();
+    searchRef.current?.focus({ preventScroll: true });
   }
   function updateQuery(value: string) {
     if (closing || value === model.store.getState().query) return;
@@ -139,7 +153,11 @@ export default function App({ bridge = nativeBridge, panel, panelControl = nativ
         input.invalidate();
         event.preventDefault(); const index = view.summaries.findIndex(item => item.id === view.selectedId);
         const next = index < 0 ? (key === "ArrowDown" ? 0 : view.summaries.length - 1) : Math.max(0, Math.min(view.summaries.length - 1, index + (key === "ArrowDown" ? 1 : -1)));
-        if (view.summaries[next]) model.selectClip(view.summaries[next].id);
+        if (view.summaries[next]) {
+          const id = view.summaries[next].id;
+          model.selectClip(id);
+          if (id === view.selectedId) revealSelection(id);
+        }
       }
     }} onPointerDownCapture={event => {
       if (!panel) return;
@@ -177,7 +195,7 @@ export default function App({ bridge = nativeBridge, panel, panelControl = nativ
           <div className="search-bar">
             <label className="search-label" htmlFor="history-search">搜索历史正文</label>
             <input ref={searchRef} id="history-search" className="search-input" type="search" value={view.query} onChange={event => updateQuery(event.target.value)} autoComplete="off" />
-            <button type="button" disabled={!actionsAllowed} onClick={() => { updateQuery(""); if (panel) searchRef.current?.focus(); }}>清空搜索</button>
+            <button type="button" disabled={!actionsAllowed} onClick={() => { updateQuery(""); if (panel) searchRef.current?.focus({ preventScroll: true }); }}>清空搜索</button>
             {panel && (browsing ? <button key="return-search" type="button" onClick={returnToSearch}>返回搜索</button> : <button key="enter-browse" type="button" disabled={!actionsAllowed || view.loading || !!view.error || view.summaries.length === 0} onClick={() => enterBrowse()}>浏览结果</button>)}
           </div>
           {panel && <p className="notice input-status" role="status">{view.loading ? "正在搜索，结果更新后可查看。" : view.error ? "暂时无法浏览，请刷新后重试。" : view.summaries.length === 0 ? "当前没有可浏览的结果。" : `结果对应搜索词：${view.query || "全部历史"}。选择条目可查看正文，复制需要另一次明确操作。`}</p>}
@@ -185,14 +203,16 @@ export default function App({ bridge = nativeBridge, panel, panelControl = nativ
           {!view.loading && !view.error && view.summaries.length === 0 && (searching
             ? <p className="notice" role="status">没有匹配的历史正文。</p>
             : status?.services.storage === "ready" && <p className="notice" role="status">暂无历史。开始收录后，在其他应用中复制内容。</p>)}
+          <div ref={viewportRef} className="history-viewport" role="region" aria-label="历史列表滚动区域">
           <ol ref={listRef} className="history-list" tabIndex={panel ? browsing ? 0 : -1 : undefined} aria-label="历史条目">{view.summaries.map(item => <HistoryItem key={item.id} item={item} selected={view.selectedId === item.id} disabled={!actionsAllowed || view.loading} onSelect={id => panel ? enterBrowse(id) : model.selectClip(id)} />)}</ol>
+          </div>
           {view.cursor && <button disabled={!actionsAllowed || view.loading} onClick={() => { if (actionsAllowed) void model.more(); }}>加载更多</button>}
         </section>
         <section className="preview-card" aria-labelledby="preview-heading">
           <div className="toolbar">
             <h2 id="preview-heading">正文预览</h2>
             <button type="button" data-copy-action="true" disabled={!actionsAllowed || (!!panel && !browsing) || !view.copyAvailable || view.copyBusy || view.loading || !copyHasText || !status || status.state === "stopping" || status.services.storage !== "ready"} onClick={copyText}>{view.copyBusy ? "复制中…" : "复制纯文本"}</button>
-            {view.selectedId && <button type="button" disabled={!actionsAllowed} onClick={() => { if (!actionsAllowed) return; model.selectClip(null); if (browsing) listRef.current?.focus(); }}>关闭正文预览</button>}
+            {view.selectedId && <button type="button" disabled={!actionsAllowed} onClick={() => { if (!actionsAllowed) return; model.selectClip(null); if (browsing) listRef.current?.focus({ preventScroll: true }); }}>关闭正文预览</button>}
           </div>
           {!view.copyAvailable && <p className="notice">当前宿主不支持复制纯文本。</p>}
           {view.copyMessage && <p role="status" aria-live="polite">{view.copyMessage}</p>}

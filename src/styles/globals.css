@@ -97,12 +97,15 @@ button:disabled { cursor: default; opacity: .6; }
 button:focus-visible, summary:focus-visible { outline: 2px solid var(--ring); outline-offset: 3px; }
 .input-status:focus { outline: 2px solid var(--ring); outline-offset: 3px; }
 .counts { display: flex; flex-wrap: wrap; gap: 20px; margin: 0; }
-.history-list { padding: 0; list-style: none; margin: 12px 0; border-top: 1px solid var(--border); }
-.history-list li { padding: 14px 4px; border-bottom: 1px solid var(--border); }
-.history-list li button { margin-top: 8px; }
+.history-viewport { max-height: clamp(180px, 40dvh, 360px); overflow-y: auto; scrollbar-gutter: stable; margin: 12px 0; }
+.history-viewport:focus-within { outline: 2px solid var(--ring); outline-offset: 3px; }
+.history-list { padding: 0; list-style: none; margin: 0; border-top: 1px solid var(--border); }
+.history-list li { padding: 10px 4px; border-bottom: 1px solid var(--border); display: grid; grid-template-columns: minmax(0, 1fr) auto; gap: 4px 12px; }
+.history-list .preview, .history-list .item-meta { grid-column: 1; min-width: 0; }
+.history-list li button { grid-column: 2; grid-row: 1 / span 2; align-self: center; margin: 0; white-space: nowrap; }
 .history-list button[aria-pressed="true"] { border-color: var(--ring); background: var(--selected); }
 .history-list:focus-visible { outline: 2px solid var(--ring); outline-offset: 3px; }
-.preview { margin: 0 0 7px; white-space: pre-wrap; overflow-wrap: anywhere; }
+.preview { margin: 0; white-space: normal; overflow-wrap: anywhere; display: -webkit-box; -webkit-box-orient: vertical; -webkit-line-clamp: 2; line-clamp: 2; overflow: hidden; }
 .preview-card { padding: 16px; border: 1px solid var(--border); border-radius: var(--radius); background: var(--card); display: flex; flex-direction: column; gap: 12px; }
 .preview-body { margin: 0; padding: 12px; border: 1px solid var(--border); border-radius: var(--radius-sm); background: var(--muted); color: var(--foreground); font: 12px/1.5 "Cascadia Code", "Cascadia Mono", Consolas, "Microsoft YaHei UI", monospace; white-space: pre-wrap; overflow-wrap: anywhere; word-break: break-word; max-height: 320px; overflow: auto; }
 .item-meta { display: flex; flex-wrap: wrap; gap: 4px 14px; color: var(--muted-foreground); margin: 0; font-size: 12px; }
