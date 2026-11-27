@@ -1,6 +1,6 @@
 //! E06 runtime ownership: the capture thread owns native capture resources;
 //! the storage thread creates and owns its SQLite connection.
-use std::{path::{Path,PathBuf},sync::{Arc,Mutex,Condvar,mpsc::{self,SyncSender,Receiver}},thread::JoinHandle,time::{Duration,Instant}};
+use std::{path::{Path,PathBuf},sync::{Arc,Mutex,Condvar,OnceLock,mpsc::{self,SyncSender,Receiver}},thread::JoinHandle,time::{Duration,Instant}};
 use crate::{contracts::*,runtime::{CaptureState,CapturePipeline,Admission,Notice},store::Store};
 use crate::clipboard::origin::{WriteApi,WriteFailure,WriteFormat};
 use crate::startup_capture::{Preference, StartupCapture, StartupCaptureSnapshot, CHANGED_EVENT};
@@ -16,11 +16,13 @@ impl Drop for CopyOwnerLease<'_> {
 }
 
 pub type Events=Arc<dyn Fn(&str,u64)+Send+Sync>;
+type FavoriteEvents = Arc<dyn Fn(&FavoriteChange) + Send + Sync>;
 pub struct SharedRuntime {
     pub state:Arc<Mutex<CaptureState>>,
     pub gate:Mutex<()>,
     wake:Condvar,
     events:Events,
+    favorite_events: OnceLock<FavoriteEvents>,
     _instance:Option<std::os::windows::io::OwnedHandle>,
     listener_failed:std::sync::atomic::AtomicBool,
     // A completed failed cleanup cannot be cleared by consuming its thread handle.
@@ -56,15 +58,16 @@ enum Target {File(PathBuf),#[cfg(feature="test-fixtures")] Memory,#[cfg(feature=
 #[serde(tag="action",rename_all="snake_case",deny_unknown_fields)]
 pub enum HistoryManagement {
     Delete { clip_id:String, expected_items:u64 },
-    Clear { expected_items:u64 },
+    Clear { expected_items:u64, expected_history_revision:String },
     Backup {},
 }
 #[derive(Debug,serde::Serialize)]
-pub struct HistoryManagementResult { pub items:u64, pub deleted:u64, pub backup_path:Option<String> }
+pub struct HistoryManagementResult { pub items:u64, pub favorites:u64, pub deleted:u64, pub backup_path:Option<String> }
 
 enum Query {
     VerifyStartupCapture(StartupCapture, SyncSender<(StartupCapture, bool)>),
     Manage(HistoryManagement,PathBuf,Instant,SyncSender<ContractResult<HistoryManagementResult>>),
+    SetFavorite(SetFavoriteRequest, Instant, SyncSender<ContractResult<SetFavoriteResult>>),
     List(ListClipsRequest,SyncSender<ContractResult<ListClipsResult>>),
     Copy(i64,WriteFormat,Instant,WritePermit,SyncSender<WriteReply>),
     Text(GetClipTextRequest,SyncSender<ContractResult<GetClipTextResult>>),
@@ -332,7 +335,7 @@ impl HostRuntime {
     ) -> ContractResult<Self> {
         if !RETAINED.lock().unwrap_or_else(|e|e.into_inner()).is_empty(){return Err(cleanup());}
         let state=Arc::new(Mutex::new(CaptureState::new(&uuid::Uuid::new_v4().simple().to_string())));
-        let shared=Arc::new(SharedRuntime{state,gate:Mutex::new(()),wake:Condvar::new(),events,_instance:instance,listener_failed:std::sync::atomic::AtomicBool::new(false),cleanup_failed:std::sync::atomic::AtomicBool::new(false),native_writes:production,
+        let shared=Arc::new(SharedRuntime{state,gate:Mutex::new(()),wake:Condvar::new(),events,favorite_events:OnceLock::new(),_instance:instance,listener_failed:std::sync::atomic::AtomicBool::new(false),cleanup_failed:std::sync::atomic::AtomicBool::new(false),native_writes:production,
             copy_busy:Arc::new(AtomicBool::new(false)),copy_stopping:AtomicBool::new(false),
             copy_owner:Mutex::new(CopyOwner{owner:None,borrowers:0}),owner_idle:Condvar::new(),
             closing:Arc::new(crate::runtime::CloseControl::default()),
@@ -453,7 +456,7 @@ impl HostRuntime {
 
     pub fn status(&self)->StatusResult{
         let s=self.shared.state.lock().unwrap_or_else(|e|e.into_inner());let(items,bytes)=s.queue_usage();
-        StatusResult{revision:s.revision.to_string(),state:if s.storage_failed||s.admission==Admission::Failed{"failed"}else if s.stopping{"stopping"}else{match s.admission{Admission::Active=>"listening",Admission::Overloaded=>"overloaded",_=>"paused"}}.into(),services:ServiceReadiness{listener:if self.shared.listener_failed.load(std::sync::atomic::Ordering::Acquire){"failed"}else if s.listener_ready{"ready"}else if s.stopping{"stopped"}else{"not_started"}.into(),worker:s.worker_service.clone(),storage:if s.storage_failed{"failed"}else if s.storage_ready{"ready"}else{"stopped"}.into(),hotkey:"not_started".into(),target_observer:"not_started".into()},capture:CaptureFlags{user_enabled:s.user_enabled,admission_open:s.admission==Admission::Active,policy_epoch:s.epoch},counters:CaptureCounters{observed:s.counters.observed.to_string(),captured:s.counters.captured.to_string(),persisted:s.counters.persisted.to_string(),ignored:s.counters.ignored.to_string(),superseded:s.counters.superseded.to_string(),failed:s.counters.failed.to_string(),overloaded:s.counters.overloaded.to_string(),cancelled:s.counters.cancelled.to_string()},queue:QueueUsage{items:items as i64,bytes:bytes as i64},history:s.history.clone(),data_dir:self.data_dir.clone(),versions:VersionsInfo{app:env!("CARGO_PKG_VERSION").into(),schema:1,worker_protocol:1},last_paste:None}
+        StatusResult{revision:s.revision.to_string(),state:if s.storage_failed||s.admission==Admission::Failed{"failed"}else if s.stopping{"stopping"}else{match s.admission{Admission::Active=>"listening",Admission::Overloaded=>"overloaded",_=>"paused"}}.into(),services:ServiceReadiness{listener:if self.shared.listener_failed.load(std::sync::atomic::Ordering::Acquire){"failed"}else if s.listener_ready{"ready"}else if s.stopping{"stopped"}else{"not_started"}.into(),worker:s.worker_service.clone(),storage:if s.storage_failed{"failed"}else if s.storage_ready{"ready"}else{"stopped"}.into(),hotkey:"not_started".into(),target_observer:"not_started".into()},capture:CaptureFlags{user_enabled:s.user_enabled,admission_open:s.admission==Admission::Active,policy_epoch:s.epoch},counters:CaptureCounters{observed:s.counters.observed.to_string(),captured:s.counters.captured.to_string(),persisted:s.counters.persisted.to_string(),ignored:s.counters.ignored.to_string(),superseded:s.counters.superseded.to_string(),failed:s.counters.failed.to_string(),overloaded:s.counters.overloaded.to_string(),cancelled:s.counters.cancelled.to_string()},queue:QueueUsage{items:items as i64,bytes:bytes as i64},history:HistoryStatus{items:s.history.items,payload_bytes:s.history.payload_bytes,favorites:s.history.favorites,revision:s.history_revision.to_string()},data_dir:self.data_dir.clone(),versions:VersionsInfo{app:env!("CARGO_PKG_VERSION").into(),schema:SCHEMA_VERSION,worker_protocol:1},last_paste:None}
     }
     fn change_capture(&self,enabled:bool,change:CaptureChange)->ContractResult<Option<StartupCaptureSave<'_>>>{
         #[cfg(feature="test-fixtures")]if let Some(hook)=self.shared.before_policy.lock().unwrap_or_else(|e|e.into_inner()).clone(){hook();}
@@ -571,9 +574,39 @@ impl HostRuntime {
             Ok(startup.snapshot())
         })
     }
+    pub(crate) fn set_favorite_listener(&self, listener: FavoriteEvents) {
+        let _ = self.shared.favorite_events.set(listener);
+    }
+
+    pub fn set_favorite(
+        &self,
+        request: SetFavoriteRequest,
+        panel: Option<(&crate::manual_panel::PanelSessions, &str)>,
+    ) -> ContractResult<SetFavoriteResult> {
+        let deadline = Instant::now() + Duration::from_secs(5);
+        parse_positive_id_str(&request.clip_id)?;
+        if self.shared.closing.closing() {
+            return Err(ContractError::new(ErrorCode::Busy, "favorite request is no longer active"));
+        }
+        let (tx, rx) = mpsc::sync_channel(1);
+        let enqueue = || self.queries.try_send(Query::SetFavorite(request, deadline, tx))
+            .map_err(|_| ContractError::new(ErrorCode::Busy, "history query queue is full"));
+        if let Some((sessions, id)) = panel { sessions.admit(id, enqueue)??; }
+        else { enqueue()?; }
+        self.shared.wake.notify_all();
+        let result = rx.recv_timeout(deadline.saturating_duration_since(Instant::now()))
+            .map_err(|_| ContractError::new(ErrorCode::Timeout, "favorite result unknown; refresh history"))?;
+        if let Some((sessions, id)) = panel { sessions.admit(id, || ())?; }
+        result
+    }
+
     pub fn manage_history(&self,request:HistoryManagement)->ContractResult<HistoryManagementResult>{
-        if let HistoryManagement::Delete{clip_id,..}=&request {
-            parse_copy_clip_text_request(&serde_json::json!({"request_id":"manage","clip_id":clip_id}))?;
+        match &request {
+            HistoryManagement::Delete { clip_id, .. } => { parse_positive_id(&serde_json::json!(clip_id))?; }
+            HistoryManagement::Clear { expected_history_revision, .. } => {
+                parse_u64_counter(&serde_json::json!(expected_history_revision))?;
+            }
+            HistoryManagement::Backup {} => {}
         }
         let(tx,rx)=mpsc::sync_channel(1);
         self.queries.try_send(Query::Manage(request,PathBuf::from(&self.data_dir),Instant::now()+Duration::from_secs(5),tx)).map_err(|_|ContractError::new(ErrorCode::Busy,"history query queue is full"))?;
@@ -831,24 +864,72 @@ fn manage_on_storage(shared:&SharedRuntime,store:&mut Option<Store>,request:Hist
         return Err(ContractError::new(ErrorCode::Busy,"pause capture and wait for an empty queue before managing history"));
     }
     let db=store.as_mut().ok_or_else(unavailable)?;
-    let usage=db.usage()?;
-    let mut backup_path=None;
-    let deleted=match request {
-        HistoryManagement::Delete{clip_id,expected_items}=>{
-            if usage.items as u64!=expected_items{return Err(ContractError::new(ErrorCode::Busy,"history changed; refresh before confirming"));}
-            db.delete(positive_id_as_i64(&clip_id))? as u64
-        },
-        HistoryManagement::Clear{expected_items}=>{
-            if usage.items as u64!=expected_items{return Err(ContractError::new(ErrorCode::Busy,"history changed; refresh before confirming"));}
+    let usage = db.usage()?;
+    let changed = || ContractError::new(ErrorCode::Busy, "history changed; refresh before confirming");
+    let mut backup_path = None;
+    let (deleted, usage) = match request {
+        HistoryManagement::Delete { clip_id, expected_items } => {
+            if usage.items as u64 != expected_items { return Err(changed()); }
+            let deleted = db.delete(positive_id_as_i64(&clip_id))? as u64;
+            (deleted, db.usage()?)
+        }
+        HistoryManagement::Clear { expected_items, expected_history_revision } => {
+            if usage.items as u64 != expected_items || state.history_revision.to_string() != expected_history_revision {
+                return Err(changed());
+            }
             db.clear_history()?
-        },
-        HistoryManagement::Backup{}=>{
-            let backups=directory.join("backups");std::fs::create_dir_all(&backups).map_err(|_|unavailable())?;
-            let path=backups.join(format!("history-{}.sqlite3",uuid::Uuid::new_v4()));db.backup_to(&path)?;backup_path=Some(path.display().to_string());0
-        },
+        }
+        HistoryManagement::Backup {} => {
+            let backups = directory.join("backups");
+            std::fs::create_dir_all(&backups).map_err(|_| unavailable())?;
+            let path = backups.join(format!("history-{}.sqlite3", uuid::Uuid::new_v4()));
+            db.backup_to(&path)?;
+            backup_path = Some(path.display().to_string());
+            (0, usage)
+        }
     };
-    state.history=db.usage()?;
-    Ok(HistoryManagementResult{items:state.history.items as u64,deleted,backup_path})
+    let result = HistoryManagementResult { items: usage.items as u64, favorites: usage.favorites as u64, deleted, backup_path };
+    state.history = usage;
+    let revision = if deleted != 0 {
+        state.history_revision += 1;
+        Some(state.history_revision)
+    } else { None };
+    drop(state);
+    drop(_gate);
+    if let Some(revision) = revision { (shared.events)("history_changed", revision); }
+    Ok(result)
+}
+
+fn check_favorite_write(shared: &SharedRuntime, state: &CaptureState, deadline: Instant) -> ContractResult<()> {
+    if Instant::now() >= deadline || state.stopping || shared.closing.closing() {
+        return Err(ContractError::new(ErrorCode::Busy, "favorite request is no longer active"));
+    }
+    if !state.storage_ready || state.storage_failed { return Err(unavailable()); }
+    Ok(())
+}
+
+fn favorite_on_storage(
+    shared: &SharedRuntime, store: &mut Option<Store>, request: SetFavoriteRequest, deadline: Instant,
+) -> ContractResult<SetFavoriteResult> {
+    let gate = shared.gate.lock().unwrap_or_else(|e| e.into_inner());
+    let mut state = shared.state.lock().unwrap_or_else(|e| e.into_inner());
+    check_favorite_write(shared, &state, deadline)?;
+    let db = store.as_mut().ok_or_else(unavailable)?;
+    let now_ms = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH)
+        .unwrap_or_default().as_millis().min(JS_SAFE_INTEGER_MAX as u128) as i64;
+    let (changed, usage) = db.set_favorite(positive_id_as_i64(&request.clip_id), request.favorited, now_ms)?;
+    state.history = usage;
+    if changed { state.history_revision += 1; }
+    let change = FavoriteChange {
+        clip_id: request.clip_id, favorited: request.favorited, revision: state.history_revision.to_string(),
+    };
+    drop(state);
+    drop(gate);
+    if changed {
+        if let Some(emit) = shared.favorite_events.get() { emit(&change); }
+        shared.notify_status();
+    }
+    Ok(SetFavoriteResult { request_id: request.request_id, changed, change })
 }
 
 fn storage_loop(shared:&SharedRuntime,store:&mut Option<Store>,queries:Receiver<Query>,read_preference:impl Fn(&Path)->std::io::Result<Option<Vec<u8>>>){
@@ -860,10 +941,12 @@ fn storage_loop(shared:&SharedRuntime,store:&mut Option<Store>,queries:Receiver<
             }
             Ok(Query::Manage(request,directory,deadline,reply))=>{
                 let result=manage_on_storage(shared,store,request,&directory,deadline);
-                let changed=result.as_ref().is_ok_and(|r|r.deleted>0);
                 let _=reply.send(result);
-                if changed {let revision={let mut s=shared.state.lock().unwrap_or_else(|e|e.into_inner());s.history_revision+=1;s.history_revision};(shared.events)("history_changed",revision);}
                 shared.notify_status();
+            }
+            Ok(Query::SetFavorite(request, deadline, reply)) => {
+                let result = favorite_on_storage(shared, store, request, deadline);
+                let _ = reply.send(result);
             }
             Ok(Query::List(request,reply))=>{let _=reply.send(store.as_ref().ok_or_else(unavailable).and_then(|s|s.list_recent(&request)));}
             Ok(Query::Text(request,reply))=>{let _=reply.send(store.as_ref().ok_or_else(unavailable).and_then(|s|s.get_clip_text(&request)));}
@@ -999,5 +1082,130 @@ mod m2_retry_baseline_tests {
         runtime.shutdown(Duration::from_secs(1)).unwrap();
         assert!(result.is_err(),"management capture intent must reject after closing");
         assert!(!reopened,"save retry must never reopen capture");
+    }
+}
+
+#[cfg(all(test, feature = "test-fixtures"))]
+mod favorite_tests {
+    use super::*;
+    use crate::{manual_panel::{PanelSessions, PanelSnapshot, PanelWindow}, store::{Payload, Snapshot, SourceConfidence}};
+
+    struct Window;
+    impl PanelWindow for Window {
+        fn hide(&self) -> Result<(), String> { Ok(()) }
+        fn show(&self) -> Result<(), String> { Ok(()) }
+        fn focus(&self) -> Result<(), String> { Ok(()) }
+        fn publish(&self, _: &PanelSnapshot) -> Result<(), String> { Ok(()) }
+    }
+
+    fn favorite_request() -> SetFavoriteRequest {
+        parse_set_favorite_request(&serde_json::json!({"request_id":"fav","clip_id":"1","favorited":true})).unwrap()
+    }
+
+    fn runtime(events: Events) -> HostRuntime {
+        let root = PathBuf::from(std::env::var_os("PINFEATHER_TEST_DATA_ROOT").unwrap())
+            .join(format!("favorite-host-{}", uuid::Uuid::new_v4()));
+        std::fs::create_dir(&root).unwrap();
+        let path = root.join("history.sqlite3");
+        let mut store = Store::open(&path).unwrap();
+        store.insert(&Snapshot {
+            capture_id: "synthetic".into(), captured_at_ms: 1, source_process: None,
+            source_confidence: SourceConfidence::Unknown, omitted_formats: vec![],
+            payloads: vec![Payload { format_name: "CF_UNICODETEXT".into(), data: vec![65,0,0,0] }],
+        }).unwrap();
+        drop(store);
+        HostRuntime::for_test_file(path, events).unwrap()
+    }
+
+    #[test]
+    fn expired_query_does_not_write_and_dropped_reply_still_broadcasts_durable_change() {
+        let (status_tx, status_rx) = mpsc::channel();
+        let runtime = runtime(Arc::new(move |event, _| {
+            if event == "status_changed" { let _ = status_tx.send(()); }
+        }));
+        while status_rx.try_recv().is_ok() {}
+        let (event_tx, event_rx) = mpsc::channel();
+        runtime.set_favorite_listener(Arc::new(move |change| {
+            event_tx.send((change.clip_id.clone(), change.favorited, change.revision.clone())).unwrap();
+        }));
+        let (tx, rx) = mpsc::sync_channel(1);
+        runtime.queries.try_send(Query::SetFavorite(favorite_request(), Instant::now(), tx)).unwrap();
+        runtime.shared.wake.notify_all();
+        assert_eq!(rx.recv_timeout(Duration::from_secs(2)).unwrap().unwrap_err().code, ErrorCode::Busy);
+        assert_eq!(runtime.status().history.favorites, 0);
+        assert!(event_rx.try_recv().is_err());
+
+        let (tx, rx) = mpsc::sync_channel(1);
+        drop(rx);
+        runtime.queries.try_send(Query::SetFavorite(favorite_request(), Instant::now() + Duration::from_secs(2), tx)).unwrap();
+        runtime.shared.wake.notify_all();
+        assert_eq!(event_rx.recv_timeout(Duration::from_secs(2)).unwrap(), ("1".into(), true, "1".into()));
+        status_rx.recv_timeout(Duration::from_secs(2)).unwrap();
+        let status = runtime.status();
+        assert_eq!(status.history.favorites, 1);
+        assert_eq!(status.history.revision, "1");
+        runtime.shutdown(Duration::from_secs(2)).unwrap();
+    }
+
+    #[test]
+    fn favorite_wait_times_out_while_storage_state_is_locked_without_writing_later() {
+        let runtime = runtime(Arc::new(|_, _| {}));
+        let (started_tx, started_rx) = mpsc::channel();
+        let (result_tx, result_rx) = mpsc::channel();
+        let result = std::thread::scope(|scope| {
+            let state = runtime.shared.state.lock().unwrap();
+            let runtime = &runtime;
+            scope.spawn(move || {
+                let started = Instant::now();
+                started_tx.send(()).unwrap();
+                let result = runtime.set_favorite(favorite_request(), None);
+                result_tx.send((started.elapsed(), result)).unwrap();
+            });
+            started_rx.recv_timeout(Duration::from_secs(2)).unwrap();
+            let result = result_rx.recv_timeout(Duration::from_millis(6500));
+            drop(state);
+            result
+        });
+
+        // An ordered list query drains the earlier favorite request after unlocking.
+        let list = parse_list_clips_request(&serde_json::json!({"request_id":"after-fav","query":""})).unwrap();
+        let rows = runtime.list(list).unwrap().summaries;
+        let history = runtime.status().history;
+        runtime.shutdown(Duration::from_secs(2)).unwrap();
+
+        let (elapsed, result) = result.expect("set_favorite did not return while state was locked");
+        assert!(elapsed >= Duration::from_secs(5), "returned before its deadline: {elapsed:?}");
+        assert_eq!(result.unwrap_err().code, ErrorCode::Timeout);
+        assert_eq!(rows.len(), 1);
+        assert!(!rows[0].favorited);
+        assert_eq!(history.favorites, 0);
+        assert_eq!(history.revision, "0");
+    }
+
+    #[test]
+    fn panel_must_be_ready_at_enqueue_and_still_current_after_storage_reply() {
+        let runtime = runtime(Arc::new(|_, _| {}));
+        let sessions = PanelSessions::new(true);
+        let session = sessions.open(&Window).unwrap().session_id.unwrap();
+        let unready = runtime.set_favorite(favorite_request(), Some((&sessions, &session))).unwrap_err();
+        assert_eq!(unready.code, ErrorCode::PermissionUnknown);
+        assert_eq!(runtime.status().history.favorites, 0);
+        sessions.ready(&session, &Window).unwrap();
+        let (committed, observed) = mpsc::channel();
+        let (release, done) = mpsc::channel();
+        let done = Mutex::new(done);
+        runtime.set_favorite_listener(Arc::new(move |_| {
+            committed.send(()).unwrap();
+            done.lock().unwrap().recv_timeout(Duration::from_secs(2)).unwrap();
+        }));
+        std::thread::scope(|scope| {
+            let result = scope.spawn(|| runtime.set_favorite(favorite_request(), Some((&sessions, &session))));
+            observed.recv_timeout(Duration::from_secs(2)).unwrap();
+            sessions.hide(&session, &Window, false).unwrap();
+            release.send(()).unwrap();
+            assert_eq!(result.join().unwrap().unwrap_err().code, ErrorCode::PermissionUnknown);
+        });
+        assert_eq!(runtime.status().history.favorites, 1);
+        runtime.shutdown(Duration::from_secs(2)).unwrap();
     }
 }

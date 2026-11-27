@@ -6,7 +6,7 @@ import { parseStartupCaptureSnapshot, type StartupCaptureControl } from "./start
 import { parseManualPanelSnapshot, parseManualPanelSessionRequest, parseManualPanelCopyRequest, type ManualPanelSnapshot } from "./ipc";
 import { parseCopyClipTextRequest, parseCopyClipTextResult, parsePngPreviewResult, type CopyClipTextResult, type PngPreview } from "./ipc";
 import { parseStatusResult, parseListClipsRequest, parseListClipsResult, parseGetClipTextRequest, parseGetClipTextResult, parseRevisionEvent, type StatusResult, type ListClipsResult, type ListCursor, type GetClipTextResult, type ContractResult } from "./ipc";
-import { parseSetExcludedAppsRequest } from "./ipc";
+import { parseSetExcludedAppsRequest, parseSetFavoriteRequest, parseSetFavoriteResult, parseFavoriteChange, type FavoriteChange, type SetFavoriteResult } from "./ipc";
 import { measurementEnabled, nativeMeasurement, type MeasurementTransport } from "./measurement";
 
 function settingsSnapshot(value: unknown) { const state = parseSettingsSnapshot(value); if (!state) throw new Error("invalid settings state"); return state; }
@@ -40,11 +40,13 @@ export interface DesktopBridge {
   available: boolean;
   measurement?: MeasurementTransport;
   status(): Promise<StatusResult>;
-  list(requestId: string, cursor: ListCursor | null, query?: string): Promise<ListClipsResult>;
+  list(requestId: string, cursor: ListCursor | null, query?: string, favoritesOnly?: boolean): Promise<ListClipsResult>;
   getText(requestId: string, clipId: string, offset: number): Promise<GetClipTextResult>;
   getPngPreview?(requestId: string, clipId: string): Promise<PngPreview>;
   copyText?(requestId: string, clipId: string): Promise<CopyClipTextResult>;
   copyPng?(requestId: string, clipId: string): Promise<CopyClipTextResult>;
+  setFavorite?(requestId: string, clipId: string, favorited: boolean): Promise<SetFavoriteResult>;
+  subscribeFavorite?(callback: (change: FavoriteChange) => void): Promise<() => void>;
   setEnabled(enabled: boolean): Promise<StatusResult>;
   subscribe(name: "history_changed" | "status_changed", callback: () => void): Promise<() => void>;
 }
@@ -82,6 +84,7 @@ export const nativePanelControl: ManualPanelControl = {
     return {
       ...nativeBridge,
       getPngPreview: (requestId, clipId) => getPngPreview(requestId, clipId, session),
+      setFavorite: (requestId, clipId, favorited) => setFavorite(requestId, clipId, favorited, session),
       copyText: (requestId, clipId) => copyFromPanel("copy_manual_panel_text", session, requestId, clipId),
       copyPng: (requestId, clipId) => copyFromPanel("copy_manual_panel_png", session, requestId, clipId),
     };
@@ -126,15 +129,24 @@ async function getPngPreview(requestId: string, clipId: string, session?: string
   const payload = session === undefined ? request : checked(parseManualPanelCopyRequest({ session_id: session, request }));
   return checked(parsePngPreviewResult(await invoke("get_clip_png_preview", { request: payload }), request));
 }
+async function setFavorite(requestId: string, clipId: string, favorited: boolean, session?: string): Promise<SetFavoriteResult> {
+  const request = checked(parseSetFavoriteRequest({ request_id: requestId, clip_id: clipId, favorited }));
+  const payload = session === undefined ? request : {
+    ...checked(parseManualPanelSessionRequest({ session_id: session })), request,
+  };
+  return checked(parseSetFavoriteResult(await invoke("set_clip_favorite", { request: payload }), request));
+}
 export const nativeBridge: DesktopBridge = {
   available: isTauri(),
   get measurement() { return isTauri() && measurementEnabled() ? nativeMeasurement : undefined; },
   async status() { return checked(parseStatusResult(await invoke("get_status"))); },
-  async list(requestId, cursor, query = "") {
-    const request = checked(parseListClipsRequest({ request_id: requestId, query, limit: 50, cursor }));
+  async list(requestId, cursor, query = "", favoritesOnly = false) {
+    const request = checked(parseListClipsRequest({ request_id: requestId, query, limit: 50, cursor, favorites_only: favoritesOnly }));
     const result = checked(parseListClipsResult(await invoke("list_clips", { request })));
     if (result.request_id !== request.request_id || result.normalized_query !== request.query) throw new Error("无法读取历史，请重试。");
     if (result.summaries.length > request.limit) throw new Error("无法读取历史，请重试。");
+    if ((result.next_cursor && result.next_cursor.favorites_only !== request.favorites_only) ||
+        (request.favorites_only && result.summaries.some(item => !item.favorited))) throw new Error("无法读取历史，请重试。");
     if (request.cursor && result.next_cursor && result.next_cursor.upper_id !== request.cursor.upper_id) throw new Error("无法读取历史，请重试。");
     return result;
   },
@@ -143,6 +155,13 @@ export const nativeBridge: DesktopBridge = {
     return checked(parseGetClipTextResult(await invoke("get_clip_text", { request }), request));
   },
   getPngPreview,
+  setFavorite,
+  async subscribeFavorite(callback) {
+    return listen("favorite_changed", event => {
+      const change = parseFavoriteChange(event.payload);
+      if (change.ok) callback(change.value);
+    });
+  },
   async setEnabled(enabled) { return checked(parseStatusResult(await invoke("set_capture_enabled", { request: { enabled } }))); },
   copyText: (requestId, clipId) => copyFromMain("copy_clip_text", requestId, clipId),
   copyPng: (requestId, clipId) => copyFromMain("copy_clip_png", requestId, clipId),

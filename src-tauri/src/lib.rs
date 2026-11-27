@@ -77,7 +77,7 @@ pub fn run(args: HostArgs) {
     let data_dir=prepared.data_dir;
     let webview_dir = prepared.webview_dir;
 
-    let invoke: fn(tauri::ipc::Invoke<tauri::Wry>) -> bool = tauri::generate_handler![commands::manage_history,commands::get_status,commands::list_clips,commands::get_clip_text,commands::get_clip_png_preview,commands::copy_clip_text,commands::copy_clip_png,commands::get_manual_panel_state,commands::open_manual_panel,commands::ready_manual_panel,commands::hide_manual_panel,commands::copy_manual_panel_text,commands::copy_manual_panel_png,commands::get_residency_state,commands::request_exit,commands::retry_exit_saving,commands::get_settings_state,commands::apply_excluded_apps,commands::get_startup_capture,commands::set_startup_capture,commands::measure_start_model,commands::measure_invalidate,commands::measure_stop_model,commands::measure_list_clips,commands::measure_ready];
+    let invoke: fn(tauri::ipc::Invoke<tauri::Wry>) -> bool = tauri::generate_handler![commands::manage_history,commands::get_status,commands::list_clips,commands::get_clip_text,commands::get_clip_png_preview,commands::set_clip_favorite,commands::copy_clip_text,commands::copy_clip_png,commands::get_manual_panel_state,commands::open_manual_panel,commands::ready_manual_panel,commands::hide_manual_panel,commands::copy_manual_panel_text,commands::copy_manual_panel_png,commands::get_residency_state,commands::request_exit,commands::retry_exit_saving,commands::get_settings_state,commands::apply_excluded_apps,commands::get_startup_capture,commands::set_startup_capture,commands::measure_start_model,commands::measure_invalidate,commands::measure_stop_model,commands::measure_list_clips,commands::measure_ready];
     tauri::Builder::default()
         .invoke_handler(move |request| {
             if request.message.command() == "set_capture_enabled" { commands::set_capture_enabled(request) }
@@ -97,6 +97,10 @@ pub fn run(args: HostArgs) {
                     }
                 });
             }),args.start_paused).map_err(|e|std::io::Error::other(e.message))?);
+            let favorite_handle = app.handle().clone();
+            runtime.set_favorite_listener(std::sync::Arc::new(move |change| {
+                let _ = favorite_handle.emit("favorite_changed", change);
+            }));
             app.manage(runtime.clone());
             let window=tauri::WebviewWindowBuilder::new(
                 app,

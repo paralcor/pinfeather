@@ -10,8 +10,8 @@ async function mount() {
   const hide = vi.fn();
   const bridge: DesktopBridge = {
     available: true,
-    status: vi.fn(async () => ({ revision: "1", state: "paused", services: { listener: "ready", worker: "not_started", storage: "ready", hotkey: "ready", target_observer: "not_started" }, capture: { user_enabled: false, admission_open: false, policy_epoch: 1 }, counters: { observed: "2", captured: "2", persisted: "2", ignored: "0", superseded: "0", failed: "0", overloaded: "0", cancelled: "0" }, queue: { items: 0, bytes: 0 }, history: { items: 2, payload_bytes: 16 }, data_dir: "D:\\Synthetic", versions: { app: "0.1.0", schema: 1, worker_protocol: 1 }, last_paste: null } as StatusResult)),
-    list: vi.fn(async (requestId, _cursor, query = "") => ({ request_id: requestId, normalized_query: query, summaries: ["1", "2"].map(id => ({ id, captured_at_ms: 1, kind: "text" as const, preview: `条目${id}`, format_names: ["CF_UNICODETEXT"], omitted_format_count: 0, payload_bytes: 8, source_process: null, source_confidence: "unknown" as const })), next_cursor: null })),
+    status: vi.fn(async () => ({ revision: "1", state: "paused", services: { listener: "ready", worker: "not_started", storage: "ready", hotkey: "ready", target_observer: "not_started" }, capture: { user_enabled: false, admission_open: false, policy_epoch: 1 }, counters: { observed: "2", captured: "2", persisted: "2", ignored: "0", superseded: "0", failed: "0", overloaded: "0", cancelled: "0" }, queue: { items: 0, bytes: 0 }, history: { items: 2, payload_bytes: 16, favorites: 0, revision: "0" }, data_dir: "D:\\Synthetic", versions: { app: "0.1.0", schema: 2, worker_protocol: 1 }, last_paste: null } as StatusResult)),
+    list: vi.fn(async (requestId, _cursor, query = "") => ({ request_id: requestId, normalized_query: query, summaries: ["1", "2"].map(id => ({ id, captured_at_ms: 1, kind: "text" as const, preview: `条目${id}`, format_names: ["CF_UNICODETEXT"], omitted_format_count: 0, payload_bytes: 8, source_process: null, source_confidence: "unknown" as const, favorited: false })), next_cursor: null })),
     getText: vi.fn(async (requestId, clipId) => ({ request_id: requestId, clip_id: clipId, text: `完整正文${clipId}`, next_offset: null })),
     copyText: vi.fn(async (requestId, clipId) => ({ request_id: requestId, clip_id: clipId, outcome: "copied" as const, reason: null })),
     setEnabled: vi.fn(), subscribe: vi.fn(async () => () => {}),
@@ -86,7 +86,7 @@ it("C: wrong target, mismatched pointer, cancellation and blur cannot finish a c
 it("C: new query invalidates a begun pointer even when the same item returns", async () => {
   const f = await mount(); pointer(entry()); await screen.findByText("完整正文1"); const copy = button("复制纯文本"); down(copy);
   fireEvent.change(f.search, { target: { value: "新查询" } });
-  await waitFor(() => expect(f.bridge.list).toHaveBeenLastCalledWith(expect.any(String), null, "新查询"));
+  await waitFor(() => expect(f.bridge.list).toHaveBeenLastCalledWith(expect.any(String), null, "新查询", false));
   await screen.findByText("条目1"); fireEvent.click(entry(), { detail: 1 }); await screen.findByText("完整正文1");
   up(copy); fireEvent.click(copy, { detail: 1 }); expect(f.bridge.copyText).not.toHaveBeenCalled();
   pointer(copy); await waitFor(() => expect(f.bridge.copyText).toHaveBeenCalledTimes(1));
@@ -101,12 +101,12 @@ it("C: changing selection invalidates an armed key and only the current body can
 });
 it("C: final composition data preserves its original replacement range and invalidates old selection", async () => {
   const f = await mount(); fireEvent.change(f.search, { target: { value: "前旧后" } });
-  await waitFor(() => expect(f.bridge.list).toHaveBeenLastCalledWith(expect.any(String), null, "前旧后"));
+  await waitFor(() => expect(f.bridge.list).toHaveBeenLastCalledWith(expect.any(String), null, "前旧后", false));
   f.search.setSelectionRange(1, 2); fireEvent.compositionStart(f.search); fireEvent.change(f.search, { target: { value: "前yang后" } });
-  await waitFor(() => expect(f.bridge.list).toHaveBeenLastCalledWith(expect.any(String), null, "前yang后"));
+  await waitFor(() => expect(f.bridge.list).toHaveBeenLastCalledWith(expect.any(String), null, "前yang后", false));
   pointer(entry()); await screen.findByText("完整正文1");
   fireEvent.compositionEnd(f.search, { data: "样" });
-  await waitFor(() => expect(f.bridge.list).toHaveBeenLastCalledWith(expect.any(String), null, "前样后"));
+  await waitFor(() => expect(f.bridge.list).toHaveBeenLastCalledWith(expect.any(String), null, "前样后", false));
   expect(f.search.value).toBe("前样后"); expect(button("复制纯文本").disabled).toBe(true); expect(f.bridge.copyText).not.toHaveBeenCalled();
 });
 it("C: an admitted copy stays owned and its late result cannot claim a newer selection", async () => {

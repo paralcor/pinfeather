@@ -140,6 +140,35 @@ pub async fn get_clip_png_preview(
         Ok(PngPreviewResult { request_id: request.request_id, clip_id: request.clip_id, thumbnail })
     }).await.map_err(|_| join_failed())?
 }
+fn favorite_request(
+    label: &str, url: &tauri::Url, value: &serde_json::Value,
+) -> ContractResult<(Option<String>, SetFavoriteRequest)> {
+    if label == "main" {
+        validate_main_caller(label, url)?;
+        Ok((None, parse_set_favorite_request(value)?))
+    } else {
+        validate_panel_caller(label, url)?;
+        let (session, request) = parse_panel_envelope(value)?;
+        Ok((Some(session), parse_set_favorite_request(request)?))
+    }
+}
+
+#[tauri::command]
+pub async fn set_clip_favorite(
+    window: tauri::WebviewWindow,
+    runtime: tauri::State<'_, Arc<HostRuntime>>,
+    panel: tauri::State<'_, Arc<crate::manual_panel::PanelHost>>,
+    request: serde_json::Value,
+) -> ContractResult<SetFavoriteResult> {
+    let url = window.url().map_err(|_| ContractError::new(ErrorCode::PermissionUnknown, "caller is not allowed"))?;
+    let (session, request) = favorite_request(window.label(), &url, &request)?;
+    let runtime = runtime.inner().clone();
+    let panel = panel.inner().clone();
+    tauri::async_runtime::spawn_blocking(move || {
+        runtime.set_favorite(request, session.as_deref().map(|id| (&panel.sessions, id)))
+    }).await.map_err(|_| join_failed())?
+}
+
 #[tauri::command]
 pub async fn copy_clip_text(window:tauri::WebviewWindow,runtime:tauri::State<'_,Arc<HostRuntime>>,request:serde_json::Value)->ContractResult<CopyClipTextResult>{
     authorize_main(&window)?;let request=parse_copy_clip_text_request(&request)?;let runtime=runtime.inner().clone();
@@ -261,6 +290,25 @@ mod tests {
         assert!(runtime.set_startup_capture(enabled).unwrap().enabled);
         assert_eq!(events.load(Ordering::SeqCst), 1);
         runtime.shutdown(std::time::Duration::from_secs(1)).unwrap();
+    }
+
+    #[test]
+    fn favorite_requires_the_matching_window_session_and_boolean() {
+        let local = tauri::Url::parse("http://tauri.localhost/").unwrap();
+        let remote = tauri::Url::parse("https://example.invalid/").unwrap();
+        let request = serde_json::json!({"request_id":"fav","clip_id":"1","favorited":true});
+        let panel = serde_json::json!({"session_id":"a".repeat(32),"request":request});
+        assert!(favorite_request("main", &local, &request).unwrap().0.is_none());
+        assert_eq!(favorite_request("quick-panel", &local, &panel).unwrap().0, Some("a".repeat(32)));
+        assert!(favorite_request("main", &local, &panel).is_err());
+        assert!(favorite_request("quick-panel", &local, &request).is_err());
+        assert_eq!(favorite_request("quick-panel", &remote, &panel).unwrap_err().code, ErrorCode::PermissionUnknown);
+        assert_eq!(favorite_request("other", &local, &request).unwrap_err().code, ErrorCode::PermissionUnknown);
+        for invalid in [serde_json::Value::Null, serde_json::json!("true")] {
+            let mut bad = request.clone();
+            bad["favorited"] = invalid;
+            assert_eq!(favorite_request("main", &local, &bad).unwrap_err().code, ErrorCode::InvalidInput);
+        }
     }
 
     #[test]

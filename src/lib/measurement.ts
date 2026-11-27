@@ -23,20 +23,22 @@ export function measurementEnabled(): boolean {
 export interface MeasurementTransport {
   start(): Promise<Identity>;
   invalidate(identity: Identity, generation: string, sequence: string): Promise<void>;
-  list(identity: Identity, generation: string, sequence: string, requestId: string, cursor: ListCursor | null, query: string): Promise<{ result: ListClipsResult; receipt: Receipt | null }>;
+  list(identity: Identity, generation: string, sequence: string, requestId: string, cursor: ListCursor | null, query: string, favoritesOnly?: boolean): Promise<{ result: ListClipsResult; receipt: Receipt | null }>;
   stop(identity: Identity): Promise<void>;
   ack(receipt: Receipt, inputFocused: boolean): Promise<void>;
 }
 export const nativeMeasurement: MeasurementTransport = {
   async start() { return parseIdentity(await invoke("measure_start_model", { request: { schema: 1 } })); },
   async invalidate(identity, generation, sequence) { await invoke("measure_invalidate", { request: { ...identity, generation, sequence } }); },
-  async list(identity, generation, sequence, requestId, cursor, query) {
-    const request = parseListClipsRequest({ request_id: requestId, query, limit: 50, cursor });
+  async list(identity, generation, sequence, requestId, cursor, query, favoritesOnly = false) {
+    const request = parseListClipsRequest({ request_id: requestId, query, limit: 50, cursor, favorites_only: favoritesOnly });
     if (!request.ok) throw new Error("invalid measurement list request");
     const value = await invoke<unknown>("measure_list_clips", { request: { ...identity, generation, sequence, query_request: request.value } });
     if (!object(value) || !keys(value, "result,receipt")) throw new Error("invalid measurement page");
     const parsed = parseListClipsResult(value.result);
     if (!parsed.ok || parsed.value.request_id !== requestId || parsed.value.normalized_query !== request.value.query || parsed.value.summaries.length > request.value.limit || (cursor && parsed.value.next_cursor && cursor.upper_id !== parsed.value.next_cursor.upper_id)) throw new Error("invalid measurement page");
+    if ((parsed.value.next_cursor && parsed.value.next_cursor.favorites_only !== request.value.favorites_only) ||
+        (request.value.favorites_only && parsed.value.summaries.some(item => !item.favorited))) throw new Error("invalid measurement page");
     const receipt = value.receipt === null ? null : parseReceipt(value.receipt);
     if (receipt && (Object.entries(identity).some(([k, v]) => receipt[k as keyof Receipt] !== v) || receipt.generation !== generation || receipt.sequence !== sequence || receipt.content !== (parsed.value.summaries.length ? "nonempty" : "empty") || cursor !== null)) throw new Error("invalid measurement correlation");
     return { result: parsed.value, receipt };

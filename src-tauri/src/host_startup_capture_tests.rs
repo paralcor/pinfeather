@@ -256,7 +256,7 @@ fn startup_timeout_snapshots_serialize_an_error_for_both_outcomes() {
 }
 
 fn empty_list_request() -> ListClipsRequest {
-    ListClipsRequest { request_id: "1".into(), query: String::new(), limit: 10, cursor: None }
+    ListClipsRequest { favorites_only: false, request_id: "1".into(), query: String::new(), limit: 10, cursor: None }
 }
 
 #[test]

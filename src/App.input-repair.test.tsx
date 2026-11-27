@@ -12,8 +12,8 @@ async function mount() {
   const hide = vi.fn();
   const bridge: DesktopBridge = {
     available: true,
-    status: vi.fn(async () => ({ revision: "1", state: "paused", services: { listener: "ready", worker: "not_started", storage: "ready", hotkey: "ready", target_observer: "not_started" }, capture: { user_enabled: false, admission_open: false, policy_epoch: 1 }, counters: { observed: "1", captured: "1", persisted: "1", ignored: "0", superseded: "0", failed: "0", overloaded: "0", cancelled: "0" }, queue: { items: 0, bytes: 0 }, history: { items: 1, payload_bytes: 8 }, data_dir: "D:\\Synthetic", versions: { app: "0.1.0", schema: 1, worker_protocol: 1 }, last_paste: null } as StatusResult)),
-    list: vi.fn(async (requestId, _cursor, query = "") => ({ request_id: requestId, normalized_query: query, summaries: [{ id: "1", captured_at_ms: 1, kind: "text" as const, preview: "两步合成摘要", format_names: ["CF_UNICODETEXT"], omitted_format_count: 0, payload_bytes: 8, source_process: null, source_confidence: "unknown" as const }], next_cursor: null })),
+    status: vi.fn(async () => ({ revision: "1", state: "paused", services: { listener: "ready", worker: "not_started", storage: "ready", hotkey: "ready", target_observer: "not_started" }, capture: { user_enabled: false, admission_open: false, policy_epoch: 1 }, counters: { observed: "1", captured: "1", persisted: "1", ignored: "0", superseded: "0", failed: "0", overloaded: "0", cancelled: "0" }, queue: { items: 0, bytes: 0 }, history: { items: 1, payload_bytes: 8, favorites: 0, revision: "0" }, data_dir: "D:\\Synthetic", versions: { app: "0.1.0", schema: 2, worker_protocol: 1 }, last_paste: null } as StatusResult)),
+    list: vi.fn(async (requestId, _cursor, query = "") => ({ request_id: requestId, normalized_query: query, summaries: [{ id: "1", captured_at_ms: 1, kind: "text" as const, preview: "两步合成摘要", format_names: ["CF_UNICODETEXT"], omitted_format_count: 0, payload_bytes: 8, source_process: null, source_confidence: "unknown" as const, favorited: false }], next_cursor: null })),
     getText: vi.fn(async (requestId, clipId) => ({ request_id: requestId, clip_id: clipId, text: "合成正文", next_offset: null })),
     copyText: vi.fn(async (requestId, clipId) => ({ request_id: requestId, clip_id: clipId, outcome: "copied" as const, reason: null })),
     setEnabled: vi.fn(), subscribe: vi.fn(async () => () => {}),
@@ -34,21 +34,21 @@ it.each(["before-end","after-end","without-end"])("C keeps final visible query a
  const f=await mount();fireEvent.compositionStart(f.search);fireEvent.change(f.search,{target:{value:"yang"}});await screen.findByText("两步合成摘要");
  if(order==="before-end")fireEvent.change(f.search,{target:{value:"样"}});
  if(order!=="without-end")fireEvent.compositionEnd(f.search,{data:"样"});else fireEvent.change(f.search,{target:{value:"样"}});
- await waitFor(()=>expect(f.bridge.list).toHaveBeenLastCalledWith(expect.any(String),null,"样"));expect(f.search.value).toBe("样");noAction(f);browse();expect(f.bridge.getText).toHaveBeenCalledTimes(1);
+ await waitFor(()=>expect(f.bridge.list).toHaveBeenLastCalledWith(expect.any(String),null,"样", false));expect(f.search.value).toBe("样");noAction(f);browse();expect(f.bridge.getText).toHaveBeenCalledTimes(1);
 });
 it("C final data replaces only the original selection, even after intermediate preview",async()=>{
  const f=await mount();fireEvent.change(f.search,{target:{value:"前旧后"}});await screen.findByText("两步合成摘要");f.search.setSelectionRange(1,2);fireEvent.compositionStart(f.search);fireEvent.change(f.search,{target:{value:"前yang后"}});await screen.findByText("两步合成摘要");browse();
- fireEvent.compositionEnd(f.search,{data:"样"});await waitFor(()=>expect(f.bridge.list).toHaveBeenLastCalledWith(expect.any(String),null,"前样后"));expect(f.search.value).toBe("前样后");expect(rows()).toEqual(["false"]);expect(f.bridge.copyText).not.toHaveBeenCalled();
+ fireEvent.compositionEnd(f.search,{data:"样"});await waitFor(()=>expect(f.bridge.list).toHaveBeenLastCalledWith(expect.any(String),null,"前样后", false));expect(f.search.value).toBe("前样后");expect(rows()).toEqual(["false"]);expect(f.bridge.copyText).not.toHaveBeenCalled();
  fireEvent.compositionEnd(f.search,{data:"过期"});expect(f.search.value).toBe("前样后");
 });
 it("C Process-only episode retains its original replacement range across repeated IME keys",async()=>{
  const f=await mount();fireEvent.keyDown(f.search,process);fireEvent.change(f.search,{target:{value:"yang"}});await screen.findByText("两步合成摘要");fireEvent.keyDown(f.search,process);fireEvent.compositionEnd(f.search,{data:"样"});
- await waitFor(()=>expect(f.bridge.list).toHaveBeenLastCalledWith(expect.any(String),null,"样"));expect(f.search.value).toBe("样");noAction(f);
+ await waitFor(()=>expect(f.bridge.list).toHaveBeenLastCalledWith(expect.any(String),null,"样", false));expect(f.search.value).toBe("样");noAction(f);
 });
 it("C new start invalidates a copy pointer and uses its own final query snapshot",async()=>{
  const f=await mount();browse();const copy=button("复制纯文本");fireEvent.pointerDown(copy,{button:0,pointerId:1});
  fireEvent.compositionStart(f.search);fireEvent.compositionUpdate(f.search,{data:"新"});fireEvent.compositionEnd(f.search,{data:"新"});fireEvent.pointerUp(copy,{button:0,pointerId:1});fireEvent.click(copy,{detail:1});
- await waitFor(()=>expect(f.bridge.list).toHaveBeenLastCalledWith(expect.any(String),null,"新"));expect(f.bridge.copyText).not.toHaveBeenCalled();expect(f.hide).not.toHaveBeenCalled();expect(f.search.readOnly).toBe(false);
+ await waitFor(()=>expect(f.bridge.list).toHaveBeenLastCalledWith(expect.any(String),null,"新", false));expect(f.bridge.copyText).not.toHaveBeenCalled();expect(f.hide).not.toHaveBeenCalled();expect(f.search.readOnly).toBe(false);
 });
 it("C late old component events cannot change a new query or copy permission",async()=>{
  const old=await mount();fireEvent.compositionStart(old.search);old.unmount();const current=await mount();fireEvent.change(current.search,{target:{value:"新会话"}});await screen.findByText("两步合成摘要");

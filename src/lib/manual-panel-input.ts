@@ -1,6 +1,6 @@
 type KeyIdentity = { key: string; code?: string; keyCode?: number; isComposing?: boolean; repeat?: boolean; ctrlKey?: boolean; altKey?: boolean; metaKey?: boolean; shiftKey?: boolean };
 type CompositionQuery = { value: string; start: number; end: number };
-export type PanelAction = "copy" | "copy-png" | "hide";
+export type PanelAction = "copy" | "copy-png" | "favorite" | "hide";
 export type PanelIntent = { action: PanelAction; target: EventTarget; context: string };
 type Pointer = { button: number; pointerId: number; isPrimary?: boolean };
 type HeldKey = "key" | "ime-confirmation" | "ended-confirmation";

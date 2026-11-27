@@ -107,6 +107,7 @@ button:focus-visible, summary:focus-visible { outline: 2px solid var(--ring); ou
 .history-list li { padding: 10px 4px; border-bottom: 1px solid var(--border); display: grid; grid-template-columns: minmax(0, 1fr) auto; gap: 4px 12px; }
 .history-list .preview, .history-list .item-meta { grid-column: 1; min-width: 0; }
 .history-list li button { grid-column: 2; grid-row: 1 / span 2; align-self: center; margin: 0; white-space: nowrap; }
+.favorites-filter[aria-pressed="true"],
 .history-list button[aria-pressed="true"] { border-color: var(--ring); background: var(--selected); }
 .history-list:focus-visible { outline: 2px solid var(--ring); outline-offset: 3px; }
 .preview { margin: 0; white-space: normal; overflow-wrap: anywhere; display: -webkit-box; -webkit-box-orient: vertical; -webkit-line-clamp: 2; line-clamp: 2; overflow: hidden; }

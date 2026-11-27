@@ -2,7 +2,7 @@
 use pinfeather_lib::contracts::{
     ErrorCode, JS_SAFE_INTEGER_MAX, MAX_PNG_BYTES, MAX_TEXT_FORMAT_BYTES,
 };
-use pinfeather_lib::store::{Payload, Snapshot, SourceConfidence, Store};
+use pinfeather_lib::store::{Payload, Snapshot, SourceConfidence, Store, SCHEMA_VERSION};
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicU64, Ordering};
 
@@ -189,7 +189,7 @@ fn unknown_future_tampered_and_corrupt_databases_are_rejected_without_modificati
             drop(Store::open(&path).unwrap());
             let conn = rusqlite::Connection::open(&path).unwrap();
             match kind {
-                "future" => conn.execute_batch("PRAGMA user_version=2").unwrap(),
+                "future" => conn.pragma_update(None, "user_version", SCHEMA_VERSION + 1).unwrap(),
                 "wrong-app" => conn.execute_batch("PRAGMA application_id=1234").unwrap(),
                 _ => conn.execute_batch("CREATE TRIGGER unexpected AFTER INSERT ON clips BEGIN SELECT 1; END;").unwrap(),
             }
@@ -213,7 +213,7 @@ fn wal_sample(future: bool) -> (PathBuf, i64) {
     let result = store.insert(&snapshot("wal-event", "已提交的 WAL 正文")).unwrap();
     if future {
         let conn = rusqlite::Connection::open(&source).unwrap();
-        conn.execute_batch("PRAGMA user_version=2").unwrap();
+        conn.pragma_update(None, "user_version", SCHEMA_VERSION + 1).unwrap();
     }
     std::fs::copy(&source, &target).unwrap();
     let mut source_wal = source.as_os_str().to_os_string(); source_wal.push("-wal");
@@ -245,7 +245,7 @@ fn version_change_in_wal_is_rejected_without_writing_or_creating_sidecars() {
         files
     };
     let before = files();
-    let error = match Store::open(&path) { Ok(_) => panic!("must reject WAL version 2"), Err(e) => e };
+    let error = match Store::open(&path) { Ok(_) => panic!("must reject future WAL version"), Err(e) => e };
     assert_eq!(error.code, ErrorCode::StorageUnavailable);
     assert_eq!(files(), before);
 }
@@ -422,4 +422,33 @@ fn nonempty_unknown_empty_schema_database_with_committed_wal_is_rejected_and_sce
         let other = after.iter().find(|(n, _)| n == name).unwrap();
         assert!(other.1 == *bytes, "scene bytes changed for {name}");
     }
+}
+
+#[test]
+fn v1_history_with_committed_wal_is_migrated_without_losing_payloads() {
+    let source = file_path("v1-source");
+    let target = file_path("v1-wal");
+    let conn = rusqlite::Connection::open(&source).unwrap();
+    conn.execute_batch(&include_str!("../../tests/fixtures/history-schema-v1.sql").replace("\r\n", "\n")).unwrap();
+    conn.query_row("PRAGMA journal_mode=WAL", [], |r| r.get::<_, String>(0)).unwrap();
+    conn.execute_batch(
+        "BEGIN;
+         INSERT INTO clips VALUES (7,'old-wal',123,'A','A',NULL,'unknown','[]',4);
+         INSERT INTO payloads VALUES (7,'CF_UNICODETEXT',1,4,x'41000000');
+         COMMIT;"
+    ).unwrap();
+    std::fs::copy(&source, &target).unwrap();
+    std::fs::copy(side_path(&source, "-wal"), side_path(&target, "-wal")).unwrap();
+    assert!(!side_path(&target, "-shm").exists());
+    drop(conn);
+
+    let store = Store::open(&target).unwrap();
+    let clip = store.get(7).unwrap().unwrap();
+    assert_eq!(clip.text_full.as_deref(), Some("A"));
+    assert_eq!(clip.snapshot.payloads, [text_payload("A")]);
+    assert_eq!(store.usage().unwrap().items, 1);
+    drop(store);
+    let conn = rusqlite::Connection::open_with_flags(&target, rusqlite::OpenFlags::SQLITE_OPEN_READ_ONLY).unwrap();
+    assert_eq!(conn.pragma_query_value(None, "user_version", |r| r.get::<_, i64>(0)).unwrap(), 2);
+    assert!(conn.table_exists(None, "favorites").unwrap());
 }

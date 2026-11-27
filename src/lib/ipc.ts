@@ -235,6 +235,7 @@ export function normalizeQuery(value: unknown): ContractResult<string> {
 }
 
 export interface ListCursor {
+  favorites_only: boolean;
   normalized_query: string;
   upper_id: string;
   last_captured_at_ms: number;
@@ -242,20 +243,31 @@ export interface ListCursor {
 }
 
 export interface ListClipsRequest {
+  favorites_only: boolean;
   request_id: string;
   query: string;
   limit: number;
   cursor: ListCursor | null;
 }
 
-function parseCursor(value: unknown, expectedQuery: string): ContractResult<ListCursor | null> {
+function parseFavoritesOnly(value: Record<string, unknown>): ContractResult<boolean> {
+  if (!("favorites_only" in value)) return ok(false);
+  return typeof value.favorites_only === "boolean" ? ok(value.favorites_only) : err(invalid("favorites_only must be a boolean"));
+}
+
+function parseCursor(value: unknown, expectedQuery: string, expectedFavorites?: boolean): ContractResult<ListCursor | null> {
   if (value === null || value === undefined) return ok(null);
   if (!isPlainObject(value)) return err(invalid("cursor must be an object"));
-  const bad = rejectUnknownFields(value, ["normalized_query", "upper_id", "last_captured_at_ms", "last_id"]);
+  const bad = rejectUnknownFields(value, ["normalized_query", "upper_id", "last_captured_at_ms", "last_id", "favorites_only"]);
   if (bad) return err(bad);
   const nq = value.normalized_query;
   if (typeof nq !== "string") return err(invalid("cursor.normalized_query must be a string"));
   if (nq !== expectedQuery) return err(invalid("cursor does not match query"));
+  const favoritesOnly = parseFavoritesOnly(value);
+  if (!favoritesOnly.ok) return favoritesOnly;
+  if (expectedFavorites !== undefined && favoritesOnly.value !== expectedFavorites) {
+    return err(invalid("cursor does not match favorites_only"));
+  }
   const upper = parsePositiveId(value.upper_id);
   if (!upper.ok) return upper;
   const lastTs = validateTimestampMs(value.last_captured_at_ms);
@@ -267,6 +279,7 @@ function parseCursor(value: unknown, expectedQuery: string): ContractResult<List
   }
   return ok({
     normalized_query: nq,
+    favorites_only: favoritesOnly.value,
     upper_id: upper.value,
     last_captured_at_ms: lastTs.value,
     last_id: lastId.value,
@@ -281,7 +294,7 @@ function compareIdStrings(a: string, b: string): number {
 
 export function parseListClipsRequest(value: unknown): ContractResult<ListClipsRequest> {
   if (!isPlainObject(value)) return err(invalid("request must be an object"));
-  const bad = rejectUnknownFields(value, ["request_id", "query", "limit", "cursor"]);
+  const bad = rejectUnknownFields(value, ["request_id", "query", "limit", "cursor", "favorites_only"]);
   if (bad) return err(bad);
   const requestId = validateRequestId(value.request_id);
   if (!requestId.ok) return requestId;
@@ -299,15 +312,18 @@ export function parseListClipsRequest(value: unknown): ContractResult<ListClipsR
     limit = parsed.value;
   }
   // 7.1：缺失或显式 null 的 cursor 均表示首页。
+  const favoritesOnly = parseFavoritesOnly(value);
+  if (!favoritesOnly.ok) return favoritesOnly;
   let cursor: ListCursor | null = null;
   if ("cursor" in value && value.cursor !== undefined && value.cursor !== null) {
-    const parsed = parseCursor(value.cursor, query.value);
+    const parsed = parseCursor(value.cursor, query.value, favoritesOnly.value);
     if (!parsed.ok) return parsed;
     cursor = parsed.value;
   }
   return ok({
     request_id: requestId.value,
     query: query.value,
+    favorites_only: favoritesOnly.value,
     limit,
     cursor,
   });
@@ -672,6 +688,7 @@ export function parseErrorCode(value: unknown): ContractResult<ErrorCode> {
 }
 
 export interface ClipSummary {
+  favorited: boolean;
   id: string;
   captured_at_ms: number;
   kind: ClipKind;
@@ -695,6 +712,7 @@ export function parseClipSummary(value: unknown): ContractResult<ClipSummary> {
     "payload_bytes",
     "source_process",
     "source_confidence",
+    "favorited",
   ]);
   if (bad) return err(bad);
   const id = parsePositiveId(value.id);
@@ -724,7 +742,9 @@ export function parseClipSummary(value: unknown): ContractResult<ClipSummary> {
   }
   const confidence = parseSourceConfidence(value.source_confidence);
   if (!confidence.ok) return confidence;
+  if (typeof value.favorited !== "boolean") return err(invalid("favorited must be a boolean"));
   return ok({
+    favorited: value.favorited,
     id: id.value,
     captured_at_ms: ts.value,
     kind: kind.value,
@@ -815,6 +835,45 @@ export function parseRevisionEvent(
   // 7.2：history/status revision 为规范非负 u64 字符串；panel session 仍为短标识。
   if (field === "revision") return parseU64String(value[field]);
   return validateShortId(value[field]);
+}
+
+export type FavoriteChange = { clip_id: string; favorited: boolean; revision: string };
+export type SetFavoriteRequest = { request_id: string; clip_id: string; favorited: boolean };
+export type SetFavoriteResult = FavoriteChange & { changed: boolean };
+
+export function parseSetFavoriteRequest(value: unknown): ContractResult<SetFavoriteRequest> {
+  if (!isPlainObject(value)) return err(invalid("favorite request must be an object"));
+  const bad = rejectUnknownFields(value, ["request_id", "clip_id", "favorited"]);
+  if (bad) return err(bad);
+  const request = parseCopyClipTextRequest({ request_id: value.request_id, clip_id: value.clip_id });
+  if (!request.ok) return request;
+  if (typeof value.favorited !== "boolean") return err(invalid("favorited must be a boolean"));
+  return ok({ ...request.value, favorited: value.favorited });
+}
+
+export function parseFavoriteChange(value: unknown): ContractResult<FavoriteChange> {
+  if (!isPlainObject(value)) return err(invalid("favorite event must be an object"));
+  const bad = rejectUnknownFields(value, ["clip_id", "favorited", "revision"]);
+  if (bad) return err(bad);
+  const clip = parsePositiveId(value.clip_id);
+  if (!clip.ok) return clip;
+  const revision = parseU64String(value.revision);
+  if (!revision.ok) return revision;
+  if (typeof value.favorited !== "boolean") return err(invalid("favorited must be a boolean"));
+  return ok({ clip_id: clip.value, favorited: value.favorited, revision: revision.value });
+}
+
+export function parseSetFavoriteResult(value: unknown, request: SetFavoriteRequest): ContractResult<SetFavoriteResult> {
+  if (!isPlainObject(value)) return err(invalid("favorite result must be an object"));
+  const bad = rejectUnknownFields(value, ["request_id", "clip_id", "favorited", "revision", "changed"]);
+  if (bad) return err(bad);
+  const change = parseFavoriteChange({ clip_id: value.clip_id, favorited: value.favorited, revision: value.revision });
+  if (!change.ok) return change;
+  if (value.request_id !== request.request_id || change.value.clip_id !== request.clip_id ||
+      change.value.favorited !== request.favorited || typeof value.changed !== "boolean") {
+    return err(invalid("favorite result correlation mismatch"));
+  }
+  return ok({ ...change.value, changed: value.changed });
 }
 
 export interface ListClipsResult {
@@ -926,7 +985,7 @@ export interface StatusResult {
   capture: { user_enabled: boolean; admission_open: boolean; policy_epoch: number };
   counters: Record<string, string>;
   queue: { items: number; bytes: number };
-  history: { items: number; payload_bytes: number };
+  history: { items: number; payload_bytes: number; favorites: number; revision: string };
   data_dir: string;
   versions: { app: string; schema: number; worker_protocol: number };
   last_paste: PasteClipResult | null;
@@ -1030,12 +1089,16 @@ export function parseStatusResult(value: unknown): ContractResult<StatusResult> 
   if (!qBytes.ok) return qBytes;
 
   if (!isPlainObject(value.history)) return err(invalid("history must be an object"));
-  const hBad = rejectUnknownFields(value.history, ["items", "payload_bytes"]);
+  const hBad = rejectUnknownFields(value.history, ["items", "payload_bytes", "favorites", "revision"]);
   if (hBad) return err(hBad);
   const hItems = parseBoundedCount(value.history.items, MAX_HISTORY_ITEMS_LIMIT);
   if (!hItems.ok) return hItems;
   const hBytes = parseBoundedCount(value.history.payload_bytes, MAX_HISTORY_PAYLOAD_BYTES_LIMIT);
   if (!hBytes.ok) return hBytes;
+  const favorites = parseBoundedCount(value.history.favorites, hItems.value);
+  if (!favorites.ok) return favorites;
+  const historyRevision = parseU64String(value.history.revision);
+  if (!historyRevision.ok) return historyRevision;
 
   const dataDirRaw = value.data_dir;
   if (typeof dataDirRaw !== "string") return err(invalid("data_dir must be a string"));
@@ -1052,7 +1115,7 @@ export function parseStatusResult(value: unknown): ContractResult<StatusResult> 
     const c = app.charCodeAt(i);
     if (c < 0x21 || c > 0x7e) return err(invalid("app version invalid"));
   }
-  if (value.versions.schema !== 1) return err(invalid("schema version mismatch"));
+  if (value.versions.schema !== 2) return err(invalid("schema version mismatch"));
   if (value.versions.worker_protocol !== WORKER_PROTOCOL_VERSION) {
     return err(invalid("worker protocol version mismatch"));
   }
@@ -1075,9 +1138,9 @@ export function parseStatusResult(value: unknown): ContractResult<StatusResult> 
     },
     counters,
     queue: { items: qItems.value, bytes: qBytes.value },
-    history: { items: hItems.value, payload_bytes: hBytes.value },
+    history: { items: hItems.value, payload_bytes: hBytes.value, favorites: favorites.value, revision: historyRevision.value },
     data_dir: dataDir.value,
-    versions: { app, schema: 1, worker_protocol: WORKER_PROTOCOL_VERSION },
+    versions: { app, schema: 2, worker_protocol: WORKER_PROTOCOL_VERSION },
     last_paste: lastPaste,
   });
 }

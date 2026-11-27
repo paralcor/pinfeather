@@ -24,6 +24,7 @@ function HistoryItem({ item, selected, disabled, onSelect }: { item: ClipSummary
         <time dateTime={validTime ? date.toISOString() : undefined}>{validTime ? date.toLocaleString() : "时间超出可显示范围"}</time>
         <span>{item.format_names.join(" · ")}</span>
         <span>{Math.ceil(item.payload_bytes / 1024)} KiB</span>
+        {item.favorited && <span>★ 已收藏</span>}
         <span>{item.source_confidence === "unknown" ? "来源未知" : "来源已核对"}</span>
       </p>
       <button type="button" aria-pressed={selected} disabled={disabled} onClick={() => onSelect(item.id)}>{item.kind === "png" ? "查看图片" : "查看正文"}</button>
@@ -148,6 +149,12 @@ export default function App({ bridge = nativeBridge, panel, panelControl = nativ
       const format = action === "copy" ? "CF_UNICODETEXT" : "PNG";
       if (!state.summaries.some(item => item.id === state.selectedId && item.format_names.includes(format))) return null;
     }
+    if (action === "favorite") {
+      const item = state.summaries.find(row => row.id === state.selectedId);
+      if (!browsing || !item || !bridge.setFavorite || state.loading || state.error || state.favoriteBusy ||
+          state.status?.services.storage !== "ready" || state.status.state === "stopping") return null;
+      return { action, target, context: `${model.copyIdentity()}:${item.id}:${!item.favorited}` };
+    }
     if (action === "hide" && input.imeSeen && !browsing) return null;
     return { action, target, context: model.copyIdentity() };
   }
@@ -155,6 +162,7 @@ export default function App({ bridge = nativeBridge, panel, panelControl = nativ
     const element = (target as HTMLElement).closest<HTMLElement>("button");
     if (element?.dataset.copyAction === "true") return { action: "copy" as const, target: element };
     if (element?.dataset.copyAction === "png") return { action: "copy-png" as const, target: element };
+    if (element?.dataset.favoriteAction === "true") return { action: "favorite" as const, target: element };
     if (element?.dataset.hideAction === "true") return { action: "hide" as const, target: element };
     return null;
   }
@@ -188,7 +196,8 @@ export default function App({ bridge = nativeBridge, panel, panelControl = nativ
   function perform(action: PanelAction) {
     if (action === "copy") void model.copyText();
     else if (action === "copy-png") void model.copyPng();
-    else void hidePanel();
+    else if (action === "favorite") void model.setFavorite();
+    else if (action === "hide") void hidePanel();
   }
   function copyText() { if (actionsAllowed && !panel) void model.copyText(); }
   function copyPng() { if (actionsAllowed && !panel) void model.copyPng(); }
@@ -220,11 +229,14 @@ export default function App({ bridge = nativeBridge, panel, panelControl = nativ
       <div><dt>已取消</dt><dd>{status.counters.cancelled}</dd></div>
     </dl>
   );
-  const selectedFormats = view.summaries.find(item => item.id === view.selectedId)?.format_names;
+  const selectedItem = view.summaries.find(item => item.id === view.selectedId);
+  const selectedFormats = selectedItem?.format_names;
   const copyHasText = selectedFormats?.includes("CF_UNICODETEXT") ?? false;
   const hasPng = selectedFormats?.includes("PNG") ?? false;
   const imageOnly = hasPng && !copyHasText;
   const copyDisabled = !actionsAllowed || (!!panel && !browsing) || !!view.copyBusy || view.loading || !status || status.state === "stopping" || status.services.storage !== "ready";
+  const favoriteDisabled = !actionsAllowed || (!!panel && !browsing) || view.favoriteBusy ||
+    view.loading || !!view.error || status?.state === "stopping" || status?.services.storage !== "ready";
   return (
     <main className="shell history-shell" onCompositionStartCapture={event => { if (panel) { input.compositionStart(compositionQuery(event.target)); newInput(); } }} onCompositionUpdateCapture={event => { if (panel) { input.compositionUpdate(compositionQuery(event.target)); newInput(); } }} onCompositionEndCapture={event => { if (panel) { const editor = searchRef.current; const query = input.compositionEnd(event.target === editor ? event.data : "", event.target === editor ? editor?.value : undefined); if (query !== null) updateQuery(query); } }} onKeyUpCapture={event => {
       if (!panel) return;
@@ -323,7 +335,7 @@ export default function App({ bridge = nativeBridge, panel, panelControl = nativ
         </section>
         {!panel && startupCaptureControl.available && <StartupCaptureSettings control={startupCaptureControl} closing={closing || status?.state === "stopping"} />}
         {!panel && <ExclusionSettings control={settingsControl} closing={closing} onApplied={() => void model.refresh(false)} onBlocked={setSettingsBlocked} />}
-        {!panel && <HistoryManagement control={nativeManagement} ready={!closing && !!status && !status.capture.user_enabled && status.queue.items === 0 && status.services.storage === "ready" && !view.copyBusy && !view.loading} items={status?.history.items ?? 0} selectedId={view.selectedId} onChanged={() => { model.selectClip(null); void model.refresh(); }} />}
+        {!panel && <HistoryManagement control={nativeManagement} ready={!closing && !!status && !status.capture.user_enabled && status.queue.items === 0 && status.services.storage === "ready" && !view.copyBusy && !view.loading} items={status?.history.items ?? 0} favorites={status?.history.favorites ?? 0} historyRevision={status?.history.revision ?? "0"} selectedId={view.selectedId} selectedFavorited={selectedItem?.favorited ?? false} onChanged={() => { model.selectClip(null); void model.refresh(); }} />}
         {view.error && <p className="error" role="alert">{view.error}</p>}
         <section aria-labelledby="history-heading" aria-busy={view.loading}>
           <div className="toolbar"><h2 id="history-heading">最近历史</h2><button disabled={!actionsAllowed || view.loading} onClick={() => { if (actionsAllowed) void model.refresh(); }}>刷新</button></div>
@@ -331,11 +343,18 @@ export default function App({ bridge = nativeBridge, panel, panelControl = nativ
             <label className="search-label" htmlFor="history-search">搜索历史正文</label>
             <input ref={searchRef} id="history-search" className="search-input" type="search" value={view.query} onChange={event => updateQuery(event.target.value)} autoComplete="off" />
             <button type="button" disabled={!actionsAllowed} onClick={() => { updateQuery(""); if (panel) searchRef.current?.focus({ preventScroll: true }); }}>清空搜索</button>
+            <button type="button" className="favorites-filter" aria-pressed={view.favoritesOnly} disabled={!actionsAllowed} onClick={() => {
+              if (!actionsAllowed) return;
+              if (panel) input.invalidate();
+              model.setFavoritesOnly(!view.favoritesOnly);
+            }}>只看收藏</button>
             {panel && (browsing ? <button key="return-search" type="button" onClick={returnToSearch}>返回搜索</button> : <button key="enter-browse" type="button" disabled={!actionsAllowed || view.loading || !!view.error || view.summaries.length === 0} onClick={() => enterBrowse()}>浏览结果</button>)}
           </div>
           {panel && <p className="notice input-status" role="status">{view.loading ? "正在搜索，结果更新后可查看。" : view.error ? "暂时无法浏览，请刷新后重试。" : view.summaries.length === 0 ? "当前没有可浏览的结果。" : `结果对应搜索词：${view.query || "全部历史"}。${browsing ? "" : "按 ↓ 预览首条。"}`}</p>}
           {view.loading && <p role="status">正在读取历史…</p>}
-          {!view.loading && !view.error && view.summaries.length === 0 && (searching
+          {!view.loading && !view.error && view.summaries.length === 0 && (view.favoritesOnly
+            ? <p className="notice" role="status">{searching ? "没有匹配的收藏。" : "暂无收藏。"}</p>
+            : searching
             ? <p className="notice" role="status">没有匹配的历史正文。</p>
             : status?.services.storage === "ready" && <p className="notice" role="status">暂无历史。开始收录后，在其他应用中复制内容。</p>)}
           <div ref={viewportRef} className="history-viewport" role="region" aria-label="历史列表滚动区域">
@@ -348,9 +367,13 @@ export default function App({ bridge = nativeBridge, panel, panelControl = nativ
             <h2 id="preview-heading">{hasPng ? "内容预览" : "正文预览"}</h2>
             {!imageOnly && <button type="button" data-copy-action="true" disabled={copyDisabled || !view.copyAvailable || !copyHasText} onClick={copyText}>{view.copyBusy === "text" ? "复制中…" : "复制纯文本"}</button>}
             {hasPng && bridge.copyPng && <button type="button" data-copy-action="png" disabled={copyDisabled || view.pngPreview?.phase !== "ready"} onClick={copyPng}>{view.copyBusy === "png" ? "复制中…" : "复制图片"}</button>}
+            {selectedItem && bridge.setFavorite && <button type="button" data-favorite-action="true" disabled={favoriteDisabled} onClick={() => {
+              if (!panel && !favoriteDisabled) void model.setFavorite();
+            }}>{selectedItem.favorited ? "取消收藏" : "收藏"}</button>}
             {view.selectedId && <button type="button" disabled={!actionsAllowed} onClick={() => { if (!actionsAllowed) return; model.selectClip(null); if (browsing) listRef.current?.focus({ preventScroll: true }); }}>{hasPng ? "关闭预览" : "关闭正文预览"}</button>}
           </div>
           {!imageOnly && !view.copyAvailable && <p className="notice">当前宿主不支持复制纯文本。</p>}
+          {view.favoriteMessage && <p role="alert">{view.favoriteMessage}</p>}
           {view.copyMessage && <p role="status" aria-live="polite">{view.copyMessage}</p>}
           {!view.selectedId ? <p className="notice">从列表中选择一条历史以预览正文。</p> : <>
             {hasPng && <>

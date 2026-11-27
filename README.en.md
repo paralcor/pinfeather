@@ -33,10 +33,10 @@ The English name, **Pinfeather**, is a new feather just coming in on a young bir
 
 ## Current status
 
-- **Capture and search.** Start or pause capture manually. Keep text, links, and supported formats from the source app. Search by text and preview long entries on demand.
+- **Capture and search.** Start or pause capture manually. Keep text, links, and supported formats from the source app. Search by text and preview long entries on demand. Star entries and use Show favorites only to filter the list.
 - **Quick panel.** Press `Ctrl+Alt+V`, enter a search term, press Down to browse, and press Enter to copy plain text. The panel closes after a successful copy. Press `Ctrl+V` in the target app.
 - **PNG images.** Preview a thumbnail and use Copy image to put the original PNG on the clipboard. Enter still copies text on entries that contain both formats. Both copy buttons keep the preview open.
-- **Local management.** Set app exclusions, delete entries, and back up saved history. Restore a backup to a new data directory. [History management and recovery (Chinese)](rumo_clipboard_handoff/docs/pinfeather_personal_history.md)
+- **Local management.** Set app exclusions, delete individual unstarred entries, clear unstarred history, and back up saved history. Restore a backup to a new data directory. [History management and recovery (Chinese)](rumo_clipboard_handoff/docs/pinfeather_personal_history.md)
 - **Known limits.** The source and destination apps must support the registered PNG clipboard format. The full IME and app compatibility matrix and performance acceptance are pending.
 
 ## Run and verify
