@@ -89,6 +89,39 @@ fn text_frame_err(runtime:&HostRuntime,clip_id:&str,offset:i64)->ErrorCode{
 }
 
 #[test]
+fn opted_in_restart_filters_the_first_capture_using_saved_exclusions() {
+    let path = fresh_db_path("startup-resume-exclusions");
+    let preference = path.with_file_name("startup-capture.json");
+    let settings = path.with_file_name("settings.json");
+    let paths = br#"{"schema_version":1,"excluded_apps":["C:\\Synthetic\\excluded.exe"]}"#;
+    std::fs::write(&settings, paths).unwrap();
+    let initial = HostRuntime::for_test_file(path.clone(), Arc::new(|_, _| {})).unwrap();
+    assert_eq!(initial.status().state, "paused");
+    initial.shutdown(Duration::from_secs(2)).unwrap();
+    drop(initial);
+    assert!(!preference.exists(), "legacy data dir must not acquire a preference");
+    std::fs::write(&preference, br#"{"schema_version":1,"last_manual_state":"listening"}"#).unwrap();
+
+    let (committed, history) = mpsc::channel();
+    let runtime = HostRuntime::for_test_file(path, Arc::new(move |name, _| {
+        if name == "history_changed" { let _ = committed.send(()); }
+    })).unwrap();
+    assert_eq!(runtime.status().state, "listening", "opted-in listening state should restore");
+    let mut excluded = text_response(1, "synthetic excluded-first");
+    excluded.owner = Owner { hwnd: Some("101".into()), pid: Some(10), process: Some(r"C:\Synthetic\excluded.exe".into()) };
+    runtime.inject_response(1, excluded).unwrap();
+    assert_eq!(runtime.settings().last_skip.as_deref(), Some("excluded_owner"));
+    assert_eq!(runtime.status().history.items, 0);
+    let mut allowed = text_response(2, "synthetic allowed-second");
+    allowed.owner = Owner { hwnd: Some("102".into()), pid: Some(11), process: Some(r"C:\Synthetic\allowed.exe".into()) };
+    runtime.inject_response(2, allowed).unwrap();
+    history.recv_timeout(Duration::from_secs(2)).unwrap();
+    assert_eq!(runtime.status().history.items, 1);
+    assert_eq!(std::fs::read(settings).unwrap(), paths);
+    runtime.shutdown(Duration::from_secs(2)).unwrap();
+}
+
+#[test]
 fn persisted_literal_search_survives_reopen(){
     let path=fresh_db_path("e094a-search");
     let hit=format!("{}尾部命中词 %_ [x] .*","前".repeat(512));

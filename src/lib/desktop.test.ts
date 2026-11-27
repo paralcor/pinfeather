@@ -3,9 +3,48 @@ import fixture from "../../tests/fixtures/contracts/response_dtos.json";
 const mocks = vi.hoisted(() => ({ invoke: vi.fn<(...args: unknown[]) => Promise<unknown>>(), listen: vi.fn<(name: string, callback: (event: { payload: unknown }) => void) => Promise<() => void>>() }));
 vi.mock("@tauri-apps/api/core", () => ({ invoke: mocks.invoke, isTauri: () => true }));
 vi.mock("@tauri-apps/api/event", () => ({ listen: mocks.listen }));
-import { nativeBridge, nativeResidencyControl, nativeSettingsControl } from "./desktop";
+import { nativeBridge, nativePanelControl, nativeResidencyControl, nativeSettingsControl, nativeStartupCaptureControl } from "./desktop";
 import settingsFixture from "../../tests/fixtures/contracts/settings.json";
 beforeEach(() => { mocks.invoke.mockReset(); mocks.listen.mockReset(); });
+it("uses the separate startup capture commands and rejects malformed payloads", async () => {
+  const snapshot = { revision: "2", enabled: true, blocked: false, outcome: "forced_paused", reason: null, error: null };
+  mocks.invoke.mockResolvedValue(snapshot);
+  expect(await nativeStartupCaptureControl.snapshot()).toEqual(snapshot);
+  expect(mocks.invoke).toHaveBeenLastCalledWith("get_startup_capture");
+  expect(await nativeStartupCaptureControl.setEnabled(true)).toEqual(snapshot);
+  expect(mocks.invoke).toHaveBeenLastCalledWith("set_startup_capture", { request: { enabled: true } });
+  mocks.invoke.mockClear();
+  await expect(nativeStartupCaptureControl.setEnabled("true" as unknown as boolean)).rejects.toThrow("invalid startup capture request");
+  expect(mocks.invoke).not.toHaveBeenCalled();
+  for (const invalid of [{ revision: "02" }, { outcome: "unknown" }, { outcome: "blocked" }, { extra: true }]) {
+    mocks.invoke.mockResolvedValue({ ...snapshot, ...invalid });
+    await expect(nativeStartupCaptureControl.snapshot()).rejects.toThrow("invalid startup capture state");
+  }
+  const callback = vi.fn();
+  mocks.listen.mockResolvedValue(() => {});
+  await nativeStartupCaptureControl.subscribe(callback);
+  const [event, listener] = mocks.listen.mock.calls[0];
+  expect(event).toBe("startup_capture_changed");
+  for (const payload of [{ revision: "01" }, { revision: 2 }, { revision: "2", extra: true }]) listener({ payload });
+  expect(callback).not.toHaveBeenCalled();
+  listener({ payload: { revision: "2" } });
+  expect(callback).toHaveBeenCalledTimes(1);
+});
+it("requests only the selected PNG thumbnail and binds quick-panel requests to the session", async () => {
+  const request = { request_id: "png-1", clip_id: "2" };
+  const response = { ...request, source_width: 2, source_height: 2, width: 1, height: 1, rgba_base64: "IkRm/w==" };
+  mocks.invoke.mockResolvedValue(response);
+  expect((await nativeBridge.getPngPreview!("png-1", "2")).rgba).toEqual(new Uint8ClampedArray([34, 68, 102, 255]));
+  expect(mocks.invoke).toHaveBeenLastCalledWith("get_clip_png_preview", { request });
+  const session = "a".repeat(32);
+  const panel = nativePanelControl.history(session);
+  await panel.getPngPreview!("png-1", "2");
+  expect(mocks.invoke).toHaveBeenLastCalledWith("get_clip_png_preview", { request: { session_id: session, request } });
+  for (const bad of [{ clip_id: "3" }, { rgba_base64: "A!AAAA==" }, { width: 321 }]) {
+    mocks.invoke.mockResolvedValue({ ...response, ...bad });
+    await expect(panel.getPngPreview!("png-1", "2")).rejects.toThrow();
+  }
+});
 it("m2 settings uses separate strict commands and rejects invalid requests before invoke",async()=>{
   mocks.invoke.mockResolvedValue(settingsFixture.snapshot);expect(await nativeSettingsControl.snapshot()).toEqual(settingsFixture.snapshot);expect(mocks.invoke).toHaveBeenLastCalledWith("get_settings_state");
   await nativeSettingsControl.apply(["c:/Private/old/../vault.exe"]);expect(mocks.invoke).toHaveBeenLastCalledWith("apply_excluded_apps",{request:{paths:["C:\\Private\\vault.exe"]}});

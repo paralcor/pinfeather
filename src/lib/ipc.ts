@@ -362,6 +362,39 @@ export function parseCopyClipTextResult(value: unknown, request: CopyClipTextReq
   return ok({ ...ids.value, outcome, reason: reason as ErrorCode | null });
 }
 
+export interface PngPreview {
+  sourceWidth: number;
+  sourceHeight: number;
+  width: number;
+  height: number;
+  rgba: Uint8ClampedArray;
+}
+
+export function parsePngPreviewResult(value: unknown, request: CopyClipTextRequest): ContractResult<PngPreview> {
+  if (!isPlainObject(value)) return err(invalid("PNG preview must be an object"));
+  const bad = rejectUnknownFields(value, ["request_id", "clip_id", "source_width", "source_height", "width", "height", "rgba_base64"]);
+  if (bad) return err(bad);
+  if (value.request_id !== request.request_id || value.clip_id !== request.clip_id) return err(invalid("PNG preview correlation mismatch"));
+  const { source_width: sourceWidth, source_height: sourceHeight, width, height, rgba_base64: encoded } = value;
+  const dimension = (size: unknown, max: number): size is number =>
+    typeof size === "number" && Number.isInteger(size) && size >= 1 && size <= max;
+  if (!dimension(sourceWidth, 8192) || !dimension(sourceHeight, 8192) || sourceWidth * sourceHeight > 16_777_216 ||
+      !dimension(width, 320) || !dimension(height, 320) || width > sourceWidth || height > sourceHeight) {
+    return err(invalid("PNG preview dimensions out of range"));
+  }
+  const size = width * height * 4;
+  if (typeof encoded !== "string" || encoded.length !== 4 * Math.ceil(size / 3)) {
+    return err(invalid("PNG preview byte length is invalid"));
+  }
+  try {
+    const decoded = atob(encoded);
+    if (decoded.length !== size) return err(invalid("PNG preview byte length is invalid"));
+    return ok({ sourceWidth, sourceHeight, width, height, rgba: Uint8ClampedArray.from(decoded, char => char.charCodeAt(0)) });
+  } catch {
+    return err(invalid("PNG preview encoding is invalid"));
+  }
+}
+
 export function parseGetClipTextRequest(value: unknown): ContractResult<GetClipTextRequest> {
   if (!isPlainObject(value)) return err(invalid("request must be an object"));
   const bad = rejectUnknownFields(value, ["request_id", "clip_id", "offset"]);

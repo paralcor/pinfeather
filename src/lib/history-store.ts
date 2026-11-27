@@ -1,9 +1,20 @@
 import { createStore } from "zustand/vanilla";
-import type { ClipSummary, ListCursor, StatusResult } from "./ipc";
+import type { ClipSummary, ListCursor, PngPreview, StatusResult } from "./ipc";
 import { normalizeQuery, parseGetClipTextRequest, parseGetClipTextResult, parseCopyClipTextResult } from "./ipc";
 import { readableError, type DesktopBridge } from "./desktop";
 import type { Identity, Receipt } from "./measurement";
-export interface HistoryState { status: StatusResult | null; summaries: ClipSummary[]; listRevision: number; cursor: ListCursor | null; loading: boolean; changing: boolean; error: string | null; hostMissing: boolean; query: string; selectedId: string | null; previewText: string; previewLoading: boolean; previewError: string | null; previewNextOffset: number | null; copyBusy: boolean; copyMessage: string | null; copyAvailable: boolean; }
+type PngPreviewState = { phase: "loading" } | { phase: "ready"; image: PngPreview } | { phase: "failed"; message: string };
+type CaptureChange = { action: "start"; afterRevision: string } | { action: "retry" | "pause" };
+export interface HistoryState { status: StatusResult | null; summaries: ClipSummary[]; listRevision: number; cursor: ListCursor | null; loading: boolean; changing: CaptureChange | false; error: string | null; hostMissing: boolean; query: string; selectedId: string | null; previewText: string; previewLoading: boolean; previewError: string | null; previewNextOffset: number | null; pngPreview: PngPreviewState | null; copyBusy: "text" | "png" | false; copyMessage: string | null; copyAvailable: boolean; }
+export function canPauseWhileStarting({ changing, status }: Pick<HistoryState, "changing" | "status">) {
+  return changing !== false && changing.action === "start" && status !== null &&
+    status.capture.user_enabled && status.capture.admission_open && status.services.storage !== "failed" &&
+    BigInt(status.revision) > BigInt(changing.afterRevision);
+}
+export function isDrainingCaptureQueue(status: StatusResult | null) {
+  return status !== null && status.capture.user_enabled && !status.capture.admission_open &&
+    status.queue.items > 0 && status.services.storage === "ready";
+}
 const QUERY_DEBOUNCE_MS = 50;
 const MAX_LIST_CALLS = 2;
 const MAX_PREVIEW_CALLS = 2;
@@ -25,14 +36,17 @@ export function createHistoryModel(bridge: DesktopBridge) {
       void measuredSerial.catch(() => { committedReceipt = null; });
     }
   }
-  const store = createStore<HistoryState>(() => ({ status: null, summaries: [], listRevision: 0, cursor: null, loading: false, changing: false, error: null, hostMissing: !bridge.available, query: "", selectedId: null, previewText: "", previewLoading: false, previewError: null, previewNextOffset: null, copyBusy: false, copyMessage: null, copyAvailable: bridge.available && typeof bridge.copyText === "function" }));
+  const store = createStore<HistoryState>(() => ({ status: null, summaries: [], listRevision: 0, cursor: null, loading: false, changing: false, error: null, hostMissing: !bridge.available, query: "", selectedId: null, previewText: "", previewLoading: false, previewError: null, previewNextOffset: null, pngPreview: null, copyBusy: false, copyMessage: null, copyAvailable: bridge.available && typeof bridge.copyText === "function" }));
   let active = false, ready = false, lifetime = 0, generation = 0, request = 0;
   let timer: ReturnType<typeof setTimeout> | null = null, wantPage1 = false, statusBusy = false, statusAgain = false;
   let selection = 0, previewRequest = 0;
   let copyRequest = 0, copyPending = false;
+  let captureRequest = 0;
   // Latest single pending preview need; a selection never owns a queue.
   type PreviewNeed = { clipId: string; offset: number; append: boolean };
   let pendingPreview: PreviewNeed | null = null;
+  let pendingPng: string | null = null;
+  let pngInFlight = false;
   // Physical unsettled calls; a generation may own at most one of each kind at a time.
   const inflight: Array<{ token: number; gen: number }> = [];
   const previewInflight: Array<{ token: number; sel: number; gen: number }> = [];
@@ -63,7 +77,8 @@ export function createHistoryModel(bridge: DesktopBridge) {
   function clearSelection() {
     selection += 1;
     pendingPreview = null;
-    store.setState({ selectedId: null, previewText: "", previewLoading: false, previewError: null, previewNextOffset: null, copyMessage: null });
+    pendingPng = null;
+    store.setState({ selectedId: null, previewText: "", previewLoading: false, previewError: null, previewNextOffset: null, pngPreview: null, copyMessage: null });
   }
   /** A list write is authoritative for the rows: a selection that left them is dropped. */
   function syncSelectionWithRows() {
@@ -101,6 +116,30 @@ export function createHistoryModel(bridge: DesktopBridge) {
     if (previewInflight.length >= MAX_PREVIEW_CALLS) return;
     pendingPreview = null;
     void runPreview(token, sel, gen, need.clipId, need.offset, need.append);
+  }
+  async function pumpPng() {
+    const id = pendingPng;
+    if (!active || !ready || pngInFlight || !id || !bridge.getPngPreview) return;
+    pendingPng = null;
+    if (store.getState().selectedId !== id) return;
+    pngInFlight = true;
+    const token = lifetime, sel = selection, gen = generation;
+    try {
+      const image = await bridge.getPngPreview(`png-${++previewRequest}`, id);
+      if (ownsPreview(token, sel, gen)) store.setState({ pngPreview: { phase: "ready", image } });
+    } catch (error) {
+      if (ownsPreview(token, sel, gen)) {
+        const message = typeof error === "object" && error !== null && "code" in error
+          ? error.code === "invalid_input" ? "PNG 已损坏或超出预览限制。"
+            : error.code === "not_found" ? "这条历史已不存在，请刷新。"
+            : readableError(error)
+          : "无法读取 PNG 预览，请重试。";
+        store.setState({ pngPreview: { phase: "failed", message } });
+      }
+    } finally {
+      pngInFlight = false;
+      void pumpPng();
+    }
   }
   async function runList(token: number, gen: number, normalized: string, cursor: ListCursor | null) {
     const id = `${cursor ? "more" : "page1"}-${++request}`;
@@ -241,11 +280,16 @@ export function createHistoryModel(bridge: DesktopBridge) {
     // While a list is loading the rendered rows are not the current authority.
     if (state.loading) return;
     if (state.selectedId === id) return;
-    if (!state.summaries.some(item => item.id === id)) return;
+    const selected = state.summaries.find(item => item.id === id);
+    if (!selected) return;
     selection += 1;
-    store.setState({ selectedId: id, previewText: "", previewLoading: true, previewError: null, previewNextOffset: null, copyMessage: null });
-    pendingPreview = { clipId: id, offset: 0, append: false };
+    const hasPng = selected.format_names.includes("PNG");
+    const hasText = !hasPng || selected.format_names.includes("CF_UNICODETEXT");
+    pendingPng = hasPng && bridge.getPngPreview ? id : null;
+    pendingPreview = hasText ? { clipId: id, offset: 0, append: false } : null;
+    store.setState({ selectedId: id, previewText: "", previewLoading: hasText, previewError: null, previewNextOffset: null, pngPreview: pendingPng ? { phase: "loading" } : null, copyMessage: null });
     void pumpPreview();
+    void pumpPng();
   }
   function retryPreview() {
     if (!active || !bridge.available) return;
@@ -256,7 +300,16 @@ export function createHistoryModel(bridge: DesktopBridge) {
     selection += 1;
     store.setState({ previewText: "", previewLoading: true, previewError: null, previewNextOffset: null });
     pendingPreview = { clipId: id, offset: 0, append: false };
+    if (state.pngPreview?.phase === "loading") pendingPng = id;
     void pumpPreview();
+    void pumpPng();
+  }
+  function retryPng() {
+    const { selectedId, pngPreview } = store.getState();
+    if (!active || !ready || !selectedId || !bridge.getPngPreview || pngPreview?.phase !== "failed") return;
+    pendingPng = selectedId;
+    store.setState({ pngPreview: { phase: "loading" } });
+    void pumpPng();
   }
   /** Explicit next frame only: never loops, and never reuses another selection's offset. */
   function morePreview() {
@@ -281,7 +334,7 @@ export function createHistoryModel(bridge: DesktopBridge) {
       void measuredSerial.catch(() => { committedReceipt = null; });
     }
     const disposers: Array<() => void> = [];
-    store.setState({ loading: true });
+    store.setState({ loading: true, changing: false });
     void (async () => {
       try {
         for (const name of ["history_changed", "status_changed"] as const) {
@@ -324,42 +377,54 @@ export function createHistoryModel(bridge: DesktopBridge) {
   }
   async function toggle() {
     const current = store.getState();
-    if (!active || current.changing || !current.status) return;
+    if (!active || current.changing || !current.status || isDrainingCaptureQueue(current.status)) return;
     const retry = current.status.services.storage === "failed" && current.status.queue.items > 0;
     const enabled = retry || current.status.state !== "listening";
     return setEnabled(enabled);
   }
   async function setEnabled(enabled: boolean) {
     const current = store.getState();
-    if (!active || current.changing || !current.status) return;
-    const token = lifetime;
-    store.setState({ changing: true, error: null });
+    if (!active || !current.status || (!enabled && isDrainingCaptureQueue(current.status)) ||
+        (current.changing && (enabled || !canPauseWhileStarting(current)))) return;
+    const token = lifetime, request = ++captureRequest;
+    const ownsRequest = () => active && token === lifetime && request === captureRequest;
+    const changing: CaptureChange = !enabled ? { action: "pause" }
+      : current.status.services.storage === "failed" ? { action: "retry" }
+      : { action: "start", afterRevision: current.status.revision };
+    store.setState({ changing, error: null });
     try {
       const status = await bridge.setEnabled(enabled);
-      if (active && token === lifetime) { acceptStatus(status); void refresh(false); }
+      if (ownsRequest()) { acceptStatus(status); void refresh(false); }
     } catch (error) {
-      if (active && token === lifetime) store.setState({ error: readableError(error) });
+      if (ownsRequest()) store.setState({ error: readableError(error) });
     } finally {
-      if (active && token === lifetime) store.setState({ changing: false });
+      if (ownsRequest()) store.setState({ changing: false });
     }
   }
-  async function copyText() {
+  async function copy(format: "text" | "png"): Promise<boolean> {
     const state = store.getState();
     const selected = state.summaries.find(item => item.id === state.selectedId);
-    if (!active || !ready || !bridge.available || !bridge.copyText || copyPending || state.loading || !selected?.format_names.includes("CF_UNICODETEXT") || !state.status || state.status.state === "stopping" || state.status.services.storage !== "ready") return;
+    const write = format === "png" ? bridge.copyPng : bridge.copyText;
+    if (!active || !ready || !bridge.available || !write || copyPending || state.loading || !state.status || state.status.state === "stopping" || state.status.services.storage !== "ready") return false;
+    if (!selected?.format_names.includes(format === "png" ? "PNG" : "CF_UNICODETEXT")) return false;
+    if (format === "png" && state.pngPreview?.phase !== "ready") return false;
     const token = lifetime, sel = selection, gen = generation;
     const request = { request_id: `copy-${++copyRequest}`, clip_id: selected.id };
     copyPending = true;
-    store.setState({ copyBusy: true, copyMessage: null });
+    store.setState({ copyBusy: format, copyMessage: null });
+    let copied = false;
     let message = "无法确认复制结果，剪贴板可能已变化。请自行检查；不会自动重试。";
     try {
-      const parsed = parseCopyClipTextResult(await bridge.copyText(request.request_id, request.clip_id), request);
+      const parsed = parseCopyClipTextResult(await write.call(bridge, request.request_id, request.clip_id), request);
       if (parsed.ok) {
         const result = parsed.value;
-        if (result.outcome === "copied") message = "已复制，可手动粘贴。";
+        if (result.outcome === "copied") {
+          copied = true;
+          message = format === "png" ? "图片已复制，可手动粘贴。" : "已复制，可手动粘贴。";
+        }
         if (result.outcome === "not_written") {
           const reasons: Partial<Record<NonNullable<typeof result.reason>, string>> = {
-            busy: "当前操作繁忙，请稍后手动重试。", not_found: "历史条目已不存在。", invalid_input: "此条目没有可复制的纯文本。", timeout: "请求在写入前已到期。", permission_unknown: "宿主未允许复制。", storage_unavailable: "历史存储不可用。",
+            busy: "当前操作繁忙，请稍后手动重试。", not_found: "历史条目已不存在。", invalid_input: format === "png" ? "PNG 已损坏或超出复制限制。" : "此条目没有可复制的纯文本。", timeout: "请求在写入前已到期。", permission_unknown: "宿主未允许复制。", storage_unavailable: "历史存储不可用。",
           };
           message = `未执行复制：${(result.reason && reasons[result.reason]) || "无法开始复制，请稍后手动重试。"}`;
         }
@@ -370,6 +435,7 @@ export function createHistoryModel(bridge: DesktopBridge) {
       store.setState({ copyBusy: false });
       if (ownsPreview(token, sel, gen)) store.setState({ copyMessage: message });
     }
+    return copied;
   }
   function measurementReceipt() { return committedReceipt; }
   function acknowledgeMeasurement(receipt: Receipt, inputFocused: boolean) {
@@ -384,5 +450,5 @@ export function createHistoryModel(bridge: DesktopBridge) {
     });
   }
   function copyIdentity() { return `${lifetime}:${generation}:${selection}`; }
-  return { store, start, refresh, more, toggle, setEnabled, setQuery, selectClip, retryPreview, morePreview, copyText, copyIdentity, measurementReceipt, acknowledgeMeasurement };
+  return { store, start, refresh, more, toggle, setEnabled, setQuery, selectClip, retryPreview, retryPng, morePreview, copyText: () => copy("text"), copyPng: () => copy("png"), copyIdentity, measurementReceipt, acknowledgeMeasurement };
 }

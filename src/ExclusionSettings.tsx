@@ -22,7 +22,7 @@ export function ExclusionSettings({ control, closing, onApplied, onBlocked }: { 
   }
   return <section className="status-card" aria-labelledby="exclusions-heading" aria-busy={settings.pending || settings.snapshot?.saving}>
     <h2 id="exclusions-heading">应用排除</h2>
-    <p className="notice">排除列表保存在当前数据目录，重启后仍生效；每次启动都暂停收录。规则在读取剪贴板快照后、保存历史前过滤，不能保证不读取剪贴板。</p>
+    <p className="notice">排除列表保存在当前数据目录，重启后仍生效。规则在读取剪贴板快照后、保存历史前过滤，不能保证不读取剪贴板。</p>
     {!control.available && <p role="status">当前环境未提供持久排除设置。</p>}
     {control.available && !settings.snapshot && !settings.error && <p role="status">正在读取排除设置…</p>}
     {settings.snapshot?.blocked && <p role="alert">设置状态需要核对，收录已阻止；本实例不会覆盖设置文件。请退出后修正 settings.json，再重新启动。</p>}

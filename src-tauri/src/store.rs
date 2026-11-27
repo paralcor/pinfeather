@@ -459,6 +459,18 @@ impl Store {
         Ok(Some(StoredClip { clip_id, snapshot: Snapshot { capture_id,captured_at_ms,source_process,source_confidence,omitted_formats,payloads },text_full,preview,payload_bytes }))
     }
 
+    pub(crate) fn get_png(&self, clip_id: i64) -> ContractResult<Vec<u8>> {
+        let data: Option<Option<Vec<u8>>> = self.conn.query_row(
+            "SELECT CASE WHEN length(p.data) <= ?2 THEN p.data END
+             FROM clips c LEFT JOIN payloads p ON c.id = p.clip_id AND p.format_name = 'PNG'
+             WHERE c.id = ?1",
+            params![clip_id, MAX_PNG_BYTES as i64],
+            |row| row.get(0),
+        ).optional().map_err(sql_error)?;
+        data.ok_or_else(|| ContractError::new(ErrorCode::NotFound, "clip not found"))?
+            .ok_or_else(|| ContractError::invalid_input("clip has no PNG within the storage limit"))
+    }
+
     /// E08.2 bounded UTF-8 text frames over text_full; raw payloads never cross
     /// this boundary.
     pub fn get_clip_text(&self, request: &crate::contracts::GetClipTextRequest) -> ContractResult<crate::contracts::GetClipTextResult> {
@@ -602,6 +614,20 @@ mod tests {
         items_only.limits = (1, i64::MAX);
         items_only.insert(&sample("a")).unwrap();
         assert_eq!(items_only.insert(&sample("b")).unwrap_err().code, ErrorCode::CapacityExceeded);
+    }
+
+    #[test]
+    fn png_lookup_returns_the_registered_payload_by_id_and_distinguishes_deletion() {
+        let mut store = Store::open_in_memory().unwrap();
+        let plain = store.insert(&sample("plain")).unwrap().clip_id;
+        let mut mixed = sample("mixed");
+        let png = crate::png_clip::sample_png(2, 1);
+        mixed.payloads.push(Payload { format_name: "PNG".into(), data: png.clone() });
+        let mixed_id = store.insert(&mixed).unwrap().clip_id;
+        assert_eq!(store.get_png(mixed_id).unwrap(), png);
+        assert_eq!(store.get_png(plain).unwrap_err().code, ErrorCode::InvalidInput);
+        assert!(store.delete(mixed_id).unwrap());
+        assert_eq!(store.get_png(mixed_id).unwrap_err().code, ErrorCode::NotFound);
     }
 
     #[test]

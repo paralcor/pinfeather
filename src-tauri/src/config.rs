@@ -32,7 +32,7 @@ pub(crate) fn same_exclusions(left: &[String], right: &[String]) -> ContractResu
 }
 
 fn settings_error() -> ContractError { ContractError::new(ErrorCode::StorageUnavailable, "设置文件不可用；已保留文件。请退出后修正 settings.json，再重新启动。") }
-fn read_settings(path: &Path) -> std::io::Result<Option<Vec<u8>>> {
+pub(crate) fn read_settings(path: &Path) -> std::io::Result<Option<Vec<u8>>> {
     let file = match std::fs::File::open(path) {
         Ok(file) => file,
         Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Ok(None),
@@ -50,6 +50,39 @@ impl Drop for SettingsWrite {
     fn drop(&mut self) { let _ = std::fs::remove_file(&self.path); }
 }
 pub(crate) struct SettingsSaveError { pub error: ContractError, pub uncertain: bool }
+
+pub(crate) fn stage_settings(path: &Path, prefix: &str, bytes: Vec<u8>) -> std::io::Result<SettingsWrite> {
+    let path = path.with_file_name(format!(".{prefix}-{}.tmp", uuid::Uuid::new_v4()));
+    let mut file = std::fs::OpenOptions::new().write(true).create_new(true).open(&path)?;
+    let staged = SettingsWrite { path, bytes };
+    let written = file.write_all(&staged.bytes).and_then(|_| file.sync_all());
+    drop(file);
+    written?;
+    Ok(staged)
+}
+
+pub(crate) enum ReplaceError { Retained, Changed, Indeterminate }
+
+/// Compare the observed bytes before replacement and verify what is on disk afterward.
+pub(crate) fn replace_settings(path: &Path, expected: &mut Option<Vec<u8>>, staged: &SettingsWrite) -> Result<(), ReplaceError> {
+    let current = read_settings(path).map_err(|_| ReplaceError::Changed)?;
+    if current != *expected { return Err(ReplaceError::Changed); }
+    use std::os::windows::ffi::OsStrExt;
+    use windows_sys::Win32::Storage::FileSystem::{ReplaceFileW, MoveFileExW, MOVEFILE_WRITE_THROUGH};
+    let destination: Vec<u16> = path.as_os_str().encode_wide().chain([0]).collect();
+    let source: Vec<u16> = staged.path.as_os_str().encode_wide().chain([0]).collect();
+    let replaced = unsafe {
+        if expected.is_some() { ReplaceFileW(destination.as_ptr(), source.as_ptr(), std::ptr::null(), 0, std::ptr::null(), std::ptr::null()) }
+        else { MoveFileExW(source.as_ptr(), destination.as_ptr(), MOVEFILE_WRITE_THROUGH) }
+    } != 0;
+    let after = read_settings(path);
+    if replaced && matches!(&after, Ok(Some(bytes)) if *bytes == staged.bytes) {
+        *expected = Some(staged.bytes.clone());
+        return Ok(());
+    }
+    if matches!(&after, Ok(bytes) if bytes == expected) { Err(ReplaceError::Retained) } else { Err(ReplaceError::Indeterminate) }
+}
+
 impl SettingsFile {
     pub fn load(path: PathBuf) -> (Self, ContractResult<Vec<String>>) {
         let loaded = read_settings(&path);
@@ -65,30 +98,15 @@ impl SettingsFile {
     }
     pub fn prepare(&self, paths: &[String]) -> ContractResult<SettingsWrite> {
         let bytes = serde_json::to_vec_pretty(&SettingsDocument { schema_version: 1, excluded_apps: paths.to_vec() }).map_err(|_| settings_error())?;
-        let path = self.path.with_file_name(format!(".settings-{}.tmp", uuid::Uuid::new_v4()));
-        let mut file = std::fs::OpenOptions::new().write(true).create_new(true).open(&path).map_err(|_| settings_error())?;
-        let staged = SettingsWrite { path, bytes };
-        let written=file.write_all(&staged.bytes).and_then(|_| file.sync_all());drop(file);written.map_err(|_| settings_error())?;
-        Ok(staged)
+        stage_settings(&self.path, "settings", bytes).map_err(|_| settings_error())
     }
     /// Caller holds the capture commit gate; never delete the existing destination.
     pub fn replace(&mut self, staged: &SettingsWrite) -> Result<(), SettingsSaveError> {
-        let current = read_settings(&self.path).map_err(|_| SettingsSaveError { error: settings_error(), uncertain: true })?;
-        if current != self.expected { return Err(SettingsSaveError { error: settings_error(), uncertain: true }); }
-        use std::os::windows::ffi::OsStrExt;
-        use windows_sys::Win32::Storage::FileSystem::{ReplaceFileW, MoveFileExW, MOVEFILE_WRITE_THROUGH};
-        let destination: Vec<u16> = self.path.as_os_str().encode_wide().chain([0]).collect();
-        let source: Vec<u16> = staged.path.as_os_str().encode_wide().chain([0]).collect();
-        let replaced = unsafe {
-            if self.expected.is_some() { ReplaceFileW(destination.as_ptr(), source.as_ptr(), std::ptr::null(), 0, std::ptr::null(), std::ptr::null()) }
-            else { MoveFileExW(source.as_ptr(), destination.as_ptr(), MOVEFILE_WRITE_THROUGH) }
-        } != 0;
-        let after = read_settings(&self.path);
-        if replaced && matches!(&after, Ok(Some(bytes)) if *bytes == staged.bytes) {
-            self.expected = Some(staged.bytes.clone()); return Ok(());
-        }
-        let retained = matches!(&after, Ok(bytes) if *bytes == self.expected);
-        Err(SettingsSaveError { error: ContractError::new(ErrorCode::StorageUnavailable, if retained { "设置保存失败，磁盘与当前排除规则保持原样。可重试应用。" } else { "无法确认设置最终状态；收录已阻止。请退出后核对 settings.json，再重新启动。" }), uncertain: !retained })
+        replace_settings(&self.path, &mut self.expected, staged).map_err(|failure| match failure {
+            ReplaceError::Retained => SettingsSaveError { error: ContractError::new(ErrorCode::StorageUnavailable, "设置保存失败，磁盘与当前排除规则保持原样。可重试应用。"), uncertain: false },
+            ReplaceError::Changed => SettingsSaveError { error: settings_error(), uncertain: true },
+            ReplaceError::Indeterminate => SettingsSaveError { error: ContractError::new(ErrorCode::StorageUnavailable, "无法确认设置最终状态；收录已阻止。请退出后核对 settings.json，再重新启动。"), uncertain: true },
+        })
     }
 }
 

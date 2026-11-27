@@ -1,0 +1,18 @@
+[
+  {
+    "revision": "0",
+    "enabled": false,
+    "blocked": true,
+    "outcome": "blocked",
+    "reason": null,
+    "error": "启动时核对历史存储或启动恢复配置超时。片羽保持暂停，请重新启动。"
+  },
+  {
+    "revision": "0",
+    "enabled": false,
+    "blocked": true,
+    "outcome": "forced_paused",
+    "reason": null,
+    "error": "启动时核对历史存储或启动恢复配置超时。片羽保持暂停，请重新启动。"
+  }
+]

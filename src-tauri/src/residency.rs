@@ -1,6 +1,6 @@
 //! Residency decisions and one retained cleanup worker, independent of native effects.
 use std::{sync::{Arc,Mutex,mpsc},thread::JoinHandle,time::{Duration,Instant}};
-use crate::{contracts::{ContractError,ContractResult,ErrorCode},host::HostRuntime,manual_panel::PanelHost};
+use crate::{contracts::{ContractError,ContractResult,ErrorCode,StatusResult},host::HostRuntime,manual_panel::PanelHost};
 use tauri::{Emitter,Manager};
 
 #[derive(Debug,Clone,serde::Serialize)]
@@ -33,6 +33,12 @@ impl Residency {
         if failed{self.show(effects);}
     }
     pub fn show(&self,effects:&dyn ResidencyEffects){if let Err(error)=effects.show_main(){self.update(|s|s.record_error(error),effects);}}
+    fn set_capture(&self, runtime: &HostRuntime, effects: &dyn ResidencyEffects, sequence: u64, enabled: bool) {
+        if runtime.set_enabled_in_order(sequence, enabled).is_err() || runtime.startup_capture().error.is_some() {
+            self.show(effects);
+        }
+        effects.publish(&self.snapshot());
+    }
     pub fn close_main(&self,effects:&dyn ResidencyEffects){
         // The native probe can dispatch to the main thread; hold no state lock while waiting.
         let tray=if self.running(){effects.tray_available()}else{Ok(false)};
@@ -104,6 +110,18 @@ pub struct DesktopResidency {
     tray:Mutex<Option<tauri::tray::TrayIcon>>,
     menus:Mutex<Option<(tauri::menu::MenuItem<tauri::Wry>,tauri::menu::MenuItem<tauri::Wry>,tauri::menu::MenuItem<tauri::Wry>,tauri::menu::MenuItem<tauri::Wry>)>>,
 }
+fn tray_capture_text(status: &StatusResult, settings_blocked: bool, running: bool, startup_warning: bool) -> String {
+    let text = if !running { "正在退出：打开主窗口处理" }
+    else if settings_blocked { "设置异常：收录已阻止" }
+    else { match status.state.as_str() {
+        "listening" => "正在收录",
+        "paused" => "已暂停",
+        "overloaded" => "已停止新增：打开主窗口处理",
+        "failed" => "服务异常：打开主窗口处理",
+        _ => "正在退出：打开主窗口处理",
+    } };
+    if startup_warning { format!("{text} · 启动偏好未保存") } else { text.into() }
+}
 impl DesktopResidency {
     pub fn new(handle:tauri::AppHandle,runtime:Arc<HostRuntime>,panel:Arc<PanelHost>)->Arc<Self>{Arc::new(Self{coordinator:Residency::new(),effects:Arc::new(TauriEffects{handle,runtime,panel}),tray:Mutex::new(None),menus:Mutex::new(None)})}
     pub fn install_tray(self:&Arc<Self>){
@@ -126,17 +144,30 @@ impl DesktopResidency {
     pub fn refresh_tray(&self){
         if !self.coordinator.snapshot().tray_available{return;}
         let status=self.effects.runtime.status();let settings=self.effects.runtime.settings();let running=self.coordinator.running();
-        let text=if !running{"正在退出：打开主窗口处理"}else if settings.blocked{"设置异常：收录已阻止"}else{match status.state.as_str(){"listening"=>"正在收录","paused"=>"已暂停","overloaded"=>"已停止新增：打开主窗口处理","failed"=>"服务异常：打开主窗口处理",_=>"正在退出：打开主窗口处理"}};
+        let startup_warning = self.effects.runtime.startup_capture().error.is_some();
+        let text=tray_capture_text(&status, settings.blocked, running, startup_warning);
         let result=(||->tauri::Result<()>{
             if let Some((label,start,pause,panel))=self.menus.lock().unwrap_or_else(|e|e.into_inner()).as_ref(){label.set_text(format!("收录状态：{text}"))?;start.set_enabled(running&&!settings.blocked&&!settings.saving&&status.services.storage!="failed"&&(!status.capture.user_enabled||status.state=="failed"||status.state=="overloaded"))?;pause.set_enabled(running&&status.capture.user_enabled)?;panel.set_enabled(running)?;}
             if let Some(tray)=self.tray.lock().unwrap_or_else(|e|e.into_inner()).as_ref(){tray.set_tooltip(Some(format!("片羽 · {text}")))?;}Ok(())
         })();
         if result.is_err(){self.coordinator.tray_result(Err("托盘更新失败，请使用主窗口处理。".into()),self.effects.as_ref());}
     }
+    pub fn show_startup_capture_warning_if_hidden(&self) {
+        if self.coordinator.running() && self.effects.runtime.startup_capture().error.is_some()
+            && self.effects.handle.get_webview_window("main").is_some_and(|window| matches!(window.is_visible(), Ok(false)))
+        {
+            self.coordinator.show(self.effects.as_ref());
+        }
+    }
     fn menu(self:&Arc<Self>,id:&str){match id{
         "residency-main"=>self.coordinator.show(self.effects.as_ref()),
         "residency-panel" if self.coordinator.running()=>{if self.effects.panel.sessions.open(&self.effects.panel.window).is_err(){self.coordinator.show(self.effects.as_ref());}},
-        "residency-start"|"residency-pause" if self.coordinator.running()=>{let enabled=id=="residency-start";let owner=self.clone();tauri::async_runtime::spawn_blocking(move||{if owner.effects.runtime.set_enabled(enabled).is_err(){owner.coordinator.show(owner.effects.as_ref());}owner.effects.publish(&owner.coordinator.snapshot());});},
+        "residency-start" | "residency-pause" if self.coordinator.running() => {
+            let enabled = id == "residency-start";
+            let sequence = self.effects.runtime.reserve_manual_capture_sequence();
+            let owner = self.clone();
+            tauri::async_runtime::spawn_blocking(move || owner.coordinator.set_capture(&owner.effects.runtime, owner.effects.as_ref(), sequence, enabled));
+        },
         "residency-exit"=>{let _=self.coordinator.request_exit(self.effects.clone());},_=>{}
     }}
 }
@@ -166,6 +197,31 @@ mod tests {
         (Residency::new(),effects,rx,ready)
     }
     fn phase(rx:&mpsc::Receiver<ResidencySnapshot>,expected:&str){while rx.recv_timeout(Duration::from_secs(2)).unwrap().phase!=expected{}}
+    #[test]
+    fn tray_pause_reports_the_unsaved_preference_and_shows_main() {
+        let dir = std::path::PathBuf::from(std::env::var_os("PINFEATHER_TEST_DATA_ROOT").unwrap())
+            .join(format!("tray-startup-{}", uuid::Uuid::new_v4()));
+        assert!(dir.is_absolute());
+        std::fs::create_dir(&dir).unwrap();
+        let pref = dir.join(crate::startup_capture::FILE_NAME);
+        std::fs::write(&pref, br#"{"schema_version":1,"last_manual_state":"listening"}"#).unwrap();
+        let host = HostRuntime::for_test_file(dir.join("history.sqlite3"), Arc::new(|_, _| {})).unwrap();
+        assert!(host.status().capture.admission_open);
+        let external = br#"{ "schema_version":1, "last_manual_state":"listening" }"#;
+        std::fs::write(&pref, external).unwrap();
+        let (owner, effects, _, _) = fixture();
+        owner.set_capture(&host, effects.as_ref(), host.reserve_manual_capture_sequence(), false);
+
+        let status = host.status();
+        let shows = effects.shows.load(Ordering::SeqCst);
+        let warning = host.startup_capture().error;
+        let text = tray_capture_text(&status, host.settings().blocked, true, warning.is_some());
+        host.shutdown(Duration::from_secs(3)).unwrap();
+        assert!(!status.capture.admission_open && !status.capture.user_enabled);
+        assert_eq!(std::fs::read(&pref).unwrap(), external);
+        assert!(warning.is_some());
+        assert_eq!((shows, text.as_str()), (1, "已暂停 · 启动偏好未保存"));
+    }
     fn assert_lost_tray_keeps_entry(observation:Result<bool,String>){
         let(owner,effects,_,_)=fixture();owner.tray_result(Ok(()),effects.as_ref());assert!(owner.snapshot().tray_available);
         *effects.tray.lock().unwrap()=observation;owner.close_main(effects.as_ref());

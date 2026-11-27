@@ -66,4 +66,6 @@ windows-sys = { version = "0.61.2", features = [
 ] }
 rusqlite = { version = "=0.40.2", features = ["bundled"] }
 base64 = "=0.23.1"
+flate2 = "=1.1.10"
+png = "=0.18.1"
 uuid = { version = "=1.28.0", features = ["v4"] }

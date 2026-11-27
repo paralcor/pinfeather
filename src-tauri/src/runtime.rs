@@ -45,6 +45,8 @@ pub struct CaptureState {
     pub storage_ready:bool,pub storage_failed:bool,pub storage_retry:bool,pub listener_ready:bool,pub worker_service:String,
     pub stopping:bool,pub revision:u64,pub history_revision:u64,pub origins:crate::clipboard::origin::OriginRegistry,pub internal_ignored:u64,pub restart_worker:bool,
     pub settings_saving:bool,pub settings_blocked:bool,pub settings_error:Option<String>,
+    pub(crate) startup_capture_writes: crate::startup_capture::StartupCaptureWrites,
+    latest_manual_capture: u64,
     last_application_skip:Option<ApplicationSkip>,
     instance:String,next:u64,pending:VecDeque<CaptureTicket>,last:Option<(u32,String)>,
     in_flight:Option<String>,pub(crate) queue:VecDeque<QueuedSnapshot>,pub(crate) bytes:u64,pub(crate) exclusions:Vec<String>,acquired:Option<(u32,String)>,
@@ -52,7 +54,32 @@ pub struct CaptureState {
 impl CaptureState {
     pub fn new(instance:&str)->Self{
         assert!(!instance.is_empty()&&instance.len()<=40&&instance.bytes().all(|b|b.is_ascii_graphic()));
-        Self{admission:Admission::UserPaused,counters:Counters::default(),epoch:0,notice:None,user_enabled:false,history:crate::contracts::HistoryUsage{items:0,payload_bytes:0},storage_inflight:(0,0),storage_ready:false,storage_failed:false,storage_retry:false,listener_ready:false,worker_service:"not_started".into(),stopping:false,revision:0,history_revision:0,origins:crate::clipboard::origin::OriginRegistry::new(uuid::Uuid::parse_str(instance).unwrap_or_else(|_|uuid::Uuid::new_v4()).into_bytes(),0),internal_ignored:0,restart_worker:false,settings_saving:false,settings_blocked:false,settings_error:None,last_application_skip:None,instance:instance.into(),next:0,pending:VecDeque::new(),last:None,in_flight:None,queue:VecDeque::new(),bytes:0,exclusions:vec![],acquired:None}
+        Self{admission:Admission::UserPaused,counters:Counters::default(),epoch:0,notice:None,user_enabled:false,history:crate::contracts::HistoryUsage{items:0,payload_bytes:0},storage_inflight:(0,0),storage_ready:false,storage_failed:false,storage_retry:false,listener_ready:false,worker_service:"not_started".into(),stopping:false,revision:0,history_revision:0,origins:crate::clipboard::origin::OriginRegistry::new(uuid::Uuid::parse_str(instance).unwrap_or_else(|_|uuid::Uuid::new_v4()).into_bytes(),0),internal_ignored:0,restart_worker:false,settings_saving:false,settings_blocked:false,settings_error:None,startup_capture_writes:Default::default(),latest_manual_capture:0,last_application_skip:None,instance:instance.into(),next:0,pending:VecDeque::new(),last:None,in_flight:None,queue:VecDeque::new(),bytes:0,exclusions:vec![],acquired:None}
+    }
+    pub(crate) fn accept_manual_capture(&mut self, sequence: u64) -> bool {
+        if sequence <= self.latest_manual_capture { return false; }
+        self.latest_manual_capture = sequence;
+        true
+    }
+
+    pub(crate) fn capture_capacity_notice(&self) -> Option<Notice> {
+        let (items, bytes) = self.queue_usage();
+        if self.history.items + items as i64 >= crate::contracts::MAX_HISTORY_ITEMS as i64 ||
+            self.history.payload_bytes + bytes as i64 >= crate::contracts::MAX_HISTORY_PAYLOAD_BYTES as i64 {
+            Some(Notice::HistoryCapacity)
+        } else if items >= MAX_QUEUE_ITEMS as usize || bytes >= MAX_QUEUE_BYTES {
+            Some(Notice::SnapshotQueueFull)
+        } else { None }
+    }
+
+    pub(crate) fn reopen_after_recovery(&mut self) {
+        if let Some(notice) = self.capture_capacity_notice() {
+            self.admission = Admission::Overloaded;
+            self.notice = Some(notice);
+            self.startup_capture_writes.pending_start = false;
+        } else {
+            self.admission = Admission::Active;
+        }
     }
     pub fn set_enabled(&mut self,enabled:bool){
         if self.admission==Admission::Stopped{return;}
@@ -212,18 +239,34 @@ impl CapturePipeline {
     pub fn poll_capture(&mut self)->crate::contracts::ContractResult<bool>{
         if self.closing.closing(){return Ok(false);}
         if !self.listener.healthy(){let mut state=self.state.lock().unwrap_or_else(|e|e.into_inner());state.admission=Admission::Failed;state.notice=Some(Notice::ListenerStopped);return Err(crate::contracts::ContractError::new(crate::contracts::ErrorCode::CleanupFailed,"clipboard listener stopped"));}
+        self.poll_worker(|| unsafe { windows_sys::Win32::System::DataExchange::GetClipboardSequenceNumber() })
+    }
+    pub(crate) fn poll_worker(&mut self, sequence: impl FnOnce() -> u32) -> crate::contracts::ContractResult<bool> {
         let ticket={
             let mut state=self.state.lock().unwrap_or_else(|e|e.into_inner());
             if state.admission!=Admission::Active || state.notification_count()==0 {return Ok(false);}
-            let sequence=unsafe{windows_sys::Win32::System::DataExchange::GetClipboardSequenceNumber()};
-            state.begin_current(sequence)
+            state.begin_current(sequence())
         };
         let Some(ticket)=ticket else{return Ok(false);};
         // Release the state lock while the worker renders/reads; notifications
         // continue to accumulate independently up to their own fixed bound.
-        match self.worker.capture_snapshot(&ticket.message) {
-            Ok(snapshot)=>{let mut state=self.state.lock().unwrap_or_else(|e|e.into_inner());state.complete(ticket,snapshot);if self.worker.state()==crate::clipboard::worker::WorkerState::FailedPaused{state.admission=Admission::Failed;state.notice=Some(Notice::WorkerFailed);}Ok(true)}
-            Err(error)=>{self.state.lock().unwrap_or_else(|e|e.into_inner()).capture_failed(&ticket,self.worker.state()==crate::clipboard::worker::WorkerState::FailedPaused);Err(error)}
+        let result = self.worker.capture_snapshot(&ticket.message);
+        let failed = self.worker.state() == crate::clipboard::worker::WorkerState::FailedPaused;
+        let mut state = self.state.lock().unwrap_or_else(|e|e.into_inner());
+        if failed { state.worker_service = "failed".into(); }
+        match result {
+            Ok(snapshot) => {
+                state.complete(ticket, snapshot);
+                if failed {
+                    state.admission = Admission::Failed;
+                    state.notice = Some(Notice::WorkerFailed);
+                }
+                Ok(true)
+            }
+            Err(error) => {
+                state.capture_failed(&ticket, failed);
+                Err(error)
+            }
         }
     }
     pub fn close(&mut self)->crate::contracts::ContractResult<()> {
