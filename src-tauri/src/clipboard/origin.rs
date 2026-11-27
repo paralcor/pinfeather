@@ -64,7 +64,14 @@ impl From<ContractError> for WriteFailure {
 
 /// Registration remains pending while OS calls run without the capture-state lock.
 pub(crate) struct WriteAttempt { pub result:Result<u64,WriteFailure>,pub sequence:Option<u32> }
-pub(crate) fn write_registered_text(api:&mut (impl WriteApi+?Sized),owner:usize,counter:u64,marker:&[u8;28],text:&[u8],before_empty:impl FnOnce()->ContractResult<()>)->WriteAttempt {
+#[derive(Clone, Copy)]
+pub(crate) enum WriteFormat { Text, Png }
+impl WriteFormat {
+    fn name(self) -> &'static str {
+        match self { Self::Text => "CF_UNICODETEXT", Self::Png => "PNG" }
+    }
+}
+pub(crate) fn write_registered_payload(api:&mut (impl WriteApi+?Sized),owner:usize,counter:u64,marker:&[u8;28],format:WriteFormat,data:&[u8],before_empty:impl FnOnce()->ContractResult<()>)->WriteAttempt {
     let mut marker_set=false;
     let mut may_have_written=false;
     let result=(||{
@@ -73,7 +80,7 @@ pub(crate) fn write_registered_text(api:&mut (impl WriteApi+?Sized),owner:usize,
             before_empty()?;
             may_have_written=true;
             api.empty()?;
-            for (name,bytes) in [(super::capture::INTERNAL,marker.as_slice()),(super::capture::HISTORY,&[0u8;4]),(super::capture::CLOUD,&[0u8;4]),("CF_UNICODETEXT",text)] {
+            for (name,bytes) in [(super::capture::INTERNAL,marker.as_slice()),(super::capture::HISTORY,&[0u8;4]),(super::capture::CLOUD,&[0u8;4]),(format.name(),data)] {
                 let handle=api.allocate(bytes)?;
                 if let Err(error)=api.set(name,handle){api.free(handle);return Err(error);}
                 if name==super::capture::INTERNAL{marker_set=true;}
@@ -89,7 +96,7 @@ pub(crate) fn write_registered_text(api:&mut (impl WriteApi+?Sized),owner:usize,
 pub fn write_text(api:&mut impl WriteApi,registry:&mut OriginRegistry,text:&[u8])->ContractResult<u64>{
     super::capture::validate_payloads(&[crate::store::Payload{format_name:"CF_UNICODETEXT".into(),data:text.to_vec()}]).map_err(|_|ContractError::invalid_input("invalid clipboard text"))?;
     let(counter,marker)=registry.begin()?;
-    let attempt=write_registered_text(api,registry.owner,counter,&marker,text,||Ok(()));
+    let attempt=write_registered_payload(api,registry.owner,counter,&marker,WriteFormat::Text,text,||Ok(()));
     registry.finish(counter,attempt.sequence);
     attempt.result.map_err(|failure|failure.error)
 }

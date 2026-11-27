@@ -1,6 +1,6 @@
 # 个人文字历史
 
-`tools/start-personal.ps1 -Executable <片羽exe完整路径>` 手动启动，数据目录固定为 `D:\Develop\PinfeatherData\personal`。每次启动默认暂停，点击“开始收录”后才监听新内容；不会导入其他目录的历史。
+`tools/start-personal.ps1 -Executable <片羽exe完整路径>` 手动启动，数据目录固定为 `D:\Develop\PinfeatherData\personal`，默认强制暂停启动。想在下次启动时沿用上次手动选择，可在主窗口开启「启动时恢复上次手动收录状态」，并在运行脚本时加 `-ResumeCapture`。偏好保存在当前目录的 `startup-capture.json`。退出排空保留原选择，关闭偏好会清除该选择。其他目录的历史需要单独恢复。
 
 使用 Ctrl+Alt+V 或主窗口按钮打开快捷面板，搜索、查看正文，再单独点击“复制纯文本”，自行切回应用粘贴。主窗口关闭可能隐藏到托盘；结束运行请点“退出片羽”。
 

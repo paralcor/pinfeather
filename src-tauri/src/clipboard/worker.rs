@@ -242,6 +242,10 @@ impl WorkerSupervisor {
     pub fn set_close_control(&mut self,control:std::sync::Arc<crate::runtime::CloseControl>){self.closing=Some(control);}
     #[cfg(all(test,feature="test-fixtures"))]
     pub(crate) fn m2_synthetic(waits:&[u32])->Self{let effects=r3_spawn_tests::Effects::new(true,true,true,waits);let mut owner=effects.supervisor();owner.ensure_worker().unwrap();owner}
+    #[cfg(all(test, feature = "test-fixtures"))]
+    pub(crate) fn snapshot_with_failed_reap_for_test() -> Self {
+        r3_spawn_tests::Effects::new(true, false, true, &[258, 0]).supervisor()
+    }
     #[cfg(all(test,feature="test-fixtures"))]
     pub(crate) fn m2_deadline(&self)->Option<Instant>{self.close_deadline}
     fn is_closing(&self)->bool{self.closing.as_ref().is_some_and(|c|c.closing())}

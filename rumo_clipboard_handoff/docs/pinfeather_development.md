@@ -1,14 +1,16 @@
 # 桌面运行与复制、搜索验收
 
-下列E07步骤验证真实复制、提交、列表和重启。E09已补充真实桌面正文搜索、按需预览、长文续读与重启验收，结果见[验收计划6.2节](pinfeather_acceptance_plan.md#62-e09-本机搜索与正文预览)。快捷面板、自动回贴及IME可行性仍单独跟踪。
+功能、开发启动入口和已知限制见 [README](../../README.md#当前状态)。本页的 E07 步骤验证真实复制、保存、列表和重启。E09 的搜索、预览与重启记录见[验收计划第 6.2 节](pinfeather_acceptance_plan.md#62-e09-本机搜索与正文预览)。
 
 ## 启动与退出
 
 在仓库根目录的 PowerShell 中执行。沿用当前执行策略，不更改系统配置。
 
 ```powershell
-$pinfeatherE07Run = Join-Path 'D:\Develop\Misc Workspace\archive\pinfeather-core-prototype\runs' ((Get-Date -Format 'yyyyMMdd-HHmmss') + '-e07-manual')
-New-Item -ItemType Directory -Path $pinfeatherE07Run | Out-Null
+$pinfeatherTestRoot = '<隔离测试根的绝对路径>'
+$pinfeatherRunId = (Get-Date -Format 'yyyyMMdd-HHmmss') + '-' + [Guid]::NewGuid().ToString('N')
+$pinfeatherE07Run = Join-Path $pinfeatherTestRoot "runs\$pinfeatherRunId"
+New-Item -ItemType Directory -Path $pinfeatherE07Run -Force | Out-Null
 $pinfeatherE07Data = Join-Path $pinfeatherE07Run 'data'
 $pinfeatherE07Exe = (Resolve-Path -LiteralPath '.\src-tauri\target\release\pinfeather.exe').Path
 & $pinfeatherE07Exe --data-dir $pinfeatherE07Data --start-paused
@@ -16,11 +18,11 @@ $pinfeatherE07Exe = (Resolve-Path -LiteralPath '.\src-tauri\target\release\pinfe
 
 先按 [CONTRIBUTING.md](../../CONTRIBUTING.md#构建与检查) 构建 Release；已有构建仅在来源、源码和校验值可核对时复用。不要同时运行开发宿主或原生剪贴板测试。应用拒绝第二实例，不自动关闭现有实例。
 
-程序默认暂停。展开“隔离数据目录”，确认与本次 `data` 路径一致；初次启动应显示零条历史。由用户点击“开始收录”，复制合成内容，观察列表与计数。测试期间只复制测试材料；结束时点击“暂停收录”，等待确认及未保存队列归零，再点击窗口关闭按钮。
+程序默认暂停。展开「收录诊断」，核对数据目录与本次 `data` 路径一致。初次启动应显示零条历史。点击「开始收录」，复制合成内容，观察列表与计数。结束时点击「暂停收录」，待界面确认且未保存队列归零后，点「退出片羽」。
 
 重启时复用同一个 `$pinfeatherE07Data`，不要重新执行创建 run 目录的语句。程序仍应暂停，已提交记录应保留。保留整个 run 目录，不删除或重置失败现场。
 
-需要开发构建时可执行 `tools/dev.ps1 -DataDir $pinfeatherE07Data`；同一时间只开一个宿主，开发构建结果与 Release 验收分开记录。
+开发启动可执行 `tools/dev.ps1 -DataDir $pinfeatherE07Data`。同一时间运行一个宿主，记录所用构建类型。
 
 ## 分步验收
 
@@ -33,11 +35,18 @@ $pinfeatherE07Exe = (Resolve-Path -LiteralPath '.\src-tauri\target\release\pinfe
 | 链接 | 复制 `https://example.invalid/e07/a_b?q=100%25` | 链接按文本保存，内容及格式可核对 |
 | 外部同文 | 再次复制完全相同的 CN01 文本 | 新增独立条目，不因文字相同被当成内部写入 |
 | 暂停 | 暂停确认后复制 `E07-PAUSED-02 不应入库` | 不新增条目；恢复后复制新的编号才入库 |
-| 重启 | 暂停、队列归零、关闭；用同目录重开 | 原条目的 id、时间、载荷一致；启动仍暂停，旧剪贴板不自动新增 |
+| 重启 | 暂停并等待队列归零，点「退出片羽」，用同目录重开 | 原条目的 id、时间、载荷一致。启动仍暂停，历史条数保持一致 |
 | 多格式 | 开始收录，在浏览器复制带格式的合成段落 | 同一条目同时保存 CF_UNICODETEXT 和 HTML Format，不拆成两条；只读核对载荷关系 |
 | PNG | 在支持复制 PNG 格式的应用中复制合成 PNG | 若提供 PNG 注册格式则关联保存；仅提供 DIB/DIBV5 的来源按不支持格式记录，不能据此宣称 PNG 链路通过 |
 
 先完成文本和重启，再逐项进行多格式及 PNG。测试夹具属于本次 run；浏览器中的选择、复制和图片操作由用户完成。只保存必要的合成结果，不记录私人剪贴板内容、窗口标题或凭据。
+
+## 快捷面板现场验收
+
+1. 收录一段超过 64 KiB 的合成长文，保留首尾标记。暂停收录后，复制另一段短样本作为剪贴板初值。
+2. 在记事本或常用编辑器放好插入点，按 `Ctrl+Alt+V` 打开面板。用微软拼音输入搜索词，确认候选期间 ↓ 用于候选选择。确认候选并释放按键后，待结果就绪，再按 ↓ 预览首条。
+3. 在首段预览中按 Enter，等待面板收起。直接按 `Ctrl+V`，核对目标窗口、插入点和长文内容。记录主窗口可见、最小化或在托盘时的结果，以及通过主窗口按钮唤出的焦点落点。
+4. 改用「复制纯文本」按钮，验证复制后保留预览。如果能在复制等待期间切换应用，记录焦点最终落点。
 
 ## 内部写回原生测试
 

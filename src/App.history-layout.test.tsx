@@ -64,6 +64,14 @@ it.each([false, true])("history layout: %s panel has a named list viewport with 
   expect(f.list.querySelector('[data-history-id="1"]')?.textContent).toContain("布局合成条目1");
 });
 
+it("quick panel keeps its existing diagnostic disclosure and search focus", async () => {
+  await mount(true);
+  expect(screen.queryByText("收录诊断")).toBeNull();
+  expect(screen.getByText("未保存队列").closest("details")).toBeNull();
+  expect(screen.getByText("数据目录").tagName).toBe("SUMMARY");
+  expect(document.activeElement).toBe(screen.getByLabelText("搜索历史正文"));
+});
+
 it.each([false, true])("history layout: %s panel appends a page without resetting the list scroll", async panel => {
   const f = await mount(panel, true);
   f.viewport.scrollTop = 140;

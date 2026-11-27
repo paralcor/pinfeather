@@ -1,9 +1,13 @@
-type KeyIdentity = { key: string; code?: string; keyCode?: number; isComposing?: boolean; repeat?: boolean; ctrlKey?: boolean; altKey?: boolean; metaKey?: boolean };
+type KeyIdentity = { key: string; code?: string; keyCode?: number; isComposing?: boolean; repeat?: boolean; ctrlKey?: boolean; altKey?: boolean; metaKey?: boolean; shiftKey?: boolean };
 type CompositionQuery = { value: string; start: number; end: number };
-export type PanelAction = "copy" | "hide";
+export type PanelAction = "copy" | "copy-png" | "hide";
 export type PanelIntent = { action: PanelAction; target: EventTarget; context: string };
 type Pointer = { button: number; pointerId: number; isPrimary?: boolean };
+type HeldKey = "key" | "ime-confirmation" | "ended-confirmation";
 const modifiers = new Set(["Control", "Alt", "Shift", "Meta"]);
+const imeConfirmation = /^(?:Enter|NumpadEnter|Space| |Arrow(?:Up|Down|Left|Right)|(?:Digit|Numpad)?[0-9]|Escape|Tab|Home|End|PageUp|PageDown)$/;
+const isConfirmation = (event: KeyIdentity) => imeConfirmation.test(event.key) || imeConfirmation.test(event.code ?? "");
+const anonymousConfirmation = "ime:unknown-confirmation";
 const identity = (event: KeyIdentity) => event.code ? `code:${event.code}` : `key:${event.key}`;
 export const isImeKey = (event: KeyIdentity) => !!event.isComposing || event.key === "Process" || event.keyCode === 229;
 const same = (a: PanelIntent, b: PanelIntent | null) => !!b && a.action === b.action && a.target === b.target && a.context === b.context;
@@ -11,8 +15,9 @@ const same = (a: PanelIntent, b: PanelIntent | null) => !!b && a.action === b.ac
 /** Receipts authorize one explicit operation, never native IME completion. */
 export class ManualPanelInput {
   private query: CompositionQuery | null = null;
+  private compositionEnded = false;
   private seenIme = false;
-  private held = new Map<string, string>();
+  private held = new Map<string, HeldKey>();
   private overflow = false;
   private key: (PanelIntent & { key: string; identity: string }) | null = null;
   private pointer: (PanelIntent & { id: number }) | null = null;
@@ -22,31 +27,49 @@ export class ManualPanelInput {
   focusLeft(target: EventTarget) {
     if (this.key?.target === target || this.pointer?.target === target || this.click?.target === target) this.invalidate();
   }
-  compositionStart(query?: CompositionQuery) { this.seenIme = true; this.query = query ?? null; this.invalidate(); }
-  compositionUpdate(query?: CompositionQuery) { this.seenIme = true; this.query ??= query ?? null; this.invalidate(); }
+  compositionStart(query?: CompositionQuery) { this.seenIme = true; this.compositionEnded = false; this.query = query ?? null; this.invalidate(); }
+  compositionUpdate(query?: CompositionQuery) { this.seenIme = true; this.compositionEnded = false; this.query ??= query ?? null; this.invalidate(); }
   compositionEnd(data = "", value?: string) {
-    const query = this.query; this.query = null; this.invalidate();
+    const query = this.query; this.query = null; this.compositionEnded = true; this.invalidate();
+    for (const [id, press] of this.held) {
+      if (press === "ime-confirmation") this.held.set(id, "ended-confirmation");
+    }
     if (!query) return null;
     return data ? query.value.slice(0, query.start) + data + query.value.slice(query.end) : value ?? null;
   }
-  keyDown(event: KeyIdentity, intent: PanelIntent | null, query?: CompositionQuery) {
+  keyDown(event: KeyIdentity, intent: PanelIntent | null, query?: CompositionQuery): boolean {
     this.invalidate();
-    const ime = isImeKey(event), id = identity(event), alreadyHeld = this.held.has(id);
+    const ime = isImeKey(event);
+    const anonymous = !event.code && event.key === "Process";
+    const id = anonymous ? anonymousConfirmation : identity(event), alreadyHeld = this.held.has(id);
     const otherHeld = this.held.size > (alreadyHeld ? 1 : 0);
-    if (ime) this.compositionUpdate(query);
+    const unidentified = !event.code && event.key === "Unidentified" && event.keyCode === 229;
+    const confirmation = ime && (anonymous || unidentified || isConfirmation(event));
+    const lateConfirmation = confirmation && (this.compositionEnded || this.held.get(id) === "ended-confirmation");
+    if (ime) {
+      this.seenIme = true;
+      // A candidate key can arrive after compositionend without starting another query.
+      if (!lateConfirmation) this.compositionUpdate(query);
+    } else {
+      this.compositionEnded = false;
+    }
     if (!modifiers.has(event.key)) {
       if (!alreadyHeld && this.held.size >= 8) this.overflow = true;
-      else if (!alreadyHeld) this.held.set(id, event.key);
+      else if (lateConfirmation) this.held.set(id, "ended-confirmation");
+      else if (!alreadyHeld) this.held.set(id, confirmation ? "ime-confirmation" : "key");
     }
-    const validKey = intent?.action === "hide" ? event.key === "Escape" || event.key === "Enter" || event.key === " " : event.key === "Enter" || event.key === " ";
-    if (intent && validKey && !ime && !event.repeat && !alreadyHeld && !otherHeld && !this.overflow && !event.ctrlKey && !event.altKey && !event.metaKey) this.key = { ...intent, key: event.key, identity: id };
+    const independent = !ime && !event.repeat && !alreadyHeld && !otherHeld && !this.overflow && !event.ctrlKey && !event.altKey && !event.metaKey && !event.shiftKey;
+    const validKey = event.key === "Enter" || event.key === " " || (event.key === "Escape" && intent?.action === "hide");
+    if (intent && validKey && independent) this.key = { ...intent, key: event.key, identity: id };
+    // Focus may move on ArrowDown. Keep tracking the press until keyUp reaches the panel.
+    return event.key === "ArrowDown" && independent && this.query === null;
   }
   keyUp(event: KeyIdentity, intent: PanelIntent | null): PanelAction | null {
     const press = this.key; this.key = null; this.click = null;
-    const id = identity(event), heldKey = this.held.get(id);
-    const actionKey = ({ Enter: "Enter", NumpadEnter: "Enter", Space: " ", Escape: "Escape", ArrowUp: "ArrowUp", ArrowDown: "ArrowDown" } as Record<string, string>)[event.code ?? ""];
-    if (heldKey === event.key || event.key === "Process" || (heldKey === "Process" && (actionKey ? event.key === actionKey : event.code?.startsWith("Key") && event.key.length === 1))) this.held.delete(id);
-    if (!press || !same(press, intent) || press.key !== event.key || press.identity !== identity(event) || isImeKey(event) || event.ctrlKey || event.altKey || event.metaKey) return null;
+    const id = identity(event);
+    // A code-less Process press may be released with its physical key.
+    if (!this.held.delete(id) && !modifiers.has(event.key) && !event.repeat) this.held.delete(anonymousConfirmation);
+    if (!press || !same(press, intent) || press.key !== event.key || press.identity !== id || isImeKey(event) || event.ctrlKey || event.altKey || event.metaKey || event.shiftKey) return null;
     return press.action;
   }
   pointerDown(event: Pointer, intent: PanelIntent | null) {

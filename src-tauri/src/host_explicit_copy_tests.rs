@@ -62,7 +62,7 @@ fn request()->CopyClipTextRequest{CopyClipTextRequest{request_id:"copy-1".into()
 #[test]
 fn m2_pipeline_timeout_retains_borrowed_listener_and_same_capture_owner_on_retry(){
     let f=fixture(vec![text("m2 writer Drop")]);f.control.block.store(12,Ordering::Release);
-    let reply=f.runtime.queue_copy(1,Instant::now()+Duration::from_secs(5)).unwrap();f.entered.recv_timeout(Duration::from_secs(2)).unwrap();
+    let reply=f.runtime.queue_copy(1,WriteFormat::Text,Instant::now()+Duration::from_secs(5)).unwrap();f.entered.recv_timeout(Duration::from_secs(2)).unwrap();
     let(listener_release,listener_wait)=mpsc::channel();let listener_thread=std::thread::spawn(move||{listener_wait.recv().unwrap();});
     let listener=crate::clipboard::listener::ClipboardListener::m2_synthetic(listener_thread);
     let worker=crate::clipboard::worker::WorkerSupervisor::m2_synthetic(&[0]);let shared=f.runtime.shared.clone();
@@ -93,7 +93,7 @@ fn manual_panel_real_queue_rejects_invalid_sessions_and_shares_main_permit_throu
     for session in [&old,"forged"]{assert_outcome(f.runtime.copy_panel_text(&panel,session,request()).unwrap(),CopyOutcome::NotWritten,Some(ErrorCode::PermissionUnknown));}
     assert_eq!(f.control.written.lock().unwrap().created,0);panel.ready(&old,&window).unwrap();
     f.control.block.store(2,Ordering::Release);let runtime=f.runtime.clone();let p=panel.clone();let id=old.clone();let copying=std::thread::spawn(move||runtime.copy_panel_text(&p,&id,request()).unwrap());
-    f.entered.recv_timeout(Duration::from_secs(2)).unwrap();panel.hide(&old,&window).unwrap();
+    f.entered.recv_timeout(Duration::from_secs(2)).unwrap();panel.hide(&old,&window,false).unwrap();
     let fresh=panel.open(&window).unwrap().session_id.unwrap();panel.ready(&fresh,&window).unwrap();
     assert_outcome(copied(&f),CopyOutcome::NotWritten,Some(ErrorCode::Busy));
     assert_outcome(f.runtime.copy_panel_text(&panel,&fresh,request()).unwrap(),CopyOutcome::NotWritten,Some(ErrorCode::Busy));
@@ -107,13 +107,98 @@ fn manual_panel_timeout_does_not_release_permit_or_claim_hidden_write_cancelled(
     let f=fixture(vec![text("synthetic panel timeout")]);let panel=Arc::new(crate::manual_panel::PanelSessions::new(true));let window=ManualPanelWindow;
     let session=panel.open(&window).unwrap().session_id.unwrap();panel.ready(&session,&window).unwrap();f.control.block.store(2,Ordering::Release);
     let runtime=f.runtime.clone();let p=panel.clone();let id=session.clone();let copying=std::thread::spawn(move||runtime.copy_panel_text(&p,&id,request()).unwrap());
-    f.entered.recv_timeout(Duration::from_secs(2)).unwrap();panel.hide(&session,&window).unwrap();assert_outcome(copying.join().unwrap(),CopyOutcome::Unknown,Some(ErrorCode::Timeout));
+    f.entered.recv_timeout(Duration::from_secs(2)).unwrap();panel.hide(&session,&window,false).unwrap();assert_outcome(copying.join().unwrap(),CopyOutcome::Unknown,Some(ErrorCode::Timeout));
     assert_outcome(copied(&f),CopyOutcome::NotWritten,Some(ErrorCode::Busy));assert_eq!(f.control.written.lock().unwrap().created,1);f.release.send(()).unwrap();
     // The storage query behind the accepted write is the deterministic completion barrier.
     f.runtime.list(list()).unwrap();assert!(!f.runtime.shared.copy_busy.load(Ordering::Acquire));assert_eq!(f.control.written.lock().unwrap().dropped,1);
     assert_outcome(f.runtime.copy_panel_text(&panel,&session,request()).unwrap(),CopyOutcome::NotWritten,Some(ErrorCode::PermissionUnknown));
 }
 fn assert_outcome(result:CopyClipTextResult,outcome:CopyOutcome,reason:Option<ErrorCode>){assert_eq!(result,CopyClipTextResult::new(&request(),outcome,reason));}
+
+fn png_wire(data: &[u8]) -> WireFormat {
+    WireFormat { name: "PNG".into(), data: STANDARD.encode(data) }
+}
+
+#[test]
+fn png_copy_writes_the_original_registered_format_and_remains_internal() {
+    let png = crate::png_clip::sample_png(400, 1);
+    let f = fixture(vec![text("mixed entry"), png_wire(&png)]);
+    let panel = crate::manual_panel::PanelSessions::new(true);
+    let window = ManualPanelWindow;
+    let session = panel.open(&window).unwrap().session_id.unwrap();
+    assert!(f.runtime.get_png_bytes(1, Some((&panel, &session))).is_err());
+    assert_outcome(f.runtime.copy_panel(&panel, &session, request(), WriteFormat::Png).unwrap(),
+        CopyOutcome::NotWritten, Some(ErrorCode::PermissionUnknown));
+    panel.ready(&session, &window).unwrap();
+    assert_eq!(f.runtime.get_png_bytes(1, Some((&panel, &session))).unwrap(), png);
+    assert_outcome(f.runtime.copy_panel(&panel, &session, request(), WriteFormat::Png).unwrap(), CopyOutcome::Copied, None);
+    let written = f.control.written.lock().unwrap();
+    assert_eq!(written.transferred.iter().map(|(name, _)| name.as_str()).collect::<Vec<_>>(),
+        vec![INTERNAL, HISTORY, CLOUD, "PNG"]);
+    assert_eq!(written.transferred[3].1, png);
+    assert_eq!(written.created, 1);
+    let marker = written.transferred[0].1.clone();
+    drop(written);
+    f.runtime.set_enabled(true).unwrap();
+    let mut internal = response(vec![png_wire(&png)]);
+    internal.sequence_before = 50;
+    internal.sequence_locked = 50;
+    internal.sequence_after = 50;
+    internal.owner.hwnd = Some("99".into());
+    internal.internal_origin = Some(STANDARD.encode(marker));
+    f.runtime.inject_response(50, internal).unwrap();
+    assert_eq!(f.runtime.status().counters.ignored, "1");
+    assert_eq!(f.runtime.status().history.items, 1);
+    panel.hide(&session, &window, false).unwrap();
+    assert!(f.runtime.get_png_bytes(1, Some((&panel, &session))).is_err());
+}
+
+#[test]
+fn png_copy_reports_prewrite_rejection_and_postwrite_uncertainty() {
+    let bad = fixture(vec![png_wire(b"\x89PNG\r\n\x1a\n")]);
+    assert_outcome(bad.runtime.copy_clip(request(), WriteFormat::Png).unwrap(),
+        CopyOutcome::NotWritten, Some(ErrorCode::InvalidInput));
+    assert_eq!(bad.control.written.lock().unwrap().calls, 0);
+    let good = fixture(vec![png_wire(&crate::png_clip::sample_png(2, 1))]);
+    good.control.fail.store(10, Ordering::Release);
+    assert_outcome(good.runtime.copy_clip(request(), WriteFormat::Png).unwrap(),
+        CopyOutcome::Unknown, Some(ErrorCode::InjectionFailed));
+    let written = good.control.written.lock().unwrap();
+    assert_eq!(written.created, 1);
+    assert_eq!(written.closed, 1);
+    assert_eq!(written.freed, 1);
+    assert!(written.owned.is_empty());
+}
+
+#[test]
+fn png_copy_rejects_bad_adler32_before_calling_the_clipboard_writer() {
+    let bad = fixture(vec![png_wire(&crate::png_clip::adler_test_png(true))]);
+    assert_outcome(bad.runtime.copy_clip(request(), WriteFormat::Png).unwrap(),
+        CopyOutcome::NotWritten, Some(ErrorCode::InvalidInput));
+    let written = bad.control.written.lock().unwrap();
+    assert_eq!(written.created, 0);
+    assert_eq!(written.calls, 0);
+}
+
+#[test]
+fn png_copy_rejects_split_adler32_before_calling_the_clipboard_writer() {
+    let bad = fixture(vec![png_wire(&crate::png_clip::split_adler_test_png(true, false))]);
+    assert_outcome(bad.runtime.copy_clip(request(), WriteFormat::Png).unwrap(),
+        CopyOutcome::NotWritten, Some(ErrorCode::InvalidInput));
+    let written = bad.control.written.lock().unwrap();
+    assert_eq!(written.created, 0);
+    assert_eq!(written.calls, 0);
+}
+
+#[test]
+fn png_copy_rejects_bad_fdat_crc_before_calling_the_clipboard_writer() {
+    let bad = fixture(vec![png_wire(&crate::png_clip::corrupt_fdat_crc_test_png())]);
+    assert_outcome(bad.runtime.copy_clip(request(), WriteFormat::Png).unwrap(),
+        CopyOutcome::NotWritten, Some(ErrorCode::InvalidInput));
+    let written = bad.control.written.lock().unwrap();
+    assert_eq!(written.created, 0);
+    assert_eq!(written.calls, 0);
+}
 
 struct PauseCommit {shared:Arc<SharedRuntime>,release:Option<mpsc::SyncSender<()>>}
 impl Drop for PauseCommit {fn drop(&mut self){if let Some(tx)=self.release.take(){let _=tx.try_send(());}*self.shared.before_commit.lock().unwrap_or_else(|e|e.into_inner())=None;}}
@@ -252,7 +337,7 @@ fn explicit_copy_registration_and_factory_failure_never_open(){
 #[test]
 fn explicit_copy_pending_origin_and_concurrent_write_rejected_until_close(){
     let f=fixture(vec![text("A")]);f.control.block.store(11,Ordering::Release);
-    let rx=f.runtime.queue_copy(1,Instant::now()+Duration::from_secs(5)).unwrap();f.entered.recv_timeout(Duration::from_secs(2)).unwrap();
+    let rx=f.runtime.queue_copy(1,WriteFormat::Text,Instant::now()+Duration::from_secs(5)).unwrap();f.entered.recv_timeout(Duration::from_secs(2)).unwrap();
     let marker=f.control.written.lock().unwrap().transferred[0].1.clone();
     assert_eq!(f.runtime.shared.state.lock().unwrap().origins.classify(Some(&marker),Some(99),50),Classification::Pending);
     assert_outcome(copied(&f),CopyOutcome::NotWritten,Some(ErrorCode::Busy));assert_eq!(f.control.written.lock().unwrap().created,1);
@@ -274,7 +359,7 @@ fn explicit_copy_actual_three_second_timeout_keeps_running_write_admission(){
 fn explicit_copy_deadline_after_open_prevents_empty_and_closes_once(){
     let f=fixture(vec![text("A")]);f.control.block.store(1,Ordering::Release);
     let deadline=Instant::now()+Duration::from_secs(1);
-    let rx=f.runtime.queue_copy(1,deadline).unwrap();
+    let rx=f.runtime.queue_copy(1,WriteFormat::Text,deadline).unwrap();
     f.entered.recv_timeout(Duration::from_secs(2)).unwrap();
     // The receive deadline confirms expiry while Open is held by an owned barrier.
     assert!(matches!(rx.recv_timeout(deadline.saturating_duration_since(Instant::now())),Err(mpsc::RecvTimeoutError::Timeout)));
@@ -285,7 +370,7 @@ fn explicit_copy_deadline_after_open_prevents_empty_and_closes_once(){
 fn explicit_copy_expired_queued_request_never_constructs_writer(){
     let f=fixture(vec![text("A")]);
     let pause=pause_commit(&f);
-    let rx=f.runtime.queue_copy(1,Instant::now()-Duration::from_secs(1)).unwrap();
+    let rx=f.runtime.queue_copy(1,WriteFormat::Text,Instant::now()-Duration::from_secs(1)).unwrap();
     assert!(matches!(rx.try_recv(),Err(mpsc::TryRecvError::Empty)));assert!(f.runtime.shared.copy_busy.load(Ordering::Acquire));
     drop(pause);let failure=rx.recv_timeout(Duration::from_secs(2)).unwrap().unwrap_err();assert!(!failure.may_have_written);assert_eq!(failure.error.code,ErrorCode::Timeout);
     assert_eq!(f.control.written.lock().unwrap().created,0);
@@ -301,7 +386,7 @@ fn explicit_copy_full_query_queue_releases_rejected_permit(){
 #[test]
 fn explicit_copy_shutdown_before_queued_work_never_opens_writer(){
     let f=fixture(vec![text("A")]);let pause=pause_commit(&f);
-    let rx=f.runtime.queue_copy(1,Instant::now()+Duration::from_secs(5)).unwrap();
+    let rx=f.runtime.queue_copy(1,WriteFormat::Text,Instant::now()+Duration::from_secs(5)).unwrap();
     assert!(f.runtime.shutdown(Duration::ZERO).is_err());assert_outcome(copied(&f),CopyOutcome::NotWritten,Some(ErrorCode::Busy));
     drop(pause);f.runtime.shutdown(Duration::from_secs(2)).unwrap();
     assert!(rx.recv_timeout(Duration::from_secs(2)).is_err());assert_eq!(f.control.written.lock().unwrap().created,0);assert!(!f.runtime.shared.copy_busy.load(Ordering::Acquire));
@@ -309,7 +394,7 @@ fn explicit_copy_shutdown_before_queued_work_never_opens_writer(){
 #[test]
 fn explicit_copy_shutdown_during_open_prevents_empty(){
     let f=fixture(vec![text("A")]);f.control.block.store(1,Ordering::Release);
-    let rx=f.runtime.queue_copy(1,Instant::now()+Duration::from_secs(5)).unwrap();f.entered.recv_timeout(Duration::from_secs(2)).unwrap();
+    let rx=f.runtime.queue_copy(1,WriteFormat::Text,Instant::now()+Duration::from_secs(5)).unwrap();f.entered.recv_timeout(Duration::from_secs(2)).unwrap();
     assert!(f.runtime.shutdown(Duration::ZERO).is_err());f.release.send(()).unwrap();
     let failure=rx.recv_timeout(Duration::from_secs(2)).unwrap().unwrap_err();assert!(!failure.may_have_written);assert_eq!(failure.error.code,ErrorCode::Busy);
     f.runtime.shutdown(Duration::from_secs(2)).unwrap();let w=f.control.written.lock().unwrap();assert_eq!(w.calls,2);assert_eq!(w.closed,1);assert!(w.transferred.is_empty());
@@ -317,7 +402,7 @@ fn explicit_copy_shutdown_during_open_prevents_empty(){
 #[test]
 fn explicit_copy_shutdown_keeps_writer_owned_and_rejects_future_calls(){
     let f=fixture(vec![text("A")]);f.control.block.store(11,Ordering::Release);
-    let rx=f.runtime.queue_copy(1,Instant::now()+Duration::from_secs(5)).unwrap();f.entered.recv_timeout(Duration::from_secs(2)).unwrap();
+    let rx=f.runtime.queue_copy(1,WriteFormat::Text,Instant::now()+Duration::from_secs(5)).unwrap();f.entered.recv_timeout(Duration::from_secs(2)).unwrap();
     assert_eq!(f.runtime.shutdown(Duration::ZERO).unwrap_err().code,ErrorCode::CleanupFailed);
     assert!(f.runtime.storage.lock().unwrap().is_some());assert!(f.runtime.shared.copy_busy.load(Ordering::Acquire));
     assert_outcome(copied(&f),CopyOutcome::NotWritten,Some(ErrorCode::Busy));
@@ -362,7 +447,7 @@ fn synthetic_capture(f:&Fixture,failed:bool,cleanup_fails:bool)->SyntheticCaptur
 fn explicit_copy_listener_owner_survives_managed_cleanup_until_close_finishes(){
     let f=fixture(vec![text("owner lifetime")]);let capture=synthetic_capture(&f,false,false);
     f.control.block.store(11,Ordering::Release);
-    let rx=f.runtime.queue_copy(1,Instant::now()+Duration::from_secs(5)).unwrap();f.entered.recv_timeout(Duration::from_secs(2)).unwrap();
+    let rx=f.runtime.queue_copy(1,WriteFormat::Text,Instant::now()+Duration::from_secs(5)).unwrap();f.entered.recv_timeout(Duration::from_secs(2)).unwrap();
     capture.end.send(()).unwrap();capture.started.recv_timeout(Duration::from_secs(2)).unwrap();
     let destroyed_while_borrowed=capture.destroyed.recv_timeout(Duration::from_millis(100)).is_ok();
     let shutdown=f.runtime.shutdown(Duration::ZERO);
@@ -381,7 +466,7 @@ fn explicit_copy_listener_owner_survives_before_open_and_writer_drop(){
     for (block,fail) in [(13,0),(12,0),(12,11)]{
         let f=fixture(vec![text("owner phases")]);let capture=synthetic_capture(&f,false,false);f.control.block.store(block,Ordering::Release);
         f.control.fail.store(fail,Ordering::Release);
-        let rx=f.runtime.queue_copy(1,Instant::now()+Duration::from_secs(5)).unwrap();f.entered.recv_timeout(Duration::from_secs(2)).unwrap();
+        let rx=f.runtime.queue_copy(1,WriteFormat::Text,Instant::now()+Duration::from_secs(5)).unwrap();f.entered.recv_timeout(Duration::from_secs(2)).unwrap();
         capture.end.send(()).unwrap();capture.started.recv_timeout(Duration::from_secs(2)).unwrap();
         assert!(capture.destroyed.recv_timeout(Duration::from_millis(100)).is_err());
         assert_eq!(f.runtime.shutdown(Duration::ZERO).unwrap_err().code,ErrorCode::CleanupFailed);assert!(!f.runtime.exit_ready.load(Ordering::Acquire));
@@ -428,7 +513,7 @@ fn explicit_copy_listener_owner_unpublished_or_revoked_queued_work_never_constru
     assert_outcome(copied(&f),CopyOutcome::NotWritten,Some(ErrorCode::InjectionFailed));assert_eq!(f.control.written.lock().unwrap().created,0);
     f.runtime.shared.publish_copy_owner(99);
     let capture=synthetic_capture(&f,true,false);let pause=pause_commit(&f);
-    let rx=f.runtime.queue_copy(1,Instant::now()+Duration::from_secs(5)).unwrap();
+    let rx=f.runtime.queue_copy(1,WriteFormat::Text,Instant::now()+Duration::from_secs(5)).unwrap();
     capture.end.send(()).unwrap();capture.started.recv_timeout(Duration::from_secs(2)).unwrap();capture.destroyed.recv_timeout(Duration::from_secs(2)).unwrap();
     drop(pause);f.runtime.shutdown(Duration::from_secs(2)).unwrap();
     assert!(rx.recv_timeout(Duration::from_secs(2)).is_err());assert_eq!(f.control.written.lock().unwrap().created,0);assert_eq!(f.control.written.lock().unwrap().calls,0);

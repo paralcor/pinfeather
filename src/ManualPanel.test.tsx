@@ -29,6 +29,202 @@ function pointerClick(target: HTMLElement) {
 function browse() { pointerClick(screen.getByRole("button", { name: "浏览结果" })); return screen.getByRole("list", { name: "历史条目" }); }
 function selectedRows() { return screen.getAllByRole("button", { name: "查看正文" }).map(button => button.getAttribute("aria-pressed")); }
 function keyGesture(target: HTMLElement,key:string){target.focus();fireEvent.keyDown(target,{key,code:key===" "?"Space":key});fireEvent.keyUp(target,{key,code:key===" "?"Space":key});}
+const arrowDown = { key: "ArrowDown", code: "ArrowDown" };
+
+describe("search ArrowDown", () => {
+  it.each(["Enter", " "])("lets the focused row preview button handle %j", async key => {
+    const f = await panel();
+    const search = screen.getByLabelText("搜索历史正文");
+    const list = screen.getByRole("list", { name: "历史条目" });
+    fireEvent.keyDown(search, arrowDown);
+    fireEvent.keyUp(list, arrowDown);
+    expect(selectedRows()).toEqual(["true", "false"]);
+
+    const second = screen.getAllByRole("button", { name: "查看正文" })[1];
+    second.focus();
+    const event = { key, code: key === " " ? "Space" : "Enter" };
+    const down = fireEvent.keyDown(second, event);
+    const up = fireEvent.keyUp(second, event);
+    // jsdom leaves native button activation to the test.
+    if (down && up) fireEvent.click(second, { detail: 0 });
+    expect(f.writes).toHaveLength(0);
+    expect(f.hide).not.toHaveBeenCalled();
+    expect(selectedRows()).toEqual(["false", "true"]);
+    expect(f.bridge.getText).toHaveBeenLastCalledWith(expect.any(String), "2", 0);
+    await screen.findByText("长正文仅首段");
+  });
+
+  it("recovers list navigation, Enter and Escape after releasing Shift before the letter", async () => {
+    const f = await panel();
+    const search = screen.getByLabelText("搜索历史正文");
+    const list = screen.getByRole("list", { name: "历史条目" });
+    fireEvent.keyDown(search, { key: "Shift", code: "ShiftLeft", shiftKey: true });
+    fireEvent.keyDown(search, { key: "A", code: "KeyA", shiftKey: true });
+    fireEvent.change(search, { target: { value: "A" } });
+    fireEvent.keyUp(search, { key: "Shift", code: "ShiftLeft" });
+    fireEvent.keyUp(search, { key: "a", code: "KeyA" });
+    await screen.findByText(/结果对应搜索词：A。按 ↓/);
+    fireEvent.keyDown(search, arrowDown);
+    fireEvent.keyUp(list, arrowDown);
+    expect(document.activeElement).toBe(list);
+    await screen.findByText("长正文仅首段");
+
+    keyGesture(list, "Enter");
+    expect(f.writes).toHaveLength(1);
+    const { requestId, clipId, resolve } = f.writes[0];
+    await act(async () => resolve({ request_id: requestId, clip_id: clipId, outcome: "not_written", reason: "storage_unavailable" }));
+    expect(f.hide).not.toHaveBeenCalled();
+    keyGesture(list, "Escape");
+    expect(f.hide).toHaveBeenCalledTimes(1);
+  });
+
+  it("lets a fresh ArrowDown browse after a late IME Enter is released", async () => {
+    const f = await panel();
+    const search = screen.getByLabelText("搜索历史正文");
+    const list = screen.getByRole("list", { name: "历史条目" });
+    fireEvent.compositionStart(search);
+    fireEvent.compositionEnd(search);
+    fireEvent.keyDown(search, { key: "Process", code: "Enter", keyCode: 229, isComposing: true });
+    fireEvent.keyUp(search, { key: "Enter", code: "Enter" });
+    expect(selectedRows()).toEqual(["false", "false"]);
+    expect(f.writes).toHaveLength(0);
+    expect(f.hide).not.toHaveBeenCalled();
+
+    fireEvent.keyDown(search, arrowDown);
+    fireEvent.keyUp(list, arrowDown);
+    expect(document.activeElement).toBe(list);
+    expect(selectedRows()).toEqual(["true", "false"]);
+    await screen.findByText("长正文仅首段");
+  });
+
+  it("selects the first ID, moves focus, and waits for a fresh ArrowDown before advancing", async () => {
+    const f = await panel();
+    const search = screen.getByLabelText("搜索历史正文");
+    const list = screen.getByRole("list", { name: "历史条目" });
+    expect(document.activeElement).toBe(search);
+    expect(fireEvent.keyDown(search, arrowDown)).toBe(false);
+    expect(document.activeElement).toBe(list);
+    expect(selectedRows()).toEqual(["true", "false"]);
+    expect(f.bridge.getText).toHaveBeenLastCalledWith(expect.any(String), "1", 0);
+    fireEvent.keyDown(list, { ...arrowDown, repeat: true });
+    fireEvent.keyUp(list, arrowDown);
+    expect(selectedRows()).toEqual(["true", "false"]);
+
+    keyGesture(list, "ArrowDown");
+    expect(selectedRows()).toEqual(["false", "true"]);
+    expect(f.bridge.getText).toHaveBeenLastCalledWith(expect.any(String), "2", 0);
+    await screen.findByText("长正文仅首段");
+    search.focus();
+    expect(fireEvent.keyDown(search, arrowDown)).toBe(false);
+    fireEvent.keyUp(list, arrowDown);
+    expect(document.activeElement).toBe(list);
+    expect(selectedRows()).toEqual(["true", "false"]);
+    expect(f.bridge.getText).toHaveBeenLastCalledWith(expect.any(String), "1", 0);
+    await screen.findByText("长正文仅首段");
+    expect(f.writes).toHaveLength(0);
+    expect(f.hide).not.toHaveBeenCalled();
+    pointerClick(screen.getByRole("button", { name: "返回搜索" }));
+    expect(document.activeElement).toBe(search);
+    expect(screen.getByRole("button", { name: "浏览结果" })).toBeTruthy();
+    expect(screen.getByText(/按 ↓ 浏览结果/)).toBeTruthy();
+  });
+
+  it.each([false, true])("rejects Enter started while ArrowDown is held (release ArrowDown first: %s)", async releaseArrowFirst => {
+    const f = await panel();
+    const search = screen.getByLabelText("搜索历史正文");
+    const list = screen.getByRole("list", { name: "历史条目" });
+    fireEvent.keyDown(search, arrowDown);
+    expect(document.activeElement).toBe(list);
+    await screen.findByText("长正文仅首段");
+    const enter = { key: "Enter", code: "Enter" };
+    fireEvent.keyDown(list, enter);
+    if (releaseArrowFirst) fireEvent.keyUp(list, arrowDown);
+    fireEvent.keyUp(list, enter);
+    if (!releaseArrowFirst) fireEvent.keyUp(list, arrowDown);
+    expect(f.writes).toHaveLength(0);
+    expect(f.hide).not.toHaveBeenCalled();
+
+    keyGesture(list, "Enter");
+    expect(f.writes).toHaveLength(1);
+    expect(f.writes[0].clipId).toBe("1");
+    expect(f.hide).not.toHaveBeenCalled();
+  });
+
+  it.each([{ shiftKey: true }, { ctrlKey: true }, { altKey: true }, { metaKey: true },
+    { repeat: true }, { isComposing: true }, { key: "Process" }, { keyCode: 229 }])(
+    "leaves search ArrowDown with %j to the browser or IME", async flags => {
+      const f = await panel();
+      const search = screen.getByLabelText("搜索历史正文");
+      expect(fireEvent.keyDown(search, { ...arrowDown, ...flags })).toBe(true);
+      fireEvent.keyUp(search, arrowDown);
+      expect(document.activeElement).toBe(search);
+      expect(selectedRows()).toEqual(["false", "false"]);
+      expect(f.bridge.getText).not.toHaveBeenCalled();
+      expect(f.writes).toHaveLength(0);
+      expect(f.hide).not.toHaveBeenCalled();
+    },
+  );
+
+  it("waits for composition to end and the candidate's ArrowDown to be released", async () => {
+    const f = await panel();
+    const search = screen.getByLabelText("搜索历史正文");
+    fireEvent.compositionStart(search);
+    expect(fireEvent.keyDown(search, arrowDown)).toBe(true);
+    fireEvent.compositionEnd(search);
+    expect(fireEvent.keyDown(search, { ...arrowDown, repeat: true })).toBe(true);
+    fireEvent.keyUp(search, arrowDown);
+    expect(document.activeElement).toBe(search);
+    expect(f.bridge.getText).not.toHaveBeenCalled();
+
+    expect(fireEvent.keyDown(search, arrowDown)).toBe(false);
+    const list = screen.getByRole("list", { name: "历史条目" });
+    fireEvent.keyUp(list, arrowDown);
+    expect(document.activeElement).toBe(list);
+    expect(selectedRows()).toEqual(["true", "false"]);
+    await screen.findByText("长正文仅首段");
+    expect(f.writes).toHaveLength(0);
+    expect(f.hide).not.toHaveBeenCalled();
+  });
+
+  it("keeps search focus during debounce and loading without replaying ArrowDown", async () => {
+    const f = await panel();
+    const search = screen.getByLabelText("搜索历史正文");
+    const list = screen.getByRole("list", { name: "历史条目" });
+    const originalList = f.bridge.list;
+    type Page = Awaited<ReturnType<DesktopBridge["list"]>>;
+    let finish: (() => void) | undefined;
+    f.bridge.list = vi.fn(async (requestId, cursor, query) => {
+      const page = await originalList(requestId, cursor, query);
+      return new Promise<Page>(resolve => {
+        finish = () => resolve({ ...page, summaries: [{ ...page.summaries[0], id: "3", preview: "新查询摘要" }] });
+      });
+    });
+    fireEvent.change(search, { target: { value: "新查询" } });
+    expect(screen.getByText("正在搜索，结果更新后可查看。")).toBeTruthy();
+    expect(fireEvent.keyDown(search, arrowDown)).toBe(true);
+    fireEvent.keyUp(search, arrowDown);
+    await waitFor(() => expect(finish).toBeDefined());
+    expect(fireEvent.keyDown(search, arrowDown)).toBe(true);
+    fireEvent.keyUp(search, arrowDown);
+    expect(document.activeElement).toBe(search);
+    expect(f.bridge.getText).not.toHaveBeenCalled();
+    await act(async () => finish!());
+    await screen.findByText("新查询摘要");
+    expect(document.activeElement).toBe(search);
+    expect(selectedRows()).toEqual(["false"]);
+    expect(f.bridge.getText).not.toHaveBeenCalled();
+
+    expect(fireEvent.keyDown(search, arrowDown)).toBe(false);
+    fireEvent.keyUp(list, arrowDown);
+    expect(document.activeElement).toBe(list);
+    expect(selectedRows()).toEqual(["true"]);
+    expect(f.bridge.getText).toHaveBeenLastCalledWith(expect.any(String), "3", 0);
+    await screen.findByText("长正文仅首段");
+    expect(f.writes).toHaveLength(0);
+    expect(f.hide).not.toHaveBeenCalled();
+  });
+});
+
 describe("C direct browse and full-text explicit copy",()=>{
  it("keeps search editable while the list owns independent navigation and Escape",async()=>{
   const f=await panel(),list=browse(),search=screen.getByLabelText("搜索历史正文") as HTMLInputElement;expect(search.readOnly).toBe(false);search.focus();keyGesture(search,"Escape");expect(f.hide).not.toHaveBeenCalled();
@@ -38,7 +234,13 @@ describe("C direct browse and full-text explicit copy",()=>{
   const f=await panel();pointerClick(screen.getAllByRole("button",{name:"查看正文"})[1]);await screen.findByText("长正文仅首段");const list=screen.getByRole("list",{name:"历史条目"});
   keyGesture(list,"Enter");expect(f.writes).toHaveLength(1);expect(f.writes[0].clipId).toBe("2");pointerClick(screen.getByRole("button",{name:"复制中…"}));expect(f.writes).toHaveLength(1);
   await act(async()=>f.writes[0].resolve({request_id:f.writes[0].requestId,clip_id:"2",outcome,reason:outcome==="copied"?null:outcome==="not_written"?"busy":"protocol_error"}));
-  await screen.findByText(outcome==="copied"?"已复制，可手动粘贴。":outcome==="not_written"?"未执行复制：当前操作繁忙，请稍后手动重试。":"无法确认复制结果，剪贴板可能已变化。请自行检查；不会自动重试。");expect(f.writes).toHaveLength(1);expect(f.hide).not.toHaveBeenCalled();
+  await screen.findByText(outcome==="copied"?"已复制，可手动粘贴。":outcome==="not_written"?"未执行复制：当前操作繁忙，请稍后手动重试。":"无法确认复制结果，剪贴板可能已变化。请自行检查；不会自动重试。");
+  expect(f.writes).toHaveLength(1);
+  if (outcome === "copied") {
+    expect(f.hide).toHaveBeenCalledExactlyOnceWith(true);
+  } else {
+    expect(f.hide).not.toHaveBeenCalled();
+  }
  });
  it("return cancels a delayed preview and requires new selection",async()=>{
   const f=fixture();let finish!:(value:Awaited<ReturnType<DesktopBridge["getText"]>>)=>void;f.bridge.getText=vi.fn(()=>new Promise<Awaited<ReturnType<DesktopBridge["getText"]>>>(resolve=>{finish=resolve;}));await panel(f);browse();pointerClick(screen.getByRole("button",{name:"返回搜索"}));
@@ -50,9 +252,112 @@ describe("C direct browse and full-text explicit copy",()=>{
  it("loading, empty and failed results cannot be selected or copied",async()=>{
   const f=await panel();let finish!:(value:Awaited<ReturnType<DesktopBridge["list"]>>)=>void;f.bridge.list=vi.fn(()=>new Promise<Awaited<ReturnType<DesktopBridge["list"]>>>(resolve=>{finish=resolve;}));const list=browse();pointerClick(screen.getByRole("button",{name:"刷新"}));keyGesture(list,"Enter");expect(f.writes).toHaveLength(0);
   await act(async()=>finish({request_id:"page1-2",normalized_query:"",summaries:[],next_cursor:null}));keyGesture(list,"Enter");expect(f.writes).toHaveLength(0);pointerClick(screen.getByRole("button",{name:"返回搜索"}));expect((screen.getByRole("button",{name:"浏览结果"}) as HTMLButtonElement).disabled).toBe(true);
+  const search = screen.getByLabelText("搜索历史正文");
+  expect(fireEvent.keyDown(search, arrowDown)).toBe(true);
+  fireEvent.keyUp(search, arrowDown);
   f.bridge.list=vi.fn(async()=>{throw new Error("synthetic");});pointerClick(screen.getByRole("button",{name:"刷新"}));await screen.findByText("无法完成操作，请重试。");expect((screen.getByRole("button",{name:"浏览结果"}) as HTMLButtonElement).disabled).toBe(true);expect(f.writes).toHaveLength(0);
+  expect(fireEvent.keyDown(search, arrowDown)).toBe(true);
+  fireEvent.keyUp(search, arrowDown);
+  expect(document.activeElement).toBe(search);
+  expect(f.hide).not.toHaveBeenCalled();
  });
 });
+
+describe("list Enter dismissal", () => {
+  it("writes once on release and blocks further commands while dismissal is pending", async () => {
+    const f = fixture();
+    let finishHide!: () => void;
+    f.hide.mockImplementation(() => new Promise<void>(resolve => { finishHide = resolve; }));
+    await panel(f);
+    const list = browse();
+    const enter = { key: "Enter", code: "Enter" };
+    fireEvent.keyDown(list, enter);
+    expect(f.writes).toHaveLength(0);
+    fireEvent.keyUp(list, enter);
+    fireEvent.keyUp(list, enter);
+    expect(f.writes).toHaveLength(1);
+    expect(f.hide).not.toHaveBeenCalled();
+    const write = f.writes[0];
+    await act(async () => write.resolve({ request_id: write.requestId, clip_id: write.clipId, outcome: "copied", reason: null }));
+    expect(f.hide).toHaveBeenCalledExactlyOnceWith(true);
+    keyGesture(list, "Enter");
+    keyGesture(list, "Escape");
+    expect(f.writes).toHaveLength(1);
+    expect(f.hide).toHaveBeenCalledTimes(1);
+    await act(async () => finishHide());
+  });
+
+  it.each(["mismatched receipt", "transport failure"])("leaves the preview open on %s", async failure => {
+    const f = fixture();
+    if (failure === "transport failure") vi.mocked(f.bridge.copyText!).mockRejectedValueOnce(new Error("transport closed"));
+    await panel(f);
+    const list = browse();
+    keyGesture(list, "Enter");
+    if (failure === "mismatched receipt") {
+      const write = f.writes[0];
+      await act(async () => write.resolve({ request_id: write.requestId, clip_id: "2", outcome: "copied", reason: null }));
+    }
+    expect(await screen.findByText(/无法确认复制结果/)).toBeTruthy();
+    expect(f.bridge.copyText).toHaveBeenCalledTimes(1);
+    expect(f.hide).not.toHaveBeenCalled();
+    expect(document.activeElement).toBe(list);
+  });
+
+  it.each(["pointer", "keyboard"])("keeps the copy button open after a successful %s copy", async method => {
+    const f = await panel();
+    browse();
+    const button = screen.getByRole("button", { name: "复制纯文本" });
+    if (method === "pointer") pointerClick(button);
+    else keyGesture(button, "Enter");
+    expect(f.writes).toHaveLength(1);
+    const write = f.writes[0];
+    await act(async () => write.resolve({ request_id: write.requestId, clip_id: write.clipId, outcome: "copied", reason: null }));
+    expect(screen.getByText("已复制，可手动粘贴。")).toBeTruthy();
+    expect(f.hide).not.toHaveBeenCalled();
+  });
+
+  it.each(["search", "selection", "focus-round-trip", "window-blur", "Escape"])(
+    "never auto-dismisses after %s interrupts the copy",
+    async interruption => {
+      const f = await panel();
+      const list = browse();
+      keyGesture(list, "Enter");
+      expect(f.writes).toHaveLength(1);
+      if (interruption === "search") pointerClick(screen.getByRole("button", { name: "返回搜索" }));
+      if (interruption === "selection") keyGesture(list, "ArrowDown");
+      if (interruption === "focus-round-trip") {
+        screen.getByRole("button", { name: "返回搜索" }).focus();
+        list.focus();
+      }
+      if (interruption === "window-blur") fireEvent.blur(window);
+      if (interruption === "Escape") keyGesture(list, "Escape");
+      const write = f.writes[0];
+      await act(async () => write.resolve({ request_id: write.requestId, clip_id: write.clipId, outcome: "copied", reason: null }));
+      expect(f.writes).toHaveLength(1);
+      expect(f.hide.mock.calls).toEqual(interruption === "Escape" ? [[]] : []);
+    },
+  );
+
+  it("does not dismiss after the host starts stopping, even before the panel session is removed", async () => {
+    const f = fixture();
+    const status = await f.bridge.status();
+    let statusChanged!: () => void;
+    f.bridge.subscribe = vi.fn(async (name, receive) => {
+      if (name === "status_changed") statusChanged = receive;
+      return () => {};
+    });
+    await panel(f);
+    keyGesture(browse(), "Enter");
+    expect(f.writes).toHaveLength(1);
+    f.bridge.status = vi.fn(async (): Promise<StatusResult> => ({ ...status, revision: "2", state: "stopping" }));
+    act(() => statusChanged());
+    await screen.findByText("正在退出");
+    const write = f.writes[0];
+    await act(async () => write.resolve({ request_id: write.requestId, clip_id: write.clipId, outcome: "copied", reason: null }));
+    expect(f.hide).not.toHaveBeenCalled();
+  });
+});
+
 function controller() {
   let current: ManualPanelSnapshot = { revision: "1", session_id: a, phase: "waiting", hotkey: "ready", error: null };
   let listener: ((value: ManualPanelSnapshot) => void) | undefined;
@@ -65,6 +370,58 @@ function controller() {
   return { control, histories, unsubscribe, emit(next: ManualPanelSnapshot) { current = next; listener?.(next); } };
 }
 describe("manual panel sessions", () => {
+  it.each(["notification before rejection", "rejection before notification"])("shows failed dismissal after session removal (%s)", async order => {
+    const f = controller();
+    let rejectHide!: (error: Error) => void;
+    vi.mocked(f.control.hide).mockImplementation(() => new Promise((_resolve, reject) => { rejectHide = reject; }));
+    render(<ManualPanel control={f.control} />);
+    await screen.findByText("摘要1");
+    keyGesture(browse(), "Enter");
+    const history = f.histories[0];
+    expect(history.writes).toHaveLength(1);
+    const write = history.writes[0];
+    await act(async () => write.resolve({ request_id: write.requestId, clip_id: write.clipId, outcome: "copied", reason: null }));
+    expect(f.control.hide).toHaveBeenCalledExactlyOnceWith(a, true);
+    const error = "已复制，面板隐藏失败。可手动切回粘贴，或重新打开快捷面板。";
+    const failed = { revision: "2", session_id: null, phase: "hidden", hotkey: "ready", error } as const;
+    if (order === "rejection before notification") await act(async () => rejectHide(new Error("hide failed")));
+    act(() => f.emit(failed));
+    expect(screen.getByRole("alert").textContent).toBe(error);
+    expect(screen.queryByText("快捷面板已隐藏。")).toBeNull();
+    expect(screen.queryByLabelText("搜索历史正文")).toBeNull();
+    act(() => f.emit({ ...failed, revision: "3", session_id: b, phase: "waiting", error: null }));
+    await screen.findByText("摘要1");
+    if (order === "notification before rejection") await act(async () => rejectHide(new Error("hide failed")));
+    act(() => f.emit(failed));
+    expect(screen.queryByRole("alert")).toBeNull();
+    expect(history.writes).toHaveLength(1);
+    expect(f.histories[1].writes).toHaveLength(0);
+  });
+
+  it("shows the ordinary native Esc hide error after its session is removed", async () => {
+    const f = controller();
+    render(<ManualPanel control={f.control} />);
+    await screen.findByText("摘要1");
+    keyGesture(browse(), "Escape");
+    expect(f.control.hide).toHaveBeenCalledExactlyOnceWith(a);
+    act(() => f.emit({ revision: "2", session_id: null, phase: "hidden", hotkey: "ready", error: "快捷面板隐藏失败。" }));
+    expect(screen.getByRole("alert").textContent).toBe("快捷面板隐藏失败。");
+    expect(screen.queryByText("快捷面板已隐藏。")).toBeNull();
+    expect(f.histories[0].writes).toHaveLength(0);
+  });
+
+  it.each(["waiting", "stopping"] as const)("ignores a copy that resolves after the session changes to %s", async phase => {
+    const f = controller();
+    render(<ManualPanel control={f.control} />);
+    await screen.findByText("摘要1");
+    keyGesture(browse(), "Enter");
+    const history = f.histories[0];
+    expect(history.writes).toHaveLength(1);
+    act(() => f.emit({ revision: "2", session_id: phase === "waiting" ? b : null, phase, hotkey: "ready", error: null }));
+    const write = history.writes[0];
+    await act(async () => write.resolve({ request_id: write.requestId, clip_id: write.clipId, outcome: "copied", reason: null }));
+    expect(f.control.hide).not.toHaveBeenCalled();
+  });
   it.each(["reject", "waiting", "wrong-session"])("does not activate an editor on presentation %s", async outcome => {
     const f = controller();
     f.control.ready = vi.fn(async () => {

@@ -9,6 +9,8 @@ pub mod commands;
 pub mod manual_panel;
 pub mod residency;
 pub mod measurement;
+mod png_clip;
+mod startup_capture;
 
 use config::HostArgs;
 
@@ -75,17 +77,26 @@ pub fn run(args: HostArgs) {
     let data_dir=prepared.data_dir;
     let webview_dir = prepared.webview_dir;
 
+    let invoke: fn(tauri::ipc::Invoke<tauri::Wry>) -> bool = tauri::generate_handler![commands::manage_history,commands::get_status,commands::list_clips,commands::get_clip_text,commands::get_clip_png_preview,commands::copy_clip_text,commands::copy_clip_png,commands::get_manual_panel_state,commands::open_manual_panel,commands::ready_manual_panel,commands::hide_manual_panel,commands::copy_manual_panel_text,commands::copy_manual_panel_png,commands::get_residency_state,commands::request_exit,commands::retry_exit_saving,commands::get_settings_state,commands::apply_excluded_apps,commands::get_startup_capture,commands::set_startup_capture,commands::measure_start_model,commands::measure_invalidate,commands::measure_stop_model,commands::measure_list_clips,commands::measure_ready];
     tauri::Builder::default()
-        .invoke_handler(tauri::generate_handler![commands::manage_history,commands::get_status,commands::list_clips,commands::get_clip_text,commands::copy_clip_text,commands::set_capture_enabled,commands::get_manual_panel_state,commands::open_manual_panel,commands::ready_manual_panel,commands::hide_manual_panel,commands::copy_manual_panel_text,commands::get_residency_state,commands::request_exit,commands::retry_exit_saving,commands::get_settings_state,commands::apply_excluded_apps,commands::measure_start_model,commands::measure_invalidate,commands::measure_stop_model,commands::measure_list_clips,commands::measure_ready])
+        .invoke_handler(move |request| {
+            if request.message.command() == "set_capture_enabled" { commands::set_capture_enabled(request) }
+            else { invoke(request) }
+        })
         .setup(move |app| {
             app.manage(measurement.clone());
             let handle=app.handle().clone();
             let runtime=std::sync::Arc::new(host::HostRuntime::start(data_dir.clone(),std::sync::Arc::new(move|name,revision|{
                 let _=handle.emit(name,serde_json::json!({"revision":revision.to_string()}));
-                let target=handle.clone();let _=handle.run_on_main_thread(move||{if let Some(owner)=target.try_state::<std::sync::Arc<residency::DesktopResidency>>(){owner.refresh_tray();}});
-            })).map_err(|e|std::io::Error::other(e.message))?);
-            // Collection always requires an explicit user action in this isolated run.
-            // --start-paused remains accepted; no implicit remembered enable exists.
+                let startup_changed = name == startup_capture::CHANGED_EVENT;
+                let target = handle.clone();
+                let _ = handle.run_on_main_thread(move || {
+                    if let Some(owner) = target.try_state::<std::sync::Arc<residency::DesktopResidency>>() {
+                        owner.refresh_tray();
+                        if startup_changed { owner.show_startup_capture_warning_if_hidden(); }
+                    }
+                });
+            }),args.start_paused).map_err(|e|std::io::Error::other(e.message))?);
             app.manage(runtime.clone());
             let window=tauri::WebviewWindowBuilder::new(
                 app,

@@ -37,14 +37,22 @@ impl PanelSessions {
         if let Err(error)=window.publish(&s.snapshot()){s.fail(error);let _=window.hide();return Err(ContractError::new(ErrorCode::CleanupFailed,"panel notification failed"));}
         Ok(s.snapshot())
     }
-    pub fn hide(&self,session:&str,window:&dyn PanelWindow)->ContractResult<PanelSnapshot> {
+    pub fn hide(&self,session:&str,window:&dyn PanelWindow,after_copy:bool)->ContractResult<PanelSnapshot> {
         let mut s=self.state.lock().unwrap_or_else(|e|e.into_inner());
         if s.session.as_deref()!=Some(session)||matches!(s.phase,Phase::Stopping|Phase::Unavailable){return Err(denied());}
         s.session=None;s.phase=Phase::Hidden;s.revision+=1;
-        if let Err(error)=window.hide(){s.error=Some(error);let _=window.publish(&s.snapshot());return Err(ContractError::new(ErrorCode::CleanupFailed,"panel hide failed"));}
+        if let Err(error) = window.hide() {
+            s.error = Some(if after_copy {
+                "已复制，面板隐藏失败。可手动切回粘贴，或重新打开快捷面板。".into()
+            } else {
+                error
+            });
+            let _ = window.publish(&s.snapshot());
+            return Err(ContractError::new(ErrorCode::CleanupFailed, "panel hide failed"));
+        }
         let _=window.publish(&s.snapshot());Ok(s.snapshot())
     }
-    pub fn dismiss(&self,window:&dyn PanelWindow) { if let Some(session)=self.snapshot().session_id {let _=self.hide(&session,window);} }
+    pub fn dismiss(&self,window:&dyn PanelWindow) { if let Some(session)=self.snapshot().session_id {let _=self.hide(&session,window,false);} }
     pub fn stop(&self,window:&dyn PanelWindow)->ContractResult<()> {let mut s=self.state.lock().unwrap_or_else(|e|e.into_inner());s.session=None;s.phase=Phase::Stopping;s.revision+=1;let result=window.hide();if let Err(error)=&result{s.error=Some(error.clone());}let _=window.publish(&s.snapshot());result.map_err(|_|ContractError::new(ErrorCode::CleanupFailed,"panel hide incomplete"))}
     pub fn seal(&self){let mut s=self.state.lock().unwrap_or_else(|e|e.into_inner());s.session=None;s.phase=Phase::Stopping;s.revision+=1;}
     pub fn admit<T>(&self,session:&str,admission:impl FnOnce()->T)->ContractResult<T> {
@@ -129,12 +137,16 @@ mod tests {
         let(dispatch,accepted)=measured_hotkey_admission(&host,vec![9,10,10],&pending);assert!(dispatch);assert!(accepted.is_some());let(dispatch,accepted)=measured_hotkey_admission(&host,vec![10,10],&pending);assert!(!dispatch);assert!(accepted.is_none());let events=String::from_utf8(bytes.lock().unwrap().clone()).unwrap().lines().map(|x|serde_json::from_str::<serde_json::Value>(x).unwrap()).collect::<Vec<_>>();assert_eq!(events.iter().filter(|e|e["event"]=="native_hotkey_dequeued").count(),5);assert_eq!(events.iter().filter(|e|e["reason"]=="coalesced").count(),2);assert_eq!(events.iter().filter(|e|e["reason"]=="dispatch_busy").count(),2);
         host.end().unwrap();pending.store(false,Ordering::SeqCst);let(dispatch,accepted)=measured_hotkey_admission(&host,vec![10],&pending);assert!(dispatch,"closed measurement must retain the ordinary UI dispatch");assert!(accepted.is_none());
     }
-    #[derive(Default)]struct Window {fail:AtomicUsize,shown:AtomicUsize,focused:AtomicUsize}
+    #[derive(Default)]struct Window {fail:AtomicUsize,shown:AtomicUsize,focused:AtomicUsize,published:Mutex<Option<PanelSnapshot>>}
     impl PanelWindow for Window {
         fn hide(&self)->Result<(),String>{if self.fail.load(Ordering::SeqCst)==1{Err("hide failed".into())}else{Ok(())}}
         fn show(&self)->Result<(),String>{self.shown.fetch_add(1,Ordering::SeqCst);if self.fail.load(Ordering::SeqCst)==2{Err("show failed".into())}else{Ok(())}}
         fn focus(&self)->Result<(),String>{self.focused.fetch_add(1,Ordering::SeqCst);if self.fail.load(Ordering::SeqCst)==3{Err("focus failed".into())}else{Ok(())}}
-        fn publish(&self,_:&PanelSnapshot)->Result<(),String>{if self.fail.load(Ordering::SeqCst)==4{Err("publish failed".into())}else{Ok(())}}
+        fn publish(&self, snapshot: &PanelSnapshot) -> Result<(), String> {
+            if self.fail.load(Ordering::SeqCst) == 4 { return Err("publish failed".into()); }
+            *self.published.lock().unwrap() = Some(snapshot.clone());
+            Ok(())
+        }
     }
     #[test]fn manual_panel_session_rejects_missing_old_forged_not_ready_hidden_and_stopping(){
         let p=PanelSessions::new(true);let w=Window::default();let writes=AtomicUsize::new(0);
@@ -143,12 +155,45 @@ mod tests {
         let a=p.open(&w).unwrap().session_id.unwrap();assert!(attempt(&a).is_err());
         p.ready(&a,&w).unwrap();assert!(attempt("forged").is_err());assert!(attempt(&a).is_ok());
         let b=p.open(&w).unwrap().session_id.unwrap();assert_ne!(a,b);assert!(attempt(&a).is_err());assert!(p.ready(&a,&w).is_err());
-        p.ready(&b,&w).unwrap();assert!(p.hide(&a,&w).is_err());p.hide(&b,&w).unwrap();assert!(attempt(&b).is_err());
+        p.ready(&b,&w).unwrap();assert!(p.hide(&a,&w,false).is_err());p.hide(&b,&w,false).unwrap();assert!(attempt(&b).is_err());
         let c=p.open(&w).unwrap().session_id.unwrap();p.stop(&w).unwrap();assert!(p.ready(&c,&w).is_err());assert!(attempt(&c).is_err());assert!(p.open(&w).is_err());assert_eq!(writes.load(Ordering::SeqCst),1);
     }
-    #[test]fn manual_panel_show_focus_hide_and_notification_fail_closed(){for fail in 1..=4{let p=PanelSessions::new(true);let w=Window::default();let session=p.open(&w).unwrap().session_id.unwrap();w.fail.store(fail,Ordering::SeqCst);if fail==1{assert!(p.hide(&session,&w).is_err());}else{assert!(p.ready(&session,&w).is_err());}assert!(p.admit(&session,||()).is_err());assert!(p.snapshot().error.is_some());}}
-    #[test]fn manual_panel_late_ready_never_shows_or_focuses(){let p=PanelSessions::new(true);let w=Window::default();let a=p.open(&w).unwrap().session_id.unwrap();let b=p.open(&w).unwrap().session_id.unwrap();assert!(p.ready(&a,&w).is_err());assert_eq!(w.shown.load(Ordering::SeqCst),0);p.hide(&b,&w).unwrap();assert!(p.ready(&b,&w).is_err());assert_eq!(w.focused.load(Ordering::SeqCst),0);}
+    #[test]fn manual_panel_show_focus_hide_and_notification_fail_closed(){for fail in 1..=4{let p=PanelSessions::new(true);let w=Window::default();let session=p.open(&w).unwrap().session_id.unwrap();w.fail.store(fail,Ordering::SeqCst);if fail==1{assert!(p.hide(&session,&w,false).is_err());}else{assert!(p.ready(&session,&w).is_err());}assert!(p.admit(&session,||()).is_err());assert!(p.snapshot().error.is_some());}}
+    #[test]fn manual_panel_late_ready_never_shows_or_focuses(){let p=PanelSessions::new(true);let w=Window::default();let a=p.open(&w).unwrap().session_id.unwrap();let b=p.open(&w).unwrap().session_id.unwrap();assert!(p.ready(&a,&w).is_err());assert_eq!(w.shown.load(Ordering::SeqCst),0);p.hide(&b,&w,false).unwrap();assert!(p.ready(&b,&w).is_err());assert_eq!(w.focused.load(Ordering::SeqCst),0);}
+    #[test]
+    fn manual_panel_hide_failure_revokes_session_and_publishes_the_copy_context() {
+        for (after_copy, expected) in [
+            (false, "hide failed"),
+            (true, "已复制，面板隐藏失败。可手动切回粘贴，或重新打开快捷面板。"),
+        ] {
+            let panel = PanelSessions::new(true);
+            let window = Window::default();
+            let session = panel.open(&window).unwrap().session_id.unwrap();
+            panel.ready(&session, &window).unwrap();
+            window.fail.store(1, Ordering::SeqCst);
+
+            let error = panel.hide(&session, &window, after_copy).unwrap_err();
+            assert_eq!(error.code, ErrorCode::CleanupFailed);
+            assert!(panel.admit(&session, || panic!("revoked session admitted")).is_err());
+            let published = window.published.lock().unwrap().clone().unwrap();
+            assert!(published.session_id.is_none());
+            assert_eq!(published.phase, "hidden");
+            assert_eq!(published.error.as_deref(), Some(expected));
+
+            window.fail.store(0, Ordering::SeqCst);
+            let reopened = panel.open(&window).unwrap();
+            assert!(reopened.error.is_none());
+            let next = reopened.session_id.unwrap();
+            panel.ready(&next, &window).unwrap();
+            assert!(panel.hide(&session, &window, true).is_err());
+            assert!(panel.snapshot().error.is_none());
+            assert_eq!(panel.snapshot().session_id.as_deref(), Some(next.as_str()));
+            panel.seal();
+            assert!(panel.hide(&next, &window, true).is_err());
+            assert_eq!(panel.snapshot().phase, "stopping");
+        }
+    }
     #[test]fn manual_panel_shared_strict_contract(){let fixture:serde_json::Value=serde_json::from_str(include_str!("../../tests/fixtures/contracts/manual_panel.json")).unwrap();for c in fixture["sessions"].as_array().unwrap(){assert_eq!(crate::contracts::parse_panel_session(&c["value"]).is_ok(),c["valid"].as_bool().unwrap());}for c in fixture["copies"].as_array().unwrap(){assert_eq!(crate::contracts::parse_panel_copy(&c["value"]).is_ok(),c["valid"].as_bool().unwrap());}}
     #[test]fn manual_panel_unavailable_and_failed_stop_keep_closed_authority(){let p=PanelSessions::new(false);let w=Window::default();assert!(p.snapshot().error.is_some());assert!(p.open(&w).is_err());assert!(p.admit("forged",||panic!("unavailable")).is_err());let p=PanelSessions::new(true);let id=p.open(&w).unwrap().session_id.unwrap();p.ready(&id,&w).unwrap();p.ready(&id,&w).unwrap();assert_eq!(w.focused.load(Ordering::SeqCst),1,"duplicate ready must not steal focus");w.fail.store(1,Ordering::SeqCst);assert!(p.stop(&w).is_err());assert!(p.admit(&id,||panic!("stopped")).is_err());assert!(p.open(&w).is_err());w.fail.store(0,Ordering::SeqCst);p.stop(&w).unwrap();p.stop(&w).unwrap();}
-    #[test]fn manual_panel_admission_and_hide_share_one_lock(){let p=std::sync::Arc::new(PanelSessions::new(true));let w=std::sync::Arc::new(Window::default());let a=p.open(&*w).unwrap().session_id.unwrap();p.ready(&a,&*w).unwrap();let(entered,rx)=std::sync::mpsc::channel();let(release,go)=std::sync::mpsc::channel();let pp=p.clone();let aa=a.clone();let copy=std::thread::spawn(move||pp.admit(&aa,||{entered.send(()).unwrap();go.recv().unwrap();}));rx.recv().unwrap();assert!(p.state.try_lock().is_err());release.send(()).unwrap();copy.join().unwrap().unwrap();p.hide(&a,&*w).unwrap();assert!(p.admit(&a,||panic!("no late side effect")).is_err());}
+    #[test]fn manual_panel_admission_and_hide_share_one_lock(){let p=std::sync::Arc::new(PanelSessions::new(true));let w=std::sync::Arc::new(Window::default());let a=p.open(&*w).unwrap().session_id.unwrap();p.ready(&a,&*w).unwrap();let(entered,rx)=std::sync::mpsc::channel();let(release,go)=std::sync::mpsc::channel();let pp=p.clone();let aa=a.clone();let copy=std::thread::spawn(move||pp.admit(&aa,||{entered.send(()).unwrap();go.recv().unwrap();}));rx.recv().unwrap();assert!(p.state.try_lock().is_err());release.send(()).unwrap();copy.join().unwrap().unwrap();p.hide(&a,&*w,false).unwrap();assert!(p.admit(&a,||panic!("no late side effect")).is_err());}
 }
