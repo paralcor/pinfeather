@@ -57,7 +57,7 @@ it("keeps presentation ready before results, then ACKs only the real React commi
   expect(mocks.invoke.mock.calls.filter(call => call[0] === "measure_ready")).toHaveLength(0);
   const call = mocks.invoke.mock.calls.find(call => call[0] === "measure_list_clips" || call[0] === "list_clips")!;
   const request = call[1].request.query_request ?? call[1].request;
-  await act(async () => finish({ request_id: request.request_id, normalized_query: "", summaries: [{ id: "1", captured_at_ms: 1, kind: "text", preview: "actual committed row", format_names: ["CF_UNICODETEXT"], omitted_format_count: 0, payload_bytes: 10, source_process: null, source_confidence: "unknown" }], next_cursor: null }));
+  await act(async () => finish({ request_id: request.request_id, normalized_query: "", summaries: [{ id: "1", captured_at_ms: 1, kind: "text", preview: "actual committed row", format_names: ["CF_UNICODETEXT"], omitted_format_count: 0, payload_bytes: 10, source_process: null, source_confidence: "unknown", favorited: false }], next_cursor: null }));
   await screen.findByText("actual committed row");
   await waitFor(() => expect(mocks.invoke.mock.calls.filter(call => call[0] === "measure_ready")).toHaveLength(1));
 });

@@ -23,7 +23,7 @@ function harness() {
   function complete(index: number, empty = false, cursor = false) {
     const call = calls[index];
     const receipt: Receipt = { ...call.identity, generation: call.generation, sequence: call.sequence, receipt: String(index + 20), content: empty ? "empty" : "nonempty" };
-    call.resolve({ result: { request_id: call.id, normalized_query: call.query, summaries: empty ? [] : [{ id: "1", captured_at_ms: 1, preview: "real row", kind: "text", format_names: ["CF_UNICODETEXT"], omitted_format_count: 0, payload_bytes: 8, source_process: null, source_confidence: "unknown" }], next_cursor: cursor ? { normalized_query: call.query, upper_id: "9", last_id: "1", last_captured_at_ms: 1 } : null }, receipt: call.cursor ? null : receipt });
+    call.resolve({ result: { request_id: call.id, normalized_query: call.query, summaries: empty ? [] : [{ id: "1", captured_at_ms: 1, preview: "real row", kind: "text", format_names: ["CF_UNICODETEXT"], omitted_format_count: 0, payload_bytes: 8, source_process: null, source_confidence: "unknown", favorited: false }], next_cursor: cursor ? { normalized_query: call.query, upper_id: "9", last_id: "1", last_captured_at_ms: 1, favorites_only: false } : null }, receipt: call.cursor ? null : receipt });
     return receipt;
   }
   return { model, measurement, calls, complete, listeners, invalidations, setStatus(value: StatusResult) { statusValue = value; } };
@@ -45,7 +45,7 @@ it("closed measurement falls back to the original list with no ACK or receipt", 
   // Exercise the production model's fallback transport, never a synthetic ready state.
   const { nativeBridge } = await import("./desktop");
   const ordinary = vi.spyOn(nativeBridge, "list").mockResolvedValue({ request_id: "page1-1", normalized_query: "", summaries: [], next_cursor: null });
-  const bridge: DesktopBridge = { ...nativeBridge, available: true, measurement: h.measurement, status: async () => status, subscribe: async () => () => {}, list: ordinary };
+  const bridge: DesktopBridge = { ...nativeBridge, available: true, subscribeFavorite: undefined, measurement: h.measurement, status: async () => status, subscribe: async () => () => {}, list: ordinary };
   const model = createHistoryModel(bridge); const stop = model.start(); await settle(); expect(ordinary).toHaveBeenCalledTimes(1); expect(model.store.getState().error).toBeNull(); expect(model.measurementReceipt()).toBeNull(); expect(h.measurement.ack).not.toHaveBeenCalled(); stop(); ordinary.mockRestore();
 });
 it("rejected readiness submission retires its receipt without retry or accepted ACK", async () => {

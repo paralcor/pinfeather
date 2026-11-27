@@ -6,7 +6,7 @@ import type { DesktopBridge, ManualPanelControl } from "./lib/desktop";
 import type { ResidencyControl, ResidencySnapshot } from "./lib/residency";
 import type { StatusResult } from "./lib/ipc";
 afterEach(cleanup);
-function status(): StatusResult { return { revision: "1", state: "paused", services: {listener:"ready",worker:"not_started",storage:"failed",hotkey:"not_started",target_observer:"not_started"}, capture:{user_enabled:false,admission_open:false,policy_epoch:1}, counters:{observed:"1",captured:"1",persisted:"0",ignored:"0",superseded:"0",failed:"1",overloaded:"0",cancelled:"0"}, queue:{items:1,bytes:4},history:{items:0,payload_bytes:0},data_dir:"D:\\Synthetic",versions:{app:"0.1.0",schema:1,worker_protocol:1},last_paste:null }; }
+function status(): StatusResult { return { revision: "1", state: "paused", services: {listener:"ready",worker:"not_started",storage:"failed",hotkey:"not_started",target_observer:"not_started"}, capture:{user_enabled:false,admission_open:false,policy_epoch:1}, counters:{observed:"1",captured:"1",persisted:"0",ignored:"0",superseded:"0",failed:"1",overloaded:"0",cancelled:"0"}, queue:{items:1,bytes:4},history:{items:0,payload_bytes:0, favorites: 0, revision: "0"},data_dir:"D:\\Synthetic",versions:{app:"0.1.0",schema:2,worker_protocol:1},last_paste:null }; }
 function fixture() {
   let event: (state: ResidencySnapshot) => void = () => {};
   const control: ResidencyControl = { available:true,snapshot:vi.fn(async()=>({revision:"1",phase:"running" as const,tray_available:true,error:null})),subscribe:vi.fn(async callback=>{event=callback;return()=>{};}),exit:vi.fn(async()=>({revision:"2",phase:"stopping" as const,tray_available:true,error:null})),retrySaving:vi.fn(async()=>{}) };
@@ -23,7 +23,7 @@ it("keeps common capture controls visible and expands diagnostics when a queue n
     state: "listening",
     services: { ...initial.services, storage: "ready" },
     capture: { ...initial.capture, user_enabled: true, admission_open: true },
-    history: { items: 4, payload_bytes: 16 },
+    history: { items: 4, payload_bytes: 16, favorites: 0, revision: "0" },
   };
   let current: StatusResult = ready;
   let statusChanged!: () => void;

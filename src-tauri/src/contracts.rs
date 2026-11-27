@@ -290,6 +290,7 @@ fn require_field<'a>(
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize)]
 pub struct ListCursor {
+    pub favorites_only: bool,
     pub normalized_query: String,
     pub upper_id: String,
     pub last_captured_at_ms: i64,
@@ -299,6 +300,7 @@ pub struct ListCursor {
 fn parse_cursor(
     value: &serde_json::Value,
     expected_query: &str,
+    expected_favorites: Option<bool>,
 ) -> ContractResult<Option<ListCursor>> {
     if value.is_null() {
         return Ok(None);
@@ -308,6 +310,7 @@ fn parse_cursor(
         obj,
         &[
             "normalized_query",
+            "favorites_only",
             "upper_id",
             "last_captured_at_ms",
             "last_id",
@@ -319,6 +322,10 @@ fn parse_cursor(
     if nq != expected_query {
         return Err(reject("cursor does not match query"));
     }
+    let favorites_only = parse_favorites_only(obj)?;
+    if expected_favorites.is_some_and(|expected| expected != favorites_only) {
+        return Err(reject("cursor does not match favorites_only"));
+    }
     let upper_id = parse_positive_id(require_field(obj, "upper_id")?)?;
     let last_captured_at_ms = validate_timestamp_ms(require_field(obj, "last_captured_at_ms")?)?;
     let last_id = parse_positive_id(require_field(obj, "last_id")?)?;
@@ -326,6 +333,7 @@ fn parse_cursor(
         return Err(reject("cursor last_id exceeds upper_id"));
     }
     Ok(Some(ListCursor {
+        favorites_only,
         normalized_query: nq.to_string(),
         upper_id,
         last_captured_at_ms,
@@ -335,15 +343,22 @@ fn parse_cursor(
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct ListClipsRequest {
+    pub favorites_only: bool,
     pub request_id: String,
     pub query: String,
     pub limit: u32,
     pub cursor: Option<ListCursor>,
 }
 
+fn parse_favorites_only(obj: &serde_json::Map<String, serde_json::Value>) -> ContractResult<bool> {
+    obj.get("favorites_only").map_or(Ok(false), |value| {
+        value.as_bool().ok_or_else(|| reject("favorites_only must be a boolean"))
+    })
+}
+
 pub fn parse_list_clips_request(value: &serde_json::Value) -> ContractResult<ListClipsRequest> {
     let obj = expect_object(value)?;
-    reject_unknown_fields(obj, &["request_id", "query", "limit", "cursor"])?;
+    reject_unknown_fields(obj, &["request_id", "query", "limit", "cursor", "favorites_only"])?;
     let request_id = validate_request_id(require_field(obj, "request_id")?)?;
     let query = normalize_query(require_field(obj, "query")?)?;
     // 7.1：缺失 limit 为 50；显式 null、非整数或越界均拒绝。
@@ -353,12 +368,14 @@ pub fn parse_list_clips_request(value: &serde_json::Value) -> ContractResult<Lis
         Some(v) => validate_limit(v)?,
     };
     // 7.1：缺失或显式 null 的 cursor 均表示首页。
+    let favorites_only = parse_favorites_only(obj)?;
     let cursor = match obj.get("cursor") {
         None => None,
         Some(v) if v.is_null() => None,
-        Some(v) => parse_cursor(v, &query)?,
+        Some(v) => parse_cursor(v, &query, Some(favorites_only))?,
     };
     Ok(ListClipsRequest {
+        favorites_only,
         request_id,
         query,
         limit,
@@ -384,10 +401,48 @@ pub fn parse_panel_session(value:&serde_json::Value)->ContractResult<String>{
     let session=require_field(obj,"session_id")?.as_str().ok_or_else(||reject("invalid panel session"))?;
     if session.len()!=32||!session.bytes().all(|b|b.is_ascii_hexdigit()){return Err(reject("invalid panel session"));}Ok(session.into())
 }
-pub fn parse_panel_copy(value:&serde_json::Value)->ContractResult<(String,CopyClipTextRequest)>{
-    let obj=expect_object(value)?;reject_unknown_fields(obj,&["session_id","request"])?;
-    let session=parse_panel_session(&serde_json::json!({"session_id":require_field(obj,"session_id")?}))?;
-    Ok((session,parse_copy_clip_text_request(require_field(obj,"request")?)?))
+pub(crate) fn parse_panel_envelope(value: &serde_json::Value) -> ContractResult<(String, &serde_json::Value)> {
+    let obj = expect_object(value)?;
+    reject_unknown_fields(obj, &["session_id", "request"])?;
+    let session = parse_panel_session(&serde_json::json!({"session_id":require_field(obj,"session_id")?}))?;
+    Ok((session, require_field(obj, "request")?))
+}
+pub fn parse_panel_copy(value: &serde_json::Value) -> ContractResult<(String, CopyClipTextRequest)> {
+    let (session, request) = parse_panel_envelope(value)?;
+    Ok((session, parse_copy_clip_text_request(request)?))
+}
+
+#[derive(Debug)]
+pub struct SetFavoriteRequest {
+    pub request_id: String,
+    pub clip_id: String,
+    pub favorited: bool,
+}
+
+pub fn parse_set_favorite_request(value: &serde_json::Value) -> ContractResult<SetFavoriteRequest> {
+    let obj = expect_object(value)?;
+    reject_unknown_fields(obj, &["request_id", "clip_id", "favorited"])?;
+    Ok(SetFavoriteRequest {
+        request_id: validate_request_id(require_field(obj, "request_id")?)?,
+        clip_id: parse_positive_id(require_field(obj, "clip_id")?)?,
+        favorited: require_field(obj, "favorited")?.as_bool()
+            .ok_or_else(|| reject("favorited must be a boolean"))?,
+    })
+}
+
+#[derive(Debug, Serialize)]
+pub struct FavoriteChange {
+    pub clip_id: String,
+    pub favorited: bool,
+    pub revision: String,
+}
+
+#[derive(Debug, Serialize)]
+pub struct SetFavoriteResult {
+    pub request_id: String,
+    pub changed: bool,
+    #[serde(flatten)]
+    pub change: FavoriteChange,
 }
 
 pub fn parse_copy_clip_text_request(value: &serde_json::Value) -> ContractResult<CopyClipTextRequest> {
@@ -775,6 +830,7 @@ pub fn parse_error_code(value: &serde_json::Value) -> ContractResult<ErrorCode> 
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize)]
 pub struct ClipSummary {
+    pub favorited: bool,
     pub id: String,
     pub captured_at_ms: i64,
     pub kind: String,
@@ -800,6 +856,7 @@ pub fn parse_clip_summary(value: &serde_json::Value) -> ContractResult<ClipSumma
             "payload_bytes",
             "source_process",
             "source_confidence",
+            "favorited",
         ],
     )?;
     let id = parse_positive_id(require_field(obj, "id")?)?;
@@ -846,7 +903,10 @@ pub fn parse_clip_summary(value: &serde_json::Value) -> ContractResult<ClipSumma
         )
     };
     let source_confidence = parse_source_confidence(require_field(obj, "source_confidence")?)?;
+    let favorited = require_field(obj, "favorited")?.as_bool()
+        .ok_or_else(|| reject("favorited must be a boolean"))?;
     Ok(ClipSummary {
+        favorited,
         id,
         captured_at_ms,
         kind,
@@ -906,7 +966,7 @@ pub const MAX_HISTORY_PAYLOAD_BYTES_VALUE: i64 = 268_435_456;
 pub const MAX_TEXT_FRAME_VALUE: usize = 65_536;
 pub const MAX_SUMMARIES_PER_PAGE: usize = 100;
 pub const MAX_LIST_RESULT_JSON_BYTES: usize = 1_048_576;
-pub const SCHEMA_VERSION: u32 = 1;
+pub const SCHEMA_VERSION: u32 = crate::store::SCHEMA_VERSION as u32;
 pub const APP_VERSION_MAX_BYTES: usize = 32;
 
 fn parse_service_state(value: &serde_json::Value) -> ContractResult<String> {
@@ -921,7 +981,7 @@ fn parse_service_state(value: &serde_json::Value) -> ContractResult<String> {
     }
 }
 
-fn parse_u64_counter(value: &serde_json::Value) -> ContractResult<String> {
+pub(crate) fn parse_u64_counter(value: &serde_json::Value) -> ContractResult<String> {
     parse_u64_string(value)
 }
 
@@ -971,8 +1031,17 @@ pub struct QueueUsage {
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize)]
 pub struct HistoryUsage {
+    pub favorites: i64,
     pub items: i64,
     pub payload_bytes: i64,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+pub struct HistoryStatus {
+    pub items: i64,
+    pub payload_bytes: i64,
+    pub favorites: i64,
+    pub revision: String,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize)]
@@ -990,7 +1059,7 @@ pub struct StatusResult {
     pub capture: CaptureFlags,
     pub counters: CaptureCounters,
     pub queue: QueueUsage,
-    pub history: HistoryUsage,
+    pub history: HistoryStatus,
     pub data_dir: String,
     pub versions: VersionsInfo,
     pub last_paste: Option<PasteClipResult>,
@@ -1092,12 +1161,12 @@ pub fn parse_status_result(value: &serde_json::Value) -> ContractResult<StatusRe
     };
 
     let history_obj = expect_object(require_field(obj, "history")?)?;
-    reject_unknown_fields(history_obj, &["items", "payload_bytes"])?;
-    let history = HistoryUsage {
-        items: parse_bounded_count(
-            history_obj.get("items").ok_or_else(|| reject("missing field"))?,
-            MAX_HISTORY_ITEMS_VALUE,
-        )?,
+    reject_unknown_fields(history_obj, &["items", "payload_bytes", "favorites", "revision"])?;
+    let items = parse_bounded_count(require_field(history_obj, "items")?, MAX_HISTORY_ITEMS_VALUE)?;
+    let history = HistoryStatus {
+        items,
+        favorites: parse_bounded_count(require_field(history_obj, "favorites")?, items)?,
+        revision: parse_u64_counter(require_field(history_obj, "revision")?)?,
         payload_bytes: parse_bounded_count(
             history_obj
                 .get("payload_bytes")
@@ -1272,7 +1341,7 @@ pub fn parse_list_clips_result(value: &serde_json::Value) -> ContractResult<List
     let next_cursor = if cursor_raw.is_null() {
         None
     } else {
-        parse_cursor(cursor_raw, normalized)?
+        parse_cursor(cursor_raw, normalized, None)?
     };
     let result = ListClipsResult {
         request_id,
@@ -1914,7 +1983,8 @@ mod tests {
                     "omitted_format_count": 0,
                     "payload_bytes": 4,
                     "source_process": null,
-                    "source_confidence": "unknown"
+                    "source_confidence": "unknown",
+                    "favorited": false
                 });
                 let arr: Vec<Value> = (0..n).map(|_| summary.clone()).collect();
                 obj.insert("summaries".to_string(), Value::Array(arr));
@@ -2010,7 +2080,8 @@ mod tests {
                 "omitted_format_count": 0,
                 "payload_bytes": 4,
                 "source_process": long_source,
-                "source_confidence": "unknown"
+                "source_confidence": "unknown",
+                "favorited": false
             }));
         }
         let value = json!({

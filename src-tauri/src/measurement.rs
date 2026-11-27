@@ -359,8 +359,35 @@ mod tests {
     }
     #[cfg(feature="test-fixtures")]
     #[test]fn measurement_real_host_query_adapter_uses_original_parser_store_and_page_dto(){
-        use crate::{host::HostRuntime,store::{Store,Snapshot,Payload,SourceConfidence}};let root=PathBuf::from(std::env::var_os("PINFEATHER_TEST_DATA_ROOT").unwrap()).join(format!("measurement-adapter-{}",uuid::Uuid::new_v4()));std::fs::create_dir(&root).unwrap();let path=root.join("new.sqlite3");{let mut store=Store::open(&path).unwrap();store.insert(&Snapshot{capture_id:"synthetic".into(),captured_at_ms:1,source_process:None,source_confidence:SourceConfidence::Unknown,omitted_formats:vec![],payloads:vec![Payload{format_name:"CF_UNICODETEXT".into(),data:"synthetic body".encode_utf16().chain([0]).flat_map(u16::to_le_bytes).collect()}]}).unwrap();}
+        use crate::{host::HostRuntime,store::{Store,Snapshot,Payload,SourceConfidence}};let root=PathBuf::from(std::env::var_os("PINFEATHER_TEST_DATA_ROOT").unwrap()).join(format!("measurement-adapter-{}",uuid::Uuid::new_v4()));std::fs::create_dir(&root).unwrap();let path=root.join("new.sqlite3");{let mut store = Store::open(&path).unwrap();
+            for at in 1..=4 {
+                let clip = store.insert(&Snapshot {
+                    capture_id: format!("synthetic-{at}"), captured_at_ms: at,
+                    source_process: None, source_confidence: SourceConfidence::Unknown, omitted_formats: vec![],
+                    payloads: vec![Payload { format_name: "CF_UNICODETEXT".into(),
+                        data: "synthetic body".encode_utf16().chain([0]).flat_map(u16::to_le_bytes).collect() }],
+                }).unwrap();
+                if at >= 3 { store.set_favorite(clip.clip_id, true, at).unwrap(); }
+            }
+        }
         let runtime=HostRuntime::for_test_file(path,Arc::new(|_,_|{})).unwrap();let(h,_,out)=fixture();let i=h.start_model("main").unwrap();for(seq,query,content)in[(1,"",Content::Nonempty),(2,"absent",Content::Empty)]{let v=version(&i,0,seq);h.invalidate("main",&v).unwrap();let mut request=serde_json::to_value(&i).unwrap();request["generation"]="0".into();request["sequence"]=seq.to_string().into();request["query_request"]=serde_json::json!({"request_id":"actual","query":query,"limit":50,"cursor":null});let page=h.list("main",serde_json::from_value(request).unwrap(),&runtime).unwrap();crate::contracts::parse_list_clips_result(&serde_json::to_value(&page.result).unwrap()).unwrap();assert_eq!(page.receipt.unwrap().content,content);}
+        let version = version(&i, 0, 3);
+        h.invalidate("main", &version).unwrap();
+        let mut request = serde_json::to_value(&i).unwrap();
+        request["generation"] = "0".into();
+        request["sequence"] = "3".into();
+        request["query_request"] = serde_json::json!({"request_id":"favorites","query":"synthetic","limit":1,"favorites_only":true});
+        let page = h.list("main", serde_json::from_value(request.clone()).unwrap(), &runtime).unwrap();
+        assert_eq!(page.receipt.unwrap().schema, 1);
+        assert_eq!(page.result.summaries[0].id, "4");
+        let cursor = page.result.next_cursor.unwrap();
+        assert!(cursor.favorites_only);
+        request["query_request"]["cursor"] = serde_json::to_value(cursor).unwrap();
+        let page = h.list("main", serde_json::from_value(request).unwrap(), &runtime).unwrap();
+        assert!(page.receipt.is_none());
+        assert_eq!(page.result.summaries[0].id, "3");
+        assert!(page.result.summaries[0].favorited);
+        assert!(page.result.next_cursor.is_none(), "older non-favorites cannot create a next page");
         runtime.shutdown(std::time::Duration::from_secs(2)).unwrap();assert!(!String::from_utf8(out.bytes.lock().unwrap().clone()).unwrap().contains("synthetic body"));
     }
 }

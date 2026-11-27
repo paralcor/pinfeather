@@ -11,7 +11,7 @@ function deferred<T>() {
 }
 
 function summary(id: string, preview = `row-${id}`): ClipSummary {
-  return { id, captured_at_ms: 1, kind: "text", preview, format_names: ["CF_UNICODETEXT"], omitted_format_count: 0, payload_bytes: 1, source_process: null, source_confidence: "unknown" };
+  return { id, captured_at_ms: 1, kind: "text", preview, format_names: ["CF_UNICODETEXT"], omitted_format_count: 0, payload_bytes: 1, source_process: null, source_confidence: "unknown", favorited: false };
 }
 
 function page(requestId: string, normalizedQuery: string, rows: ClipSummary[], nextCursor: ListCursor | null = null): ListClipsResult {
@@ -19,7 +19,7 @@ function page(requestId: string, normalizedQuery: string, rows: ClipSummary[], n
 }
 
 function cursorOf(normalizedQuery: string): ListCursor {
-  return { normalized_query: normalizedQuery, upper_id: "9", last_captured_at_ms: 1, last_id: "5" };
+  return { normalized_query: normalizedQuery, upper_id: "9", last_captured_at_ms: 1, favorites_only: false, last_id: "5" };
 }
 
 function status(revision = "1", items = 1): StatusResult {
@@ -30,9 +30,9 @@ function status(revision = "1", items = 1): StatusResult {
     capture: { user_enabled: false, admission_open: false, policy_epoch: 1 },
     counters: { observed: "1", captured: "1", persisted: "1", ignored: "0", superseded: "0", failed: "0", overloaded: "0", cancelled: "0" },
     queue: { items: 0, bytes: 0 },
-    history: { items, payload_bytes: 8 },
+    history: { items, payload_bytes: 8, favorites: 0, revision: "0" },
     data_dir: "D:\\Synthetic",
-    versions: { app: "0.1.0", schema: 1, worker_protocol: 1 },
+    versions: { app: "0.1.0", schema: 2, worker_protocol: 1 },
     last_paste: null,
   };
 }
@@ -1340,5 +1340,329 @@ it("P: retryPreview is idempotent while a frame is loading", async () => {
   await settle();
   model.retryPreview();
   expect(h.textCalls.length).toBe(1);
+  stop();
+});
+
+it("keeps a page-two preview open while changing its favorite flag", async () => {
+  const h = harness();
+  const setFavorite = vi.fn(async (_requestId: string, clipId: string, favorited: boolean) => ({
+    clip_id: clipId, favorited, revision: "1", changed: true,
+  }));
+  const model = createHistoryModel({ ...h.bridge, setFavorite });
+  const stop = model.start();
+  await settle();
+  const first = h.listCalls[0];
+  first.d.resolve(page(first.id, "", [summary("5")], cursorOf("")));
+  await settle();
+  void model.more();
+  await settle();
+  const second = h.listCalls[1];
+  second.d.resolve(page(second.id, "", [summary("4")]));
+  await settle();
+  model.selectClip("4");
+  const text = h.textCalls[0];
+  text.d.resolve(frame(text, "page two text", null));
+  await settle();
+  await model.setFavorite();
+  expect(setFavorite).toHaveBeenCalledWith(expect.any(String), "4", true);
+  expect(model.store.getState()).toMatchObject({ selectedId: "4", previewText: "page two text" });
+  expect(model.store.getState().summaries.map(item => [item.id, item.favorited])).toEqual([["5", false], ["4", true]]);
+  expect(h.listCalls).toHaveLength(2);
+  stop();
+});
+
+it("preserves an unrelated page-two preview after a cross-window change and a missed same-count revision", async () => {
+  const h = harness();
+  let onFavorite!: (change: import("./ipc").FavoriteChange) => void;
+  h.bridge.subscribeFavorite = async callback => { onFavorite = callback; return () => {}; };
+  const model = createHistoryModel(h.bridge);
+  const stop = model.start();
+  await settle();
+  const first = h.listCalls[0];
+  first.d.resolve(page(first.id, "", [summary("5")], cursorOf("")));
+  await settle();
+  void model.more();
+  await settle();
+  const second = h.listCalls[1];
+  second.d.resolve(page(second.id, "", [summary("4")]));
+  await settle();
+  model.selectClip("4");
+  const text = h.textCalls[0];
+  text.d.resolve(frame(text, "keep this preview", null));
+  await settle();
+
+  onFavorite({ clip_id: "5", favorited: true, revision: "1" });
+  await settle();
+  expect(model.store.getState().summaries[0].favorited).toBe(true);
+  expect(h.listCalls).toHaveLength(2);
+  h.statusHolder.impl = async () => ({ ...status("2"), history: { ...status().history, revision: "3" } });
+  h.listeners.status_changed();
+  await settle();
+  const refreshed = h.listCalls[2];
+  refreshed.d.resolve(page(refreshed.id, "", [summary("5")], cursorOf("")));
+  await settle();
+  const refreshedNext = h.listCalls[3];
+  refreshedNext.d.resolve(page(refreshedNext.id, "", [{ ...summary("4"), favorited: true }]));
+  await settle();
+  expect(model.store.getState()).toMatchObject({ selectedId: "4", previewText: "keep this preview", cursor: null });
+  expect(model.store.getState().summaries.map(row => row.favorited)).toEqual([false, true]);
+  expect(h.textCalls).toHaveLength(1);
+  stop();
+});
+
+it("clears only the selected favorite removed from the filtered result", async () => {
+  const h = harness();
+  h.bridge.setFavorite = async (_, clip_id, favorited) => ({ clip_id, favorited, changed: true, revision: "1" });
+  const model = createHistoryModel(h.bridge);
+  const stop = model.start();
+  await settle();
+  model.setFavoritesOnly(true);
+  const list = h.listCalls[1];
+  list.d.resolve(page(list.id, "", [{ ...summary("4"), favorited: true }]));
+  await settle();
+  model.selectClip("4");
+  const text = h.textCalls[0];
+  text.d.resolve(frame(text, "favorite preview", null));
+  await settle();
+  await model.setFavorite();
+  expect(model.store.getState()).toMatchObject({ selectedId: null, previewText: "", summaries: [] });
+  expect(h.listCalls).toHaveLength(2);
+  stop();
+});
+
+it("reconciles another row after an idempotent favorite reply advances the revision", async () => {
+  const h = harness();
+  let onFavorite!: (change: import("./ipc").FavoriteChange) => void;
+  h.bridge.subscribeFavorite = async callback => { onFavorite = callback; return () => {}; };
+  const reply = deferred<import("./ipc").SetFavoriteResult>();
+  h.bridge.setFavorite = () => reply.promise;
+  const model = createHistoryModel(h.bridge);
+  const stop = model.start();
+  await settle();
+  const first = h.listCalls[0];
+  first.d.resolve(page(first.id, "", [summary("2"), summary("1")]));
+  await settle();
+  model.selectClip("2");
+  const pending = model.setFavorite();
+
+  onFavorite({ clip_id: "2", favorited: true, revision: "1" });
+  await settle();
+  h.statusHolder.impl = async () => ({ ...status("2"), history: { ...status().history, favorites: 2, revision: "2" } });
+  reply.resolve({ clip_id: "2", favorited: true, revision: "2", changed: false });
+  await pending;
+  await settle();
+
+  expect(h.listCalls).toHaveLength(2);
+  const refreshed = h.listCalls[1];
+  refreshed.d.resolve(page(refreshed.id, "", [
+    { ...summary("2"), favorited: true }, { ...summary("1"), favorited: true },
+  ]));
+  await settle();
+  expect(model.store.getState().summaries.map(row => row.favorited)).toEqual([true, true]);
+  expect(model.store.getState().selectedId).toBe("2");
+  stop();
+});
+
+it("reconciles a displayed page when the first status reports a favorite revision", async () => {
+  const h = harness();
+  const initialStatus = deferred<StatusResult>();
+  h.statusHolder.impl = () => initialStatus.promise;
+  const model = createHistoryModel(h.bridge);
+  const stop = model.start();
+  await settle();
+  const first = h.listCalls[0];
+  first.d.resolve(page(first.id, "", [summary("1")]));
+  await settle();
+  model.selectClip("1");
+  const preview = h.textCalls[0];
+  preview.d.resolve(frame(preview, "startup preview", null));
+  await settle();
+
+  initialStatus.resolve({ ...status(), history: { ...status().history, favorites: 1, revision: "1" } });
+  await settle();
+  expect(h.listCalls).toHaveLength(2);
+  const refreshed = h.listCalls[1];
+  refreshed.d.resolve(page(refreshed.id, "", [{ ...summary("1"), favorited: true }]));
+  await settle();
+
+  expect(model.store.getState()).toMatchObject({ selectedId: "1", previewText: "startup preview" });
+  expect(model.store.getState().summaries.map(row => row.favorited)).toEqual([true]);
+  expect(h.textCalls).toHaveLength(1);
+  stop();
+});
+
+it("reconciles an in-flight first page when the first status reports a favorite revision", async () => {
+  const h = harness();
+  const initialStatus = deferred<StatusResult>();
+  h.statusHolder.impl = () => initialStatus.promise;
+  const model = createHistoryModel(h.bridge);
+  const stop = model.start();
+  await settle();
+  const first = h.listCalls[0];
+
+  initialStatus.resolve({ ...status(), history: { ...status().history, favorites: 1, revision: "1" } });
+  await settle();
+  first.d.resolve(page(first.id, "", [summary("1")]));
+  await settle();
+  expect(h.listCalls).toHaveLength(2);
+  const refreshed = h.listCalls[1];
+  refreshed.d.resolve(page(refreshed.id, "", [{ ...summary("1"), favorited: true }]));
+  await settle();
+
+  expect(model.store.getState().summaries.map(row => row.favorited)).toEqual([true]);
+  stop();
+});
+
+it("reconciles a missed change when the first favorite event precedes the first status", async () => {
+  const h = harness();
+  const initialStatus = deferred<StatusResult>();
+  h.statusHolder.impl = () => initialStatus.promise;
+  let onFavorite!: (change: import("./ipc").FavoriteChange) => void;
+  h.bridge.subscribeFavorite = async callback => { onFavorite = callback; return () => {}; };
+  const model = createHistoryModel(h.bridge);
+  const stop = model.start();
+  await settle();
+  const first = h.listCalls[0];
+  first.d.resolve(page(first.id, "", [summary("2"), summary("1")]));
+  await settle();
+
+  // The host favorites clip 2 at revision 1, but only clip 1's revision 2 event arrives.
+  onFavorite({ clip_id: "1", favorited: true, revision: "2" });
+  h.statusHolder.impl = async () => ({ ...status("2", 2), history: { ...status("2", 2).history, favorites: 2, revision: "2" } });
+  initialStatus.resolve(status("1", 2));
+  await settle();
+  const refreshed = h.listCalls[1];
+  refreshed?.d.resolve(page(refreshed.id, "", [
+    { ...summary("2"), favorited: true }, { ...summary("1"), favorited: true },
+  ]));
+  await settle();
+
+  expect(model.store.getState().status?.history.revision).toBe("2");
+  expect(model.store.getState().summaries.map(row => [row.id, row.favorited])).toEqual([["2", true], ["1", true]]);
+  expect(h.listCalls).toHaveLength(2);
+  stop();
+});
+
+it("keeps a confirmed favorite clear of errors when its request times out", async () => {
+  const h = harness();
+  let onFavorite!: (change: import("./ipc").FavoriteChange) => void;
+  h.bridge.subscribeFavorite = async callback => { onFavorite = callback; return () => {}; };
+  const reply = deferred<import("./ipc").SetFavoriteResult>();
+  h.bridge.setFavorite = vi.fn(() => reply.promise);
+  const model = createHistoryModel(h.bridge);
+  const stop = model.start();
+  await settle();
+  const first = h.listCalls[0];
+  first.d.resolve(page(first.id, "", [summary("1")]));
+  await settle();
+  model.selectClip("1");
+  const pending = model.setFavorite();
+  expect(h.bridge.setFavorite).toHaveBeenCalledWith(expect.any(String), "1", true);
+
+  onFavorite({ clip_id: "1", favorited: true, revision: "1" });
+  await settle();
+  reply.reject({ code: "timeout" });
+  await pending;
+
+  expect(model.store.getState()).toMatchObject({ favoriteBusy: false, favoriteMessage: null, selectedId: "1" });
+  expect(model.store.getState().summaries[0].favorited).toBe(true);
+  expect(h.bridge.setFavorite).toHaveBeenCalledTimes(1);
+  stop();
+});
+
+it.each(["event", "list refresh"])("clears a favorite timeout message after confirmation by %s", async confirmation => {
+  const h = harness();
+  let onFavorite!: (change: import("./ipc").FavoriteChange) => void;
+  h.bridge.subscribeFavorite = async callback => { onFavorite = callback; return () => {}; };
+  const reply = deferred<import("./ipc").SetFavoriteResult>();
+  h.bridge.setFavorite = vi.fn(() => reply.promise);
+  const model = createHistoryModel(h.bridge);
+  const stop = model.start();
+  await settle();
+  const first = h.listCalls[0];
+  first.d.resolve(page(first.id, "", [summary("1")]));
+  await settle();
+  model.selectClip("1");
+  const pending = model.setFavorite();
+  const statusCalls = h.statusHolder.calls;
+
+  reply.reject({ code: "timeout" });
+  await pending;
+  await settle();
+
+  expect(model.store.getState().favoriteMessage).toBe("无法确认收藏结果，请核对当前状态。");
+  expect(h.statusHolder.calls).toBe(statusCalls + 1);
+  expect(h.listCalls).toHaveLength(2);
+  if (confirmation === "event") {
+    onFavorite({ clip_id: "1", favorited: true, revision: "1" });
+  } else {
+    const refreshed = h.listCalls[1];
+    refreshed.d.resolve(page(refreshed.id, "", [{ ...summary("1"), favorited: true }]));
+  }
+  await settle();
+
+  expect(model.store.getState()).toMatchObject({ favoriteBusy: false, favoriteMessage: null, selectedId: "1" });
+  expect(model.store.getState().summaries[0].favorited).toBe(true);
+  expect(h.bridge.setFavorite).toHaveBeenCalledTimes(1);
+  stop();
+});
+
+it.each(["3", "1"])("keeps an in-flight append when clip %s changes favorite", async clipId => {
+  const h = harness();
+  let onFavorite!: (change: import("./ipc").FavoriteChange) => void;
+  h.bridge.subscribeFavorite = async callback => { onFavorite = callback; return () => {}; };
+  const model = createHistoryModel(h.bridge);
+  const stop = model.start();
+  await settle();
+  const first = h.listCalls[0];
+  first.d.resolve(page(first.id, "", [summary("3"), summary("2")], { ...cursorOf(""), last_id: "2" }));
+  await settle();
+  void model.more();
+  const more = h.listCalls[1];
+
+  onFavorite({ clip_id: clipId, favorited: true, revision: "1" });
+  more.d.resolve(page(more.id, "", [summary("1")]));
+  await settle();
+
+  expect(h.listCalls).toHaveLength(2);
+  expect(model.store.getState().summaries.map(row => [row.id, row.favorited])).toEqual([
+    ["3", clipId === "3"], ["2", false], ["1", clipId === "1"],
+  ]);
+  stop();
+});
+
+it("resumes an in-flight append after reconciling a missed favorite revision", async () => {
+  const h = harness();
+  let onFavorite!: (change: import("./ipc").FavoriteChange) => void;
+  h.bridge.subscribeFavorite = async callback => { onFavorite = callback; return () => {}; };
+  const model = createHistoryModel(h.bridge);
+  const stop = model.start();
+  await settle();
+  const first = h.listCalls[0];
+  const cursor = { ...cursorOf(""), last_id: "2" };
+  first.d.resolve(page(first.id, "", [summary("3"), summary("2")], cursor));
+  await settle();
+  void model.more();
+  const more = h.listCalls[1];
+
+  onFavorite({ clip_id: "3", favorited: true, revision: "2" });
+  more.d.resolve(page(more.id, "", [summary("1")]));
+  await settle();
+  expect(h.listCalls).toHaveLength(3);
+  const refreshed = h.listCalls[2];
+  const refreshedCursor = { ...cursor, upper_id: "10" };
+  refreshed.d.resolve(page(refreshed.id, "", [
+    { ...summary("3"), favorited: true }, { ...summary("2"), favorited: true },
+  ], refreshedCursor));
+  await settle();
+  expect(h.listCalls).toHaveLength(4);
+  const resumed = h.listCalls[3];
+  expect(resumed.cursor).toEqual(refreshedCursor);
+  resumed.d.resolve(page(resumed.id, "", [summary("1")]));
+  await settle();
+
+  expect(model.store.getState().summaries.map(row => [row.id, row.favorited])).toEqual([
+    ["3", true], ["2", true], ["1", false],
+  ]);
   stop();
 });

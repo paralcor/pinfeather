@@ -1,11 +1,11 @@
 import { createStore } from "zustand/vanilla";
-import type { ClipSummary, ListCursor, PngPreview, StatusResult } from "./ipc";
+import type { ClipSummary, FavoriteChange, ListClipsResult, ListCursor, PngPreview, StatusResult } from "./ipc";
 import { normalizeQuery, parseGetClipTextRequest, parseGetClipTextResult, parseCopyClipTextResult } from "./ipc";
 import { readableError, type DesktopBridge } from "./desktop";
 import type { Identity, Receipt } from "./measurement";
 type PngPreviewState = { phase: "loading" } | { phase: "ready"; image: PngPreview } | { phase: "failed"; message: string };
 type CaptureChange = { action: "start"; afterRevision: string } | { action: "retry" | "pause" };
-export interface HistoryState { status: StatusResult | null; summaries: ClipSummary[]; listRevision: number; cursor: ListCursor | null; loading: boolean; changing: CaptureChange | false; error: string | null; hostMissing: boolean; query: string; selectedId: string | null; previewText: string; previewLoading: boolean; previewError: string | null; previewNextOffset: number | null; pngPreview: PngPreviewState | null; copyBusy: "text" | "png" | false; copyMessage: string | null; copyAvailable: boolean; }
+export interface HistoryState { status: StatusResult | null; summaries: ClipSummary[]; listRevision: number; cursor: ListCursor | null; loading: boolean; changing: CaptureChange | false; error: string | null; hostMissing: boolean; query: string; favoritesOnly: boolean; favoriteBusy: boolean; favoriteMessage: string | null; selectedId: string | null; previewText: string; previewLoading: boolean; previewError: string | null; previewNextOffset: number | null; pngPreview: PngPreviewState | null; copyBusy: "text" | "png" | false; copyMessage: string | null; copyAvailable: boolean; }
 export function canPauseWhileStarting({ changing, status }: Pick<HistoryState, "changing" | "status">) {
   return changing !== false && changing.action === "start" && status !== null &&
     status.capture.user_enabled && status.capture.admission_open && status.services.storage !== "failed" &&
@@ -36,19 +36,26 @@ export function createHistoryModel(bridge: DesktopBridge) {
       void measuredSerial.catch(() => { committedReceipt = null; });
     }
   }
-  const store = createStore<HistoryState>(() => ({ status: null, summaries: [], listRevision: 0, cursor: null, loading: false, changing: false, error: null, hostMissing: !bridge.available, query: "", selectedId: null, previewText: "", previewLoading: false, previewError: null, previewNextOffset: null, pngPreview: null, copyBusy: false, copyMessage: null, copyAvailable: bridge.available && typeof bridge.copyText === "function" }));
+  const store = createStore<HistoryState>(() => ({ status: null, summaries: [], listRevision: 0, cursor: null, loading: false, changing: false, error: null, hostMissing: !bridge.available, query: "", favoritesOnly: false, favoriteBusy: false, favoriteMessage: null, selectedId: null, previewText: "", previewLoading: false, previewError: null, previewNextOffset: null, pngPreview: null, copyBusy: false, copyMessage: null, copyAvailable: bridge.available && typeof bridge.copyText === "function" }));
   let active = false, ready = false, lifetime = 0, generation = 0, request = 0;
   let timer: ReturnType<typeof setTimeout> | null = null, wantPage1 = false, statusBusy = false, statusAgain = false;
   let selection = 0, previewRequest = 0;
   let copyRequest = 0, copyPending = false;
-  let captureRequest = 0;
+  let captureRequest = 0, favoriteRequest = 0;
+  let knownHistoryRevision: bigint | null = null;
+  // null once the first status response has established the startup baseline.
+  let listStartedBeforeFirstStatus: boolean | null = false;
+  let listEpoch = 0;
+  // Rebuild the loaded range through its previous last key, then honor a pending append.
+  let favoriteRefresh: { anchor: ClipSummary | null; resumeAppend: boolean } | null = null;
+  let unconfirmedFavorite: { clipId: string; desired: boolean } | null = null;
   // Latest single pending preview need; a selection never owns a queue.
   type PreviewNeed = { clipId: string; offset: number; append: boolean };
   let pendingPreview: PreviewNeed | null = null;
   let pendingPng: string | null = null;
   let pngInFlight = false;
   // Physical unsettled calls; a generation may own at most one of each kind at a time.
-  const inflight: Array<{ token: number; gen: number }> = [];
+  const inflight: Array<{ token: number; gen: number; appendPatches: Map<string, boolean> | null }> = [];
   const previewInflight: Array<{ token: number; sel: number; gen: number }> = [];
   function acceptStatus(status: StatusResult) {
     const current = store.getState().status;
@@ -78,12 +85,19 @@ export function createHistoryModel(bridge: DesktopBridge) {
     selection += 1;
     pendingPreview = null;
     pendingPng = null;
-    store.setState({ selectedId: null, previewText: "", previewLoading: false, previewError: null, previewNextOffset: null, pngPreview: null, copyMessage: null });
+    unconfirmedFavorite = null;
+    store.setState({ selectedId: null, previewText: "", previewLoading: false, previewError: null, previewNextOffset: null, pngPreview: null, copyMessage: null, favoriteMessage: null });
   }
   /** A list write is authoritative for the rows: a selection that left them is dropped. */
   function syncSelectionWithRows() {
-    const selected = store.getState().selectedId;
-    if (selected !== null && !store.getState().summaries.some(item => item.id === selected)) clearSelection();
+    const { selectedId, summaries } = store.getState();
+    if (selectedId === null) return;
+    const selected = summaries.find(item => item.id === selectedId);
+    if (!selected) clearSelection();
+    else if (unconfirmedFavorite?.clipId === selectedId && selected.favorited === unconfirmedFavorite.desired) {
+      unconfirmedFavorite = null;
+      store.setState({ favoriteMessage: null });
+    }
   }
   function pump() {
     if (!active || !ready || !bridge.available || !wantPage1) return;
@@ -101,7 +115,7 @@ export function createHistoryModel(bridge: DesktopBridge) {
     const token = lifetime, gen = generation;
     if (!canDispatch(token, gen)) return;
     wantPage1 = false;
-    void runList(token, gen, normalized, null);
+    void runList(token, gen, normalized, null, favoriteRefresh);
   }
   function pumpPreview() {
     if (!active || !ready || !bridge.available || pendingPreview === null) return;
@@ -141,44 +155,81 @@ export function createHistoryModel(bridge: DesktopBridge) {
       void pumpPng();
     }
   }
-  async function runList(token: number, gen: number, normalized: string, cursor: ListCursor | null) {
-    const id = `${cursor ? "more" : "page1"}-${++request}`;
-    inflight.push({ token, gen });
+  async function runList(
+    token: number, gen: number, normalized: string, cursor: ListCursor | null,
+    reconcile: typeof favoriteRefresh = null,
+  ) {
+    const epoch = listEpoch;
+    const favoritesOnly = store.getState().favoritesOnly;
+    const ownsList = () => owns(token, gen) && epoch === listEpoch;
+    const appendPatches = cursor ? new Map<string, boolean>() : null;
+    inflight.push({ token, gen, appendPatches });
+    if (listStartedBeforeFirstStatus === false) listStartedBeforeFirstStatus = true;
     store.setState({ loading: true, error: null });
     if (!cursor) invalidateMeasurement();
     const measuredVersion = measuredSequence;
     const identityPromise = measuredStart;
     const invalidated = measuredSerial;
-    try {
-      let receipt: Receipt | null = null;
-      const page = measurement && identityPromise ? await (async () => {
+    let receipt: Receipt | null = null;
+    async function fetchPage(next: ListCursor | null): Promise<ListClipsResult> {
+      const id = `${next ? "more" : "page1"}-${++request}`;
+      let result: ListClipsResult;
+      if (measurement && identityPromise) {
         try {
           await invalidated;
           const identity = await identityPromise;
-          const measured = await measurement.list(identity, String(gen), String(measuredVersion), id, cursor, normalized);
-          receipt = measured.receipt;
-          return measured.result;
+          const measured = await measurement.list(identity, String(gen), String(measuredVersion), id, next, normalized, favoritesOnly);
+          if (!next) receipt = measured.receipt;
+          result = measured.result;
         } catch (error) {
-          // A closed/failed measurement must not disable the ordinary history UI.
-          // No receipt survives this path and it cannot produce a sample.
-          if (["stopped", "expired", "limit", "output", "clock", "stale"].includes(String(error))) return bridge.list(id, cursor, normalized);
-          throw error;
+          if (!["stopped", "expired", "limit", "output", "clock", "stale"].includes(String(error))) throw error;
+          result = await bridge.list(id, next, normalized, favoritesOnly);
         }
-      })() : await bridge.list(id, cursor, normalized);
-      if (!owns(token, gen)) return;
-      if (measurement && measuredVersion !== measuredSequence) return;
-      if (page.request_id !== id || page.normalized_query !== normalized) throw new Error("invalid list correlation");
-      if (cursor) {
-        const seen = new Set(store.getState().summaries.map(item => item.id));
-        store.setState({ summaries: [...store.getState().summaries, ...page.summaries.filter(item => !seen.has(item.id))], cursor: page.next_cursor });
       } else {
+        result = await bridge.list(id, next, normalized, favoritesOnly);
+      }
+      if (result.request_id !== id || result.normalized_query !== normalized) throw new Error("invalid list correlation");
+      return result;
+    }
+    try {
+      const first = await fetchPage(cursor);
+      if (!ownsList() || (measurement && measuredVersion !== measuredSequence)) return;
+      const summaries = [...first.summaries];
+      let next = first.next_cursor;
+      const anchor = reconcile?.anchor;
+      let resumeAppend = reconcile?.resumeAppend;
+      while (next) {
+        const beforeAnchor = anchor && (next.last_captured_at_ms > anchor.captured_at_ms ||
+          (next.last_captured_at_ms === anchor.captured_at_ms && BigInt(next.last_id) > BigInt(anchor.id)));
+        if (!beforeAnchor && !resumeAppend) break;
+        if (!beforeAnchor) resumeAppend = false;
+        const page = await fetchPage(next);
+        if (!ownsList() || (measurement && measuredVersion !== measuredSequence)) return;
+        if (page.next_cursor?.last_id === next.last_id) throw new Error("list cursor did not advance");
+        summaries.push(...page.summaries);
+        next = page.next_cursor;
+      }
+      if (appendPatches) {
+        const current = store.getState().summaries;
+        const seen = new Set(current.map(item => item.id));
+        const appended = summaries.flatMap(row => {
+          const favorited = appendPatches.get(row.id);
+          if (seen.has(row.id) || (favoritesOnly && favorited === false)) return [];
+          return [favorited === undefined || favorited === row.favorited ? row : { ...row, favorited }];
+        });
+        store.setState({ summaries: [...current, ...appended], cursor: next });
+      } else {
+        if (reconcile === favoriteRefresh) favoriteRefresh = null;
         committedReceipt = receipt;
-        store.setState(state => ({ summaries: page.summaries, cursor: page.next_cursor, listRevision: state.listRevision + 1 }));
+        store.setState(state => ({ summaries, cursor: next, listRevision: state.listRevision + (reconcile ? 0 : 1) }));
       }
       syncSelectionWithRows();
     } catch (error) {
-      if (owns(token, gen)) committedReceipt = null;
-      if (owns(token, gen)) store.setState({ error: readableError(error) });
+      if (ownsList()) {
+        committedReceipt = null;
+        if (reconcile === favoriteRefresh) favoriteRefresh = null;
+        store.setState({ error: readableError(error) });
+      }
     } finally {
       releaseSlot(token, gen);
       if (active) pump();
@@ -217,6 +268,76 @@ export function createHistoryModel(bridge: DesktopBridge) {
       }
     }
   }
+  function refreshFavoriteRows() {
+    // Retain the anchor and append intent if another refresh supersedes this one.
+    favoriteRefresh ??= {
+      anchor: store.getState().summaries.at(-1) ?? null,
+      resumeAppend: inflight.some(entry => entry.token === lifetime && entry.gen === generation && entry.appendPatches !== null),
+    };
+    listEpoch++;
+    invalidateMeasurement();
+    store.setState({ cursor: null });
+    wantPage1 = true;
+    pump();
+  }
+  function applyFavoriteChange(change: FavoriteChange & { changed?: boolean }) {
+    const revision = BigInt(change.revision);
+    if (knownHistoryRevision !== null && revision < knownHistoryRevision) return;
+    const advanced = knownHistoryRevision === null || revision > knownHistoryRevision;
+    const missed = knownHistoryRevision !== null && revision > knownHistoryRevision + 1n;
+    const startupListNeedsRefresh = knownHistoryRevision === null && listStartedBeforeFirstStatus === true;
+    if (startupListNeedsRefresh) listStartedBeforeFirstStatus = null;
+    knownHistoryRevision = revision;
+    const { summaries, favoritesOnly } = store.getState();
+    const item = summaries.find(row => row.id === change.clip_id);
+    const list = inflight.find(entry => entry.token === lifetime && entry.gen === generation);
+    const needsRefresh = missed || startupListNeedsRefresh || change.changed === false ||
+      (list && !list.appendPatches) || (favoritesOnly && change.favorited && !item);
+    if (advanced && needsRefresh) refreshFavoriteRows();
+    else list?.appendPatches?.set(change.clip_id, change.favorited);
+    if (item && item.favorited !== change.favorited) {
+      const remove = favoritesOnly && !change.favorited;
+      store.setState({
+        summaries: remove ? summaries.filter(row => row.id !== change.clip_id)
+          : summaries.map(row => row.id === change.clip_id ? { ...row, favorited: change.favorited } : row),
+      });
+      syncSelectionWithRows();
+    }
+    if (advanced) void refreshStatus();
+  }
+  async function setFavorite() {
+    const state = store.getState();
+    const selected = state.summaries.find(row => row.id === state.selectedId);
+    if (!active || !ready || !selected || !bridge.setFavorite || state.favoriteBusy || state.loading ||
+        state.status?.services.storage !== "ready" || state.status.state === "stopping") return;
+    const token = lifetime, sel = selection, gen = generation;
+    const clipId = selected.id, desired = !selected.favorited;
+    unconfirmedFavorite = null;
+    store.setState({ favoriteBusy: true, favoriteMessage: null });
+    try {
+      const change = await bridge.setFavorite(`favorite-${++favoriteRequest}`, clipId, desired);
+      if (active && token === lifetime) applyFavoriteChange(change);
+    } catch (error) {
+      if (!active || token !== lifetime) return;
+      const { summaries, favoritesOnly } = store.getState();
+      const current = summaries.find(row => row.id === clipId);
+      const removedFromFavorites = !current && state.favoritesOnly && favoritesOnly && gen === generation && !desired;
+      if (current?.favorited === desired || removedFromFavorites) return;
+      if (typeof error === "object" && error !== null && "code" in error && error.code === "timeout") {
+        if (sel === selection) {
+          unconfirmedFavorite = { clipId, desired };
+          store.setState({ favoriteMessage: "无法确认收藏结果，请核对当前状态。" });
+        }
+        void refreshStatus();
+        refreshFavoriteRows();
+      } else if (sel === selection) {
+        store.setState({ favoriteMessage: readableError(error) });
+        void refreshStatus();
+      }
+    } finally {
+      if (token === lifetime) store.setState({ favoriteBusy: false });
+    }
+  }
   async function refreshStatus() {
     if (!active || !bridge.available) return;
     if (statusBusy) { statusAgain = true; return; }
@@ -228,14 +349,23 @@ export function createHistoryModel(bridge: DesktopBridge) {
         const status = await bridge.status();
         if (!active || token !== lifetime) return;
         const previous = store.getState().status;
-        const missedHistory = previous !== null && BigInt(status.revision) >= BigInt(previous.revision) && (status.history.items !== previous.history.items || status.history.payload_bytes !== previous.history.payload_bytes);
+        if (previous && BigInt(status.revision) < BigInt(previous.revision)) continue;
+        const revision = BigInt(status.history.revision);
+        const missedRevision = knownHistoryRevision !== null && revision > knownHistoryRevision;
+        const startupListNeedsRefresh = listStartedBeforeFirstStatus === true && revision > 0n;
+        listStartedBeforeFirstStatus = null;
+        if (knownHistoryRevision === null || missedRevision) knownHistoryRevision = revision;
+        const missedHistory = previous !== null && (status.history.items !== previous.history.items || status.history.payload_bytes !== previous.history.payload_bytes);
         acceptStatus(status);
         if (missedHistory) {
+          favoriteRefresh = null;
           invalidateMeasurement();
           clearSelection();
           store.setState({ cursor: null });
           wantPage1 = true;
           void pump();
+        } else if (missedRevision || startupListNeedsRefresh) {
+          refreshFavoriteRows();
         }
       } while (statusAgain && active && token === lifetime);
     } catch (error) {
@@ -250,6 +380,7 @@ export function createHistoryModel(bridge: DesktopBridge) {
     clearSelection();
     if (!bridge.available) { store.setState({ query: value }); return; }
     generation += 1;
+    favoriteRefresh = null;
     invalidateMeasurement();
     clearTimer();
     wantPage1 = false;
@@ -262,10 +393,22 @@ export function createHistoryModel(bridge: DesktopBridge) {
     store.setState({ loading: true, error: null });
     timer = setTimeout(() => { timer = null; wantPage1 = true; void pump(); }, QUERY_DEBOUNCE_MS);
   }
+  function setFavoritesOnly(favoritesOnly: boolean) {
+    if (favoritesOnly === store.getState().favoritesOnly) return;
+    generation += 1;
+    favoriteRefresh = null;
+    invalidateMeasurement();
+    clearSelection();
+    clearTimer();
+    store.setState({ favoritesOnly, summaries: [], cursor: null });
+    wantPage1 = true;
+    pump();
+  }
   async function refresh(history = true): Promise<void> {
     if (!active || !bridge.available) return;
     void refreshStatus();
     if (history) {
+      favoriteRefresh = null;
       invalidateMeasurement();
       clearSelection();
       store.setState({ cursor: null });
@@ -283,11 +426,12 @@ export function createHistoryModel(bridge: DesktopBridge) {
     const selected = state.summaries.find(item => item.id === id);
     if (!selected) return;
     selection += 1;
+    unconfirmedFavorite = null;
     const hasPng = selected.format_names.includes("PNG");
     const hasText = !hasPng || selected.format_names.includes("CF_UNICODETEXT");
     pendingPng = hasPng && bridge.getPngPreview ? id : null;
     pendingPreview = hasText ? { clipId: id, offset: 0, append: false } : null;
-    store.setState({ selectedId: id, previewText: "", previewLoading: hasText, previewError: null, previewNextOffset: null, pngPreview: pendingPng ? { phase: "loading" } : null, copyMessage: null });
+    store.setState({ selectedId: id, previewText: "", previewLoading: hasText, previewError: null, previewNextOffset: null, pngPreview: pendingPng ? { phase: "loading" } : null, copyMessage: null, favoriteMessage: null });
     void pumpPreview();
     void pumpPng();
   }
@@ -334,9 +478,16 @@ export function createHistoryModel(bridge: DesktopBridge) {
       void measuredSerial.catch(() => { committedReceipt = null; });
     }
     const disposers: Array<() => void> = [];
-    store.setState({ loading: true, changing: false });
+    store.setState({ loading: true, changing: false, favoriteBusy: false });
     void (async () => {
       try {
+        if (bridge.subscribeFavorite) {
+          const off = await bridge.subscribeFavorite(change => {
+            if (active && token === lifetime) applyFavoriteChange(change);
+          });
+          if (!active || token !== lifetime) { off(); return; }
+          disposers.push(off);
+        }
         for (const name of ["history_changed", "status_changed"] as const) {
           const off = await bridge.subscribe(name, () => { if (active && token === lifetime) void refresh(name === "history_changed"); });
           if (!active || token !== lifetime) { off(); return; }
@@ -360,6 +511,9 @@ export function createHistoryModel(bridge: DesktopBridge) {
         measuredStart = null; measuredIdentity = null;
         if (measurement && started) void started.then(identity => measurement.stop(identity)).catch(() => {});
         active = false;
+        favoriteRefresh = null;
+        knownHistoryRevision = null;
+        listStartedBeforeFirstStatus = false;
         lifetime++;
         clearSelection();
       }
@@ -450,5 +604,5 @@ export function createHistoryModel(bridge: DesktopBridge) {
     });
   }
   function copyIdentity() { return `${lifetime}:${generation}:${selection}`; }
-  return { store, start, refresh, more, toggle, setEnabled, setQuery, selectClip, retryPreview, retryPng, morePreview, copyText: () => copy("text"), copyPng: () => copy("png"), copyIdentity, measurementReceipt, acknowledgeMeasurement };
+  return { store, start, refresh, more, toggle, setEnabled, setQuery, setFavoritesOnly, setFavorite, selectClip, retryPreview, retryPng, morePreview, copyText: () => copy("text"), copyPng: () => copy("png"), copyIdentity, measurementReceipt, acknowledgeMeasurement };
 }

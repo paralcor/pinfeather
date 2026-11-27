@@ -11,8 +11,8 @@ function fixture() {
   const writes: Array<{ requestId: string; clipId: string; resolve(value: CopyClipTextResult): void }> = [];
   const bridge: DesktopBridge = {
     available: true,
-    status: vi.fn(async () => ({ revision: "1", state: "paused", services: { listener: "ready", worker: "not_started", storage: "ready", hotkey: "ready", target_observer: "not_started" }, capture: { user_enabled: false, admission_open: false, policy_epoch: 1 }, counters: { observed: "2", captured: "2", persisted: "2", ignored: "0", superseded: "0", failed: "0", overloaded: "0", cancelled: "0" }, queue: { items: 0, bytes: 0 }, history: { items: 2, payload_bytes: 200000 }, data_dir: "D:\\Synthetic", versions: { app: "0.1.0", schema: 1, worker_protocol: 1 }, last_paste: null } as StatusResult)),
-    list: vi.fn(async (requestId, _cursor, query = "") => ({ request_id: requestId, normalized_query: query, summaries: ["1", "2"].map(id => ({ id, captured_at_ms: 1, kind: "text" as const, preview: `摘要${id}`, format_names: ["CF_UNICODETEXT"], omitted_format_count: 0, payload_bytes: 100000, source_process: null, source_confidence: "unknown" as const })), next_cursor: null })),
+    status: vi.fn(async () => ({ revision: "1", state: "paused", services: { listener: "ready", worker: "not_started", storage: "ready", hotkey: "ready", target_observer: "not_started" }, capture: { user_enabled: false, admission_open: false, policy_epoch: 1 }, counters: { observed: "2", captured: "2", persisted: "2", ignored: "0", superseded: "0", failed: "0", overloaded: "0", cancelled: "0" }, queue: { items: 0, bytes: 0 }, history: { items: 2, payload_bytes: 200000, favorites: 0, revision: "0" }, data_dir: "D:\\Synthetic", versions: { app: "0.1.0", schema: 2, worker_protocol: 1 }, last_paste: null } as StatusResult)),
+    list: vi.fn(async (requestId, _cursor, query = "") => ({ request_id: requestId, normalized_query: query, summaries: ["1", "2"].map(id => ({ id, captured_at_ms: 1, kind: "text" as const, preview: `摘要${id}`, format_names: ["CF_UNICODETEXT"], omitted_format_count: 0, payload_bytes: 100000, source_process: null, source_confidence: "unknown" as const, favorited: false })), next_cursor: null })),
     getText: vi.fn(async (requestId, clipId) => ({ request_id: requestId, clip_id: clipId, text: "长正文仅首段", next_offset: 18 })),
     copyText: vi.fn((requestId, clipId) => new Promise<CopyClipTextResult>(resolve => writes.push({ requestId, clipId, resolve }))),
     setEnabled: vi.fn(), subscribe: vi.fn(async () => () => {}),
@@ -519,4 +519,49 @@ describe("manual panel sessions", () => {
   });
   it("unmounts the session on host hide and cleans its event subscription", async () => { const f = controller(); const mounted = render(<ManualPanel control={f.control} />); await screen.findByText("摘要1"); act(() => f.emit({ revision: "2", session_id: null, phase: "hidden", hotkey: "ready", error: null })); expect(screen.queryByLabelText("搜索历史正文")).toBeNull(); mounted.unmount(); expect(f.unsubscribe).toHaveBeenCalledTimes(1); });
   it("keeps the main entry available when hotkey registration fails", async () => { const f = controller(); f.control.snapshot = vi.fn(async () => ({ revision: "1", session_id: null, phase: "hidden", hotkey: "failed", error: "Ctrl+Alt+V 注册失败，可使用主窗口入口。" } as ManualPanelSnapshot)); const h = fixture(); render(<App bridge={h.bridge} panelControl={f.control} />); await screen.findByText("Ctrl+Alt+V 注册失败，可使用主窗口入口。"); const button = screen.getByRole("button", { name: "打开快捷面板" }) as HTMLButtonElement; expect(button.disabled).toBe(false); fireEvent.click(button); await waitFor(() => expect(f.control.open).toHaveBeenCalledTimes(1)); expect(h.writes).toHaveLength(0); });
+});
+
+it("guards favorite gestures against IME and cross-window intent changes while retaining the preview", async () => {
+  const f = fixture();
+  let onFavorite!: (change: import("./lib/ipc").FavoriteChange) => void;
+  f.bridge.subscribeFavorite = async callback => { onFavorite = callback; return () => {}; };
+  const write = vi.fn(async (_id: string, clip_id: string, favorited: boolean) => ({
+    clip_id, favorited, changed: true, revision: "2",
+  }));
+  f.bridge.setFavorite = write;
+  await panel(f);
+  const search = screen.getByLabelText("搜索历史正文");
+  const list = screen.getByRole("list", { name: "历史条目" });
+  fireEvent.compositionStart(search);
+  fireEvent.compositionEnd(search);
+  fireEvent.keyDown(search, { key: "Process", code: "Enter", keyCode: 229 });
+  fireEvent.keyUp(search, { key: "Enter", code: "Enter" });
+  expect(write).not.toHaveBeenCalled();
+
+  fireEvent.keyDown(search, arrowDown);
+  fireEvent.keyUp(list, arrowDown);
+  await screen.findByText("长正文仅首段");
+  const favorite = screen.getByRole("button", { name: "收藏" });
+  fireEvent.click(favorite, { detail: 0 });
+  expect(write).not.toHaveBeenCalled();
+  favorite.focus();
+  fireEvent.keyDown(favorite, { key: "Enter", code: "Enter" });
+  await act(async () => onFavorite({ clip_id: "1", favorited: true, revision: "1" }));
+  const unfavorite = screen.getByRole("button", { name: "取消收藏" });
+  fireEvent.keyUp(unfavorite, { key: "Enter", code: "Enter" });
+  expect(write).not.toHaveBeenCalled();
+  expect(screen.getByText("★ 已收藏")).toBeTruthy();
+  expect(screen.getByText("长正文仅首段")).toBeTruthy();
+
+  pointerClick(unfavorite);
+  expect(write).toHaveBeenCalledWith(expect.any(String), "1", false);
+  await screen.findByRole("button", { name: "收藏" });
+  expect(screen.getByText("长正文仅首段")).toBeTruthy();
+  expect(f.hide).not.toHaveBeenCalled();
+
+  keyGesture(list, "Enter");
+  expect(f.writes).toHaveLength(1);
+  const { requestId, clipId, resolve } = f.writes[0];
+  await act(async () => resolve({ request_id: requestId, clip_id: clipId, outcome: "copied", reason: null }));
+  expect(f.hide).toHaveBeenCalledExactlyOnceWith(true);
 });

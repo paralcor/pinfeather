@@ -10,13 +10,13 @@ const status: StatusResult = {
   services: { listener: "ready", worker: "not_started", storage: "ready", hotkey: "ready", target_observer: "not_started" },
   capture: { user_enabled: false, admission_open: false, policy_epoch: 1 },
   counters: { observed: "2", captured: "2", persisted: "2", ignored: "0", superseded: "0", failed: "0", overloaded: "0", cancelled: "0" },
-  queue: { items: 0, bytes: 0 }, history: { items: 2, payload_bytes: 20 },
-  data_dir: "D:\\Synthetic", versions: { app: "0.1.0", schema: 1, worker_protocol: 1 }, last_paste: null,
+  queue: { items: 0, bytes: 0 }, history: { items: 2, payload_bytes: 20, favorites: 0, revision: "0" },
+  data_dir: "D:\\Synthetic", versions: { app: "0.1.0", schema: 2, worker_protocol: 1 }, last_paste: null,
 };
 const image: PngPreview = { sourceWidth: 640, sourceHeight: 320, width: 2, height: 1, rgba: new Uint8ClampedArray(8) };
 const summaries: ClipSummary[] = [
-  { id: "2", captured_at_ms: 2, kind: "png", preview: "", format_names: ["PNG"], omitted_format_count: 0, payload_bytes: 10, source_process: null, source_confidence: "unknown" },
-  { id: "1", captured_at_ms: 1, kind: "text", preview: "合成图文", format_names: ["CF_UNICODETEXT", "PNG"], omitted_format_count: 0, payload_bytes: 10, source_process: null, source_confidence: "unknown" },
+  { id: "2", captured_at_ms: 2, kind: "png", preview: "", format_names: ["PNG"], omitted_format_count: 0, payload_bytes: 10, source_process: null, source_confidence: "unknown", favorited: false },
+  { id: "1", captured_at_ms: 1, kind: "text", preview: "合成图文", format_names: ["CF_UNICODETEXT", "PNG"], omitted_format_count: 0, payload_bytes: 10, source_process: null, source_confidence: "unknown", favorited: false },
 ];
 const fixture = () => ({
   available: true,

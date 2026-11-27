@@ -14,7 +14,7 @@ afterEach(() => {
 });
 
 function summary(id: string): ClipSummary {
-  return { id, captured_at_ms: 1, kind: "text", preview: `布局合成条目${id}`, format_names: ["CF_UNICODETEXT"], omitted_format_count: 0, payload_bytes: 8, source_process: null, source_confidence: "unknown" };
+  return { id, captured_at_ms: 1, kind: "text", preview: `布局合成条目${id}`, format_names: ["CF_UNICODETEXT"], omitted_format_count: 0, payload_bytes: 8, source_process: null, source_confidence: "unknown", favorited: false };
 }
 function fixture() {
   const calls: Array<{ id: string; cursor: ListCursor | null; query: string; resolve(value: ListClipsResult): void }> = [];
@@ -22,7 +22,7 @@ function fixture() {
     revision: "1", state: "paused", services: { listener: "ready", worker: "not_started", storage: "ready", hotkey: "ready", target_observer: "not_started" },
     capture: { user_enabled: false, admission_open: false, policy_epoch: 1 },
     counters: { observed: "3", captured: "3", persisted: "3", ignored: "0", superseded: "0", failed: "0", overloaded: "0", cancelled: "0" },
-    queue: { items: 0, bytes: 0 }, history: { items: 3, payload_bytes: 24 }, data_dir: "D:\\Synthetic", versions: { app: "0.1.0", schema: 1, worker_protocol: 1 }, last_paste: null,
+    queue: { items: 0, bytes: 0 }, history: { items: 3, payload_bytes: 24, favorites: 0, revision: "0" }, data_dir: "D:\\Synthetic", versions: { app: "0.1.0", schema: 2, worker_protocol: 1 }, last_paste: null,
   };
   const bridge: DesktopBridge = {
     available: true,
@@ -35,7 +35,7 @@ function fixture() {
   const hide = vi.fn();
   async function reply(index: number, ids: string[], more = false) {
     const call = calls[index];
-    await act(async () => call.resolve({ request_id: call.id, normalized_query: call.query, summaries: ids.map(summary), next_cursor: more ? { normalized_query: call.query, upper_id: "3", last_captured_at_ms: 1, last_id: ids[ids.length - 1] } : null }));
+    await act(async () => call.resolve({ request_id: call.id, normalized_query: call.query, summaries: ids.map(summary), next_cursor: more ? { normalized_query: call.query, upper_id: "3", last_captured_at_ms: 1, favorites_only: false, last_id: ids[ids.length - 1] } : null }));
   }
   return { bridge, calls, hide, reply };
 }

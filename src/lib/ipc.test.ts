@@ -435,7 +435,7 @@ describe("7.2 response DTOs", () => {
           omitted_format_count: 0,
           payload_bytes: 4,
           source_process: null,
-          source_confidence: "unknown",
+          source_confidence: "unknown", favorited: false,
         };
         value.summaries = Array.from({ length: n }, () => ({ ...summary }));
         delete value.summaries_count;
@@ -460,7 +460,7 @@ describe("7.2 response DTOs", () => {
       omitted_format_count: 0,
       payload_bytes: 4,
       source_process: longSource,
-      source_confidence: "unknown",
+      source_confidence: "unknown", favorited: false,
     }));
     const result = parseListClipsResult({
       request_id: "r1",

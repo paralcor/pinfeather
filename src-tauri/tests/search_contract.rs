@@ -290,7 +290,7 @@ fn boundary_inputs_stay_invalid_input() {
     assert_eq!(cursor.normalized_query, "命中");
     // Cross-query cursor reuse is rejected at the request parser.
     let crossed =
-        ListClipsRequest { request_id: "x".into(), query: "别的".into(), limit: 1, cursor: Some(cursor) };
+        ListClipsRequest { favorites_only: false, request_id: "x".into(), query: "别的".into(), limit: 1, cursor: Some(cursor) };
     assert_eq!(store.list_recent(&crossed).unwrap_err().code, ErrorCode::InvalidInput);
     for (upper, last, at) in [
         ("0", "1", 1),
@@ -303,10 +303,12 @@ fn boundary_inputs_stay_invalid_input() {
         ("5", "1", -1),
     ] {
         let bad = ListClipsRequest {
+            favorites_only: false,
             request_id: "x".into(),
             query: "命中".into(),
             limit: 1,
             cursor: Some(ListCursor {
+                favorites_only: false,
                 normalized_query: "命中".into(),
                 upper_id: upper.into(),
                 last_captured_at_ms: at,
@@ -316,11 +318,11 @@ fn boundary_inputs_stay_invalid_input() {
         assert_eq!(store.list_recent(&bad).unwrap_err().code, ErrorCode::InvalidInput, "{upper}/{last}/{at}");
     }
     for limit in [0, 101] {
-        let bad = ListClipsRequest { request_id: "x".into(), query: "命中".into(), limit, cursor: None };
+        let bad = ListClipsRequest { favorites_only: false, request_id: "x".into(), query: "命中".into(), limit, cursor: None };
         assert_eq!(store.list_recent(&bad).unwrap_err().code, ErrorCode::InvalidInput, "limit {limit}");
     }
     for limit in [1, 100] {
-        let ok = ListClipsRequest { request_id: "x".into(), query: "命中".into(), limit, cursor: None };
+        let ok = ListClipsRequest { favorites_only: false, request_id: "x".into(), query: "命中".into(), limit, cursor: None };
         assert!(store.list_recent(&ok).is_ok(), "limit {limit}");
     }
     let max = "x".repeat(256);
@@ -330,9 +332,9 @@ fn boundary_inputs_stay_invalid_input() {
         parse_list_clips_request(&json!({"request_id": "x", "query": over, "limit": 1})).unwrap_err().code,
         ErrorCode::InvalidInput
     );
-    let over_request = ListClipsRequest { request_id: "x".into(), query: over, limit: 1, cursor: None };
+    let over_request = ListClipsRequest { favorites_only: false, request_id: "x".into(), query: over, limit: 1, cursor: None };
     assert_eq!(store.list_recent(&over_request).unwrap_err().code, ErrorCode::InvalidInput);
-    let bad_id = ListClipsRequest { request_id: String::new(), query: "命中".into(), limit: 1, cursor: None };
+    let bad_id = ListClipsRequest { favorites_only: false, request_id: String::new(), query: "命中".into(), limit: 1, cursor: None };
     assert_eq!(store.list_recent(&bad_id).unwrap_err().code, ErrorCode::InvalidInput);
 }
 
