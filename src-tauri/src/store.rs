@@ -3,7 +3,7 @@
 use crate::contracts::{
     ContractError, ContractResult, ErrorCode, HistoryUsage, JS_SAFE_INTEGER_MAX,
     MAX_HISTORY_ITEMS, MAX_HISTORY_PAYLOAD_BYTES, MAX_PAYLOAD_TOTAL_BYTES, MAX_PNG_BYTES,
-    MAX_PREVIEW_SCALARS, MAX_TEXT_FORMAT_BYTES,
+    MAX_PREVIEW_SCALARS, MAX_TEXT_FORMAT_BYTES, MIN_MERGE_CLIP_IDS, MAX_MERGE_CLIP_IDS,
 };
 use rusqlite::{params, Connection, OpenFlags, OptionalExtension, TransactionBehavior};
 use std::collections::BTreeSet;
@@ -78,6 +78,13 @@ pub struct StoredClip {
     pub text_full: Option<String>,
     pub preview: String,
     pub payload_bytes: i64,
+}
+
+#[derive(Debug)]
+pub enum MergedTextError {
+    NotFound(i64),
+    InvalidInput,
+    Storage(ContractError),
 }
 
 /// Construct and use on the dedicated storage thread. No connection or SQL is
@@ -489,6 +496,51 @@ impl Store {
         Ok(Some(StoredClip { clip_id, snapshot: Snapshot { capture_id,captured_at_ms,source_process,source_confidence,omitted_formats,payloads },text_full,preview,payload_bytes }))
     }
 
+    pub fn get_merged_utf16_text(&self, clip_ids: &[i64]) -> Result<Vec<u8>, MergedTextError> {
+        use MergedTextError::{InvalidInput, NotFound, Storage};
+        const SEPARATOR: [u8; 8] = [b'\r', 0, b'\n', 0, b'\r', 0, b'\n', 0];
+        if !(MIN_MERGE_CLIP_IDS..=MAX_MERGE_CLIP_IDS).contains(&clip_ids.len()) {
+            return Err(InvalidInput);
+        }
+        let sql = |error| Storage(sql_error(error));
+        let tx = self.conn.unchecked_transaction().map_err(sql)?;
+        let mut parts = Vec::with_capacity(clip_ids.len());
+        let mut total = (clip_ids.len() - 1) * SEPARATOR.len() + 2;
+        {
+            let mut statement = tx.prepare(
+                "SELECT CASE WHEN length(p.data) <= ?2 THEN p.data END
+                 FROM clips c LEFT JOIN payloads p ON c.id = p.clip_id AND p.format_name = 'CF_UNICODETEXT'
+                 WHERE c.id = ?1",
+            ).map_err(sql)?;
+            for &id in clip_ids {
+                let mut rows = statement.query(params![id, MAX_TEXT_FORMAT_BYTES as i64]).map_err(sql)?;
+                let row = rows.next().map_err(sql)?.ok_or(NotFound(id))?;
+                let data = row.get_ref(0).map_err(sql)?.as_blob().map_err(|_| InvalidInput)?;
+                if data.len() % 2 != 0 {
+                    return Err(InvalidInput);
+                }
+                let units = || data.chunks_exact(2).map(|pair| u16::from_le_bytes([pair[0], pair[1]]));
+                let count = units().position(|unit| unit == 0).ok_or(InvalidInput)?;
+                let bytes = count * 2;
+                total += bytes;
+                if total > MAX_TEXT_FORMAT_BYTES || char::decode_utf16(units().take(count)).any(|unit| unit.is_err()) {
+                    return Err(InvalidInput);
+                }
+                parts.push(data[..bytes].to_vec());
+            }
+        }
+        tx.commit().map_err(sql)?;
+        let mut data = Vec::with_capacity(total);
+        for (index, part) in parts.into_iter().enumerate() {
+            if index != 0 { data.extend_from_slice(&SEPARATOR); }
+            data.extend(part);
+        }
+        data.extend_from_slice(&[0, 0]);
+        let payload = Payload { format_name: "CF_UNICODETEXT".into(), data };
+        crate::clipboard::capture::validate_payloads(std::slice::from_ref(&payload)).map_err(|_| InvalidInput)?;
+        Ok(payload.data)
+    }
+
     pub(crate) fn get_png(&self, clip_id: i64) -> ContractResult<Vec<u8>> {
         let data: Option<Option<Vec<u8>>> = self.conn.query_row(
             "SELECT CASE WHEN length(p.data) <= ?2 THEN p.data END
@@ -612,6 +664,50 @@ mod tests {
                 Payload { format_name: "HTML Format".into(), data: b"<b>A</b>".to_vec() },
             ],
         }
+    }
+
+    fn merged_entry(store: &mut Store, name: &str, format: &str, data: Vec<u8>) -> i64 {
+        let mut entry = sample(name);
+        entry.payloads = vec![Payload { format_name: format.into(), data }];
+        store.insert(&entry).unwrap().clip_id
+    }
+
+    fn utf16(text: &str) -> Vec<u8> {
+        text.encode_utf16().chain([0]).flat_map(u16::to_le_bytes).collect()
+    }
+
+    #[test]
+    fn merged_text_reads_unicode_only_in_requested_order_and_keeps_empty_slots() {
+        let mut store = Store::open_in_memory().unwrap();
+        let a = store.insert(&sample("first")).unwrap().clip_id;
+        let empty = merged_entry(&mut store, "empty", "CF_UNICODETEXT", utf16(""));
+        let mut padded = utf16("B\n😀");
+        padded.extend([7, 8, 0, 216]);
+        let b = merged_entry(&mut store, "last", "CF_UNICODETEXT", padded);
+        let png = merged_entry(&mut store, "png", "PNG", b"\x89PNG\r\n\x1a\n".to_vec());
+        let html = merged_entry(&mut store, "html", "HTML Format", b"<p>x</p>".to_vec());
+        assert_eq!(store.get_merged_utf16_text(&[b, empty, a]).unwrap(), utf16("B\n😀\r\n\r\n\r\n\r\nA"));
+        assert!(matches!(store.get_merged_utf16_text(&[a, 99, 98]), Err(MergedTextError::NotFound(99))));
+        for unsupported in [png, html] {
+            assert!(matches!(store.get_merged_utf16_text(&[a, unsupported]), Err(MergedTextError::InvalidInput)));
+        }
+        assert!(store.conn.is_autocommit());
+    }
+
+    #[test]
+    fn merged_text_rejects_malformed_unicode_and_enforces_exact_byte_limit() {
+        let mut store = Store::open_in_memory().unwrap();
+        let a = merged_entry(&mut store, "limit", "CF_UNICODETEXT", utf16(&"x".repeat((MAX_TEXT_FORMAT_BYTES - 10) / 2)));
+        let b = merged_entry(&mut store, "second", "CF_UNICODETEXT", utf16(""));
+        let exact = store.get_merged_utf16_text(&[a, b]).unwrap();
+        assert_eq!(exact.len(), MAX_TEXT_FORMAT_BYTES);
+        assert_eq!(&exact[exact.len() - 10..], utf16("\r\n\r\n"));
+        for malformed in [utf16("x"), vec![0], vec![b'A', 0], vec![0, 216, 0, 0], vec![0; MAX_TEXT_FORMAT_BYTES + 2]] {
+            store.conn.execute("UPDATE payloads SET byte_size = ?1, data = ?2 WHERE clip_id = ?3",
+                params![malformed.len() as i64, malformed, b]).unwrap();
+            assert!(matches!(store.get_merged_utf16_text(&[a, b]), Err(MergedTextError::InvalidInput)));
+        }
+        assert!(store.conn.is_autocommit());
     }
 
     fn assert_empty_and_consistent(store: &Store) {

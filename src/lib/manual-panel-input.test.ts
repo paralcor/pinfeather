@@ -47,6 +47,19 @@ describe("C independent side-effect receipts", () => {
     expect(input.keyUp(event("Escape","Enter"),copy)).toBeNull();
     input.keyDown(event(),copy); expect(input.keyUp(event(),copy)).toBe("copy");
   });
+  it("allows a fresh browse copy after an anonymous IME confirmation is physically released", () => {
+    const input = new ManualPanelInput();
+    input.compositionStart({ value: "yang", start: 0, end: 4 });
+    input.keyDown(event("Process", "", { keyCode: 229 }), null);
+
+    // Enter browse with the pointer while search still owns the composition.
+    input.invalidate();
+    expect(input.keyUp(event(), copy)).toBeNull();
+    expect(input.composingSearch).toBe(true);
+
+    input.keyDown(event(), copy, undefined, true);
+    expect(input.keyUp(event(), copy)).toBe("copy");
+  });
   it("keeps other held keys and superseded candidate releases from authorizing copy", () => {
     const input=new ManualPanelInput(); input.keyDown(event("Process","KeyG",{isComposing:true}),null);
     input.keyDown(event(),copy); expect(input.keyUp(event(),copy)).toBeNull();
@@ -167,4 +180,22 @@ describe("C independent side-effect receipts", () => {
     expect(input.keyUp(event(), copy)).toBeNull();
     expect(input.keyDown(down, null, query)).toBe(true);
   });
+});
+
+it.each([["Enter", "Enter"], [" ", "Space"]])("rejects an unmarked %j during an active search composition", (key, code) => {
+  const input = new ManualPanelInput(), press = event(key, code);
+  const merge: PanelIntent = { action: "copy-merged", target, context: "1:merge:2:2,1" };
+  input.compositionStart({ value: "yang", start: 0, end: 4 });
+  input.keyDown(press, merge);
+  expect(input.keyUp(press, merge)).toBeNull();
+  input.compositionEnd("样");
+  input.keyDown(press, merge);
+  expect(input.keyUp(press, merge)).toBe("copy-merged");
+});
+
+it("requires the same merge action target ID across a gesture", () => {
+  const input = new ManualPanelInput(), press = event();
+  const move: PanelIntent = { action: "merge-up", target, context: "merge", clipId: "2" };
+  input.keyDown(press, move);
+  expect(input.keyUp(press, { ...move, clipId: "1" })).toBeNull();
 });

@@ -1,10 +1,10 @@
 // @vitest-environment jsdom
-import { act, cleanup, fireEvent, render, screen, waitFor } from "@testing-library/react";
+import { act, cleanup, fireEvent, render, screen, waitFor, within } from "@testing-library/react";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import App from "./App";
 import ManualPanel from "./ManualPanel";
 import type { DesktopBridge, ManualPanelControl } from "./lib/desktop";
-import type { CopyClipTextResult, ManualPanelSnapshot, StatusResult } from "./lib/ipc";
+import type { ClipSummary, CopyClipTextResult, CopyMergedTextResult, ManualPanelSnapshot, StatusResult } from "./lib/ipc";
 afterEach(cleanup);
 const a = "a".repeat(32), b = "b".repeat(32);
 function fixture() {
@@ -564,4 +564,133 @@ it("guards favorite gestures against IME and cross-window intent changes while r
   const { requestId, clipId, resolve } = f.writes[0];
   await act(async () => resolve({ request_id: requestId, clip_id: clipId, outcome: "copied", reason: null }));
   expect(f.hide).toHaveBeenCalledExactlyOnceWith(true);
+});
+
+describe("ordered merge in the quick panel", () => {
+  function mergeFixture() {
+    const f = fixture();
+    const rows = ["1", "2", "3", "4"].map((id): ClipSummary => ({
+      id, captured_at_ms: 1, kind: id === "3" ? "png" : "text", preview: id === "2" ? "" : "摘要" + id,
+      format_names: id === "3" ? ["PNG"] : id === "4" ? ["HTML Format"] : ["CF_UNICODETEXT"],
+      omitted_format_count: 0, payload_bytes: 8, source_process: null, source_confidence: "unknown", favorited: id === "2",
+    }));
+    vi.mocked(f.bridge.list).mockImplementation(async (request_id, _, query = "", favorites = false) => ({
+      request_id, normalized_query: query, next_cursor: null,
+      summaries: rows.filter(row => (!favorites || row.favorited) && (!query || row.id === query)),
+    }));
+    const copy = vi.fn(async (request_id: string, clip_ids: string[]): Promise<CopyMergedTextResult> => ({
+      request_id, clip_ids, outcome: "copied", reason: null, missing_clip_id: null,
+    }));
+    f.bridge.copyMergedText = copy;
+    return { ...f, copy };
+  }
+
+  const button = (name: string) => screen.getByRole<HTMLButtonElement>("button", { name });
+  const mergeRegion = () => within(screen.getByRole("region", { name: "已选合并" }));
+  const search = () => screen.getByLabelText("搜索历史正文");
+  const row = (id: string) => within(document.querySelector<HTMLElement>('[data-history-id="' + id + '"]')!);
+  const query = (value: string) => fireEvent.change(search(), { target: { value } });
+
+  it("toggles merge with Enter and Space and hides on Escape from the focused row button", async () => {
+    const f = mergeFixture();
+    await panel(f);
+    browse();
+    const toggle = row("1").getByRole("button", { name: "加入合并" });
+    keyGesture(toggle, "Enter");
+    expect(row("1").getByRole("button", { name: /已选 #1/ })).toBe(toggle);
+    keyGesture(toggle, " ");
+    expect(row("1").getByRole("button", { name: "加入合并" })).toBe(toggle);
+    expect(f.hide).not.toHaveBeenCalled();
+    keyGesture(toggle, "Escape");
+    expect(f.hide.mock.calls).toEqual([[]]);
+    expect(f.writes).toHaveLength(0);
+  });
+
+  it("identifies the deleted middle entry when all selected previews match", async () => {
+    const f = mergeFixture();
+    const preview = "相".repeat(200);
+    const summaries: ClipSummary[] = ["41", "73", "92"].map(id => ({
+      id, captured_at_ms: 1, kind: "text", preview,
+      format_names: ["CF_UNICODETEXT"], omitted_format_count: 0, payload_bytes: 400,
+      source_process: null, source_confidence: "unknown", favorited: false,
+    }));
+    vi.mocked(f.bridge.list).mockImplementation(async request_id => ({
+      request_id, normalized_query: "", summaries: [...summaries], next_cursor: null,
+    }));
+    f.copy.mockImplementationOnce(async (request_id, clip_ids) => ({
+      request_id, clip_ids, outcome: "not_written", reason: "not_found",
+      missing_clip_id: clip_ids.find(id => !summaries.some(item => item.id === id)) ?? null,
+    }));
+    render(<App bridge={f.bridge} panel={{ hide: f.hide }} />);
+    await screen.findAllByText(preview);
+    for (const id of ["41", "73", "92"]) pointerClick(row(id).getByRole("button", { name: "加入合并" }));
+    summaries.splice(1, 1);
+    pointerClick(button("合并复制（3 条）"));
+    await screen.findByText("未执行合并复制：条目 #73 已不存在，请从已选列表中移出后重试。");
+
+    const items = mergeRegion().getAllByRole("listitem");
+    expect(within(items[0]).getByText("#41")).toBeTruthy();
+    expect(within(items[1]).getByText("#73")).toBeTruthy();
+    expect(within(items[2]).getByText("#92")).toBeTruthy();
+    expect(mergeRegion().getAllByText("已不存在")).toEqual([within(items[1]).getByText("已不存在")]);
+    pointerClick(within(items[1]).getByRole("button", { name: "移出第 2 条" }));
+    expect(mergeRegion().queryByText("已不存在")).toBeNull();
+    expect(mergeRegion().getAllByRole("listitem")).toHaveLength(2);
+  });
+
+  it("keeps list Space separate from preview and copies across search and favorites with zero results", async () => {
+    const f = mergeFixture();
+    await panel(f);
+    expect(row("3").getByRole<HTMLButtonElement>("button", { name: "仅支持文本" }).disabled).toBe(true);
+    expect(row("4").getByRole<HTMLButtonElement>("button", { name: "仅支持文本" }).disabled).toBe(true);
+    const preview = row("1").getByRole("button", { name: "查看正文" });
+    pointerClick(preview);
+    const list = screen.getByRole("list", { name: "历史条目" });
+    keyGesture(list, " ");
+    expect(row("1").getByRole("button", { name: /已选 #1/ })).toBeTruthy();
+    expect(f.writes).toHaveLength(0);
+    expect(button("合并复制（1 条）").disabled).toBe(true);
+    query("2");
+    fireEvent.click(button("只看收藏"));
+    await waitFor(() => expect(row("2").getByRole("button", { name: "加入合并" })).toBeTruthy());
+    pointerClick(row("2").getByRole("button", { name: "加入合并" }));
+    expect(mergeRegion().getAllByRole("listitem").map(item => item.textContent)).toEqual([
+      expect.stringContaining("摘要1"), expect.stringContaining("（空文本）"),
+    ]);
+    pointerClick(mergeRegion().getByRole("button", { name: "上移第 2 条" }));
+    expect(mergeRegion().getAllByRole("listitem")[0].textContent).toContain("（空文本）");
+    pointerClick(mergeRegion().getByRole("button", { name: "下移第 1 条" }));
+    expect(mergeRegion().getAllByRole("listitem")[0].textContent).toContain("摘要1");
+    pointerClick(mergeRegion().getByRole("button", { name: "下移第 1 条" }));
+    query("missing");
+    await screen.findByText("没有匹配的收藏。");
+    expect(button("合并复制（2 条）").disabled).toBe(false);
+    pointerClick(button("合并复制（2 条）"));
+    await screen.findByText("已合并复制 2 条正文，可手动粘贴。");
+    expect(f.copy).toHaveBeenCalledExactlyOnceWith(expect.any(String), ["2", "1"]);
+    expect(f.hide).not.toHaveBeenCalled();
+    pointerClick(mergeRegion().getByRole("button", { name: "移出第 1 条" }));
+    expect(mergeRegion().getAllByRole("listitem")).toHaveLength(1);
+    pointerClick(button("清空已选"));
+    expect(screen.queryByRole("region", { name: "已选合并" })).toBeNull();
+  });
+
+  it("blocks IME confirmation during composition and reports a deleted entry for explicit removal", async () => {
+    const f = mergeFixture();
+    f.copy.mockImplementationOnce(async (request_id, clip_ids) => ({
+      request_id, clip_ids, outcome: "not_written", reason: "not_found", missing_clip_id: "2",
+    }));
+    await panel(f);
+    for (const id of ["1", "2"]) pointerClick(row(id).getByRole("button", { name: "加入合并" }));
+    const copy = button("合并复制（2 条）");
+    fireEvent.compositionStart(search());
+    keyGesture(copy, "Enter");
+    keyGesture(copy, " ");
+    expect(f.copy).not.toHaveBeenCalled();
+    fireEvent.compositionEnd(search(), { data: "" });
+    keyGesture(copy, "Enter");
+    await screen.findByText("未执行合并复制：条目 #2 已不存在，请从已选列表中移出后重试。");
+    expect(f.copy).toHaveBeenCalledTimes(1);
+    expect(f.hide).not.toHaveBeenCalled();
+  });
 });

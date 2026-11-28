@@ -177,3 +177,47 @@ it("rejects invalid text requests and responses without inventing text", async (
   mocks.invoke.mockRejectedValue({ code: "not_found", message: "clip text not found", retryable: false });
   await expect(nativeBridge.getText("t", "1", 0)).rejects.toThrow();
 });
+
+it("invokes merged copy only through the panel and rejects invalid or mismatched receipts", async () => {
+  const session_id = "a".repeat(32);
+  const panel = nativePanelControl.history(session_id);
+  expect(nativeBridge.copyMergedText).toBeUndefined();
+  const request = { request_id: "merge", clip_ids: ["2", "1"] };
+  const result = { ...request, outcome: "copied", reason: null, missing_clip_id: null };
+  mocks.invoke.mockResolvedValueOnce({ session_id, result });
+  expect(await panel.copyMergedText!("merge", ["2", "1"])).toEqual(result);
+  expect(mocks.invoke).toHaveBeenLastCalledWith("copy_manual_panel_merged_text", { request: { session_id, request } });
+  for (const bad of [
+    { session_id: "b".repeat(32), result },
+    { session_id, result: { ...result, clip_ids: ["1", "2"] } },
+    { session_id, result: { ...result, request_id: "other" } },
+    { session_id, result, extra: true },
+  ]) {
+    mocks.invoke.mockResolvedValueOnce(bad);
+    expect(await panel.copyMergedText!("merge", ["2", "1"])).toMatchObject({ outcome: "unknown", reason: "protocol_error" });
+  }
+  mocks.invoke.mockRejectedValueOnce(new Error("transport closed"));
+  expect(await panel.copyMergedText!("merge", ["2", "1"])).toMatchObject({ outcome: "unknown" });
+  await expect(panel.copyMergedText!("merge", ["2", "2"])).rejects.toThrow();
+  expect(mocks.invoke).toHaveBeenCalledTimes(6);
+});
+
+it("shares the physical panel copy permit between merged, text and image across sessions", async () => {
+  const session_id = "a".repeat(32);
+  const old = nativePanelControl.history(session_id);
+  const fresh = nativePanelControl.history("b".repeat(32));
+  let complete!: (reply: unknown) => void;
+  mocks.invoke.mockImplementationOnce(() => new Promise(resolve => { complete = resolve; }));
+  const write = old.copyMergedText!("merge", ["2", "1"]);
+  expect(await fresh.copyText!("text", "1")).toMatchObject({ outcome: "not_written", reason: "busy" });
+  expect(await fresh.copyPng!("png", "1")).toMatchObject({ outcome: "not_written", reason: "busy" });
+  expect(mocks.invoke).toHaveBeenCalledTimes(1);
+  complete({ session_id, result: { request_id: "merge", clip_ids: ["2", "1"], outcome: "copied", reason: null, missing_clip_id: null } });
+  expect((await write).outcome).toBe("copied");
+  mocks.invoke.mockImplementationOnce(() => new Promise(resolve => { complete = resolve; }));
+  const image = fresh.copyPng!("png", "1");
+  expect(await old.copyMergedText!("merge-2", ["1", "2"])).toMatchObject({ outcome: "not_written", reason: "busy" });
+  complete(null);
+  expect((await image).outcome).toBe("unknown");
+  expect(mocks.invoke).toHaveBeenCalledTimes(2);
+});

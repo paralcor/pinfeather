@@ -1,14 +1,64 @@
 //! E06 runtime ownership: the capture thread owns native capture resources;
 //! the storage thread creates and owns its SQLite connection.
 use std::{path::{Path,PathBuf},sync::{Arc,Mutex,Condvar,OnceLock,mpsc::{self,SyncSender,Receiver}},thread::JoinHandle,time::{Duration,Instant}};
-use crate::{contracts::*,runtime::{CaptureState,CapturePipeline,Admission,Notice},store::Store};
+use crate::{contracts::*,runtime::{CaptureState,CapturePipeline,Admission,Notice},store::{MergedTextError, Store}};
 use crate::clipboard::origin::{WriteApi,WriteFailure,WriteFormat};
 use crate::startup_capture::{Preference, StartupCapture, StartupCaptureSnapshot, CHANGED_EVENT};
 use std::sync::atomic::{AtomicBool,AtomicU64,Ordering};
 
 struct WritePermit(Arc<AtomicBool>);
 impl Drop for WritePermit {fn drop(&mut self){self.0.store(false,Ordering::Release);}}
-type WriteReply=Result<u64,WriteFailure>;
+enum CopySource {
+    Single(i64, WriteFormat),
+    MergedText(Vec<i64>),
+}
+
+#[derive(Debug)]
+struct CopyFailure {
+    error: ContractError,
+    may_have_written: bool,
+    missing_clip_id: Option<i64>,
+}
+
+impl From<ContractError> for CopyFailure {
+    fn from(error: ContractError) -> Self { Self { error, may_have_written: false, missing_clip_id: None } }
+}
+
+impl From<WriteFailure> for CopyFailure {
+    fn from(failure: WriteFailure) -> Self {
+        Self { error: failure.error, may_have_written: failure.may_have_written, missing_clip_id: None }
+    }
+}
+
+impl From<MergedTextError> for CopyFailure {
+    fn from(error: MergedTextError) -> Self {
+        match error {
+            MergedTextError::NotFound(id) => Self {
+                missing_clip_id: Some(id),
+                ..ContractError::new(ErrorCode::NotFound, "clip not found").into()
+            },
+            MergedTextError::InvalidInput => ContractError::invalid_input("invalid merged clipboard text").into(),
+            MergedTextError::Storage(error) => error.into(),
+        }
+    }
+}
+
+impl CopyFailure {
+    fn outcome(&self) -> CopyOutcome {
+        if self.may_have_written { CopyOutcome::Unknown } else { CopyOutcome::NotWritten }
+    }
+}
+
+type WriteReply = Result<u64, CopyFailure>;
+const COPY_BUDGET: Duration = Duration::from_secs(3);
+
+fn wait_for_copy(reply: Receiver<WriteReply>, wait: Duration) -> WriteReply {
+    reply.recv_timeout(wait).unwrap_or_else(|_| Err(CopyFailure {
+        error: ContractError::new(ErrorCode::Timeout, "clipboard write result is unknown"),
+        may_have_written: true,
+        missing_clip_id: None,
+    }))
+}
 struct CopyOwner {owner:Option<usize>,borrowers:usize}
 struct CopyOwnerLease<'a> {shared:&'a SharedRuntime,owner:usize}
 impl Drop for CopyOwnerLease<'_> {
@@ -69,7 +119,7 @@ enum Query {
     Manage(HistoryManagement,PathBuf,Instant,SyncSender<ContractResult<HistoryManagementResult>>),
     SetFavorite(SetFavoriteRequest, Instant, SyncSender<ContractResult<SetFavoriteResult>>),
     List(ListClipsRequest,SyncSender<ContractResult<ListClipsResult>>),
-    Copy(i64,WriteFormat,Instant,WritePermit,SyncSender<WriteReply>),
+    Copy(CopySource,Instant,WritePermit,SyncSender<WriteReply>),
     Text(GetClipTextRequest,SyncSender<ContractResult<GetClipTextResult>>),
     Png(i64, Instant, SyncSender<ContractResult<Vec<u8>>>),
     #[cfg(feature="test-fixtures")]
@@ -646,16 +696,16 @@ impl HostRuntime {
         if clip_id<=0{return Err(ContractError::invalid_input("invalid clip id"));}
         self.copy_with_budget(clip_id,WriteFormat::Text,Instant::now()+Duration::from_secs(3),Duration::from_secs(3)).map_err(|failure|failure.error)
     }
-    fn queue_copy(&self,id:i64,format:WriteFormat,deadline:Instant)->Result<Receiver<WriteReply>,WriteFailure>{
+    fn queue_copy(&self,source:CopySource,deadline:Instant)->Result<Receiver<WriteReply>,CopyFailure>{
         if self.shared.copy_stopping.load(Ordering::Acquire){return Err(ContractError::new(ErrorCode::Busy,"runtime is stopping").into());}
         if self.shared.copy_busy.compare_exchange(false,true,Ordering::AcqRel,Ordering::Acquire).is_err(){return Err(ContractError::new(ErrorCode::Busy,"clipboard write is pending").into());}
         let permit=WritePermit(self.shared.copy_busy.clone());
         let(tx,rx)=mpsc::sync_channel(1);
-        self.queries.try_send(Query::Copy(id,format,deadline,permit,tx)).map_err(|_|WriteFailure::from(ContractError::new(ErrorCode::Busy,"history query queue is full")))?;
+        self.queries.try_send(Query::Copy(source,deadline,permit,tx)).map_err(|_|CopyFailure::from(ContractError::new(ErrorCode::Busy,"history query queue is full")))?;
         self.shared.wake.notify_all();Ok(rx)
     }
     fn copy_with_budget(&self,id:i64,format:WriteFormat,deadline:Instant,wait:Duration)->WriteReply{
-        self.queue_copy(id,format,deadline)?.recv_timeout(wait).unwrap_or_else(|_|Err(WriteFailure{error:ContractError::new(ErrorCode::Timeout,"clipboard write result is unknown"),may_have_written:true}))
+        wait_for_copy(self.queue_copy(CopySource::Single(id, format), deadline)?, wait)
     }
     pub fn copy_clip_text(&self,request:CopyClipTextRequest)->ContractResult<CopyClipTextResult>{
         self.copy_clip(request, WriteFormat::Text)
@@ -670,14 +720,29 @@ impl HostRuntime {
     }
     pub(crate) fn copy_panel(&self,panel:&crate::manual_panel::PanelSessions,session:&str,request:CopyClipTextRequest,format:WriteFormat)->ContractResult<CopyClipTextResult>{
         let request=parse_copy_clip_text_request(&serde_json::json!({"request_id":request.request_id,"clip_id":request.clip_id}))?;
-        // Linearization point: hide/new-session cannot pass between validation and try_send.
-        let admitted=panel.admit(session,||self.queue_copy(positive_id_as_i64(&request.clip_id),format,Instant::now()+Duration::from_secs(3)));
-        let result=match admitted {
-            Err(error)=>Err(error.into()),
-            Ok(Err(error))=>Err(error),
-            Ok(Ok(reply))=>reply.recv_timeout(Duration::from_secs(3)).unwrap_or_else(|_|Err(WriteFailure{error:ContractError::new(ErrorCode::Timeout,"clipboard write result is unknown"),may_have_written:true})),
-        };
-        Ok(copy_result(&request,result))
+        let source = CopySource::Single(positive_id_as_i64(&request.clip_id), format);
+        Ok(copy_result(&request, self.copy_panel_source(panel, session, source)))
+    }
+
+    pub(crate) fn copy_panel_merged_text(
+        &self, panel: &crate::manual_panel::PanelSessions, session: &str, request: CopyMergedTextRequest,
+    ) -> ContractResult<CopyMergedTextResult> {
+        let request = parse_copy_merged_text_request(&serde_json::json!({
+            "request_id": request.request_id, "clip_ids": request.clip_ids,
+        }))?;
+        let ids = request.clip_ids.iter().map(|id| positive_id_as_i64(id)).collect();
+        let result = self.copy_panel_source(panel, session, CopySource::MergedText(ids));
+        Ok(match result {
+            Ok(_) => CopyMergedTextResult::new(request, CopyOutcome::Copied, None, None),
+            Err(failure) => CopyMergedTextResult::new(request, failure.outcome(), Some(failure.error.code),
+                failure.missing_clip_id.map(|id| id.to_string())),
+        })
+    }
+
+    fn copy_panel_source(&self, panel: &crate::manual_panel::PanelSessions, session: &str, source: CopySource) -> WriteReply {
+        // Hide and session replacement share the lock held through queue admission.
+        let reply = panel.admit(session, || self.queue_copy(source, Instant::now() + COPY_BUDGET))??;
+        wait_for_copy(reply, COPY_BUDGET)
     }
     pub fn settings(&self)->SettingsSnapshot {
         let s=self.shared.state.lock().unwrap_or_else(|e|e.into_inner());
@@ -773,11 +838,11 @@ impl HostRuntime {
 fn copy_result(request:&CopyClipTextRequest,result:WriteReply)->CopyClipTextResult{
     match result{
         Ok(_)=>CopyClipTextResult::new(request,CopyOutcome::Copied,None),
-        Err(failure)=>CopyClipTextResult::new(request,if failure.may_have_written{CopyOutcome::Unknown}else{CopyOutcome::NotWritten},Some(failure.error.code)),
+        Err(failure)=>CopyClipTextResult::new(request,failure.outcome(),Some(failure.error.code)),
     }
 }
 
-fn execute_copy(shared:&SharedRuntime,store:&Option<Store>,id:i64,format:WriteFormat,deadline:Instant)->WriteReply{
+fn execute_copy(shared:&SharedRuntime,store:&Option<Store>,source:CopySource,deadline:Instant)->WriteReply{
     let before_write=||{
         if shared.copy_stopping.load(Ordering::Acquire){return Err(ContractError::new(ErrorCode::Busy,"runtime is stopping"));}
         if Instant::now()>=deadline{return Err(ContractError::new(ErrorCode::Timeout,"clipboard write expired"));}
@@ -792,19 +857,25 @@ fn execute_copy(shared:&SharedRuntime,store:&Option<Store>,id:i64,format:WriteFo
     let synthetic=false;
     if !shared.native_writes&&!synthetic{return Err(ContractError::new(ErrorCode::PermissionUnknown,"native clipboard writes are disabled in synthetic tests").into());}
     let store = store.as_ref().ok_or_else(unavailable)?;
-    let data = match format {
-        WriteFormat::Text => {
+    let (format, data) = match source {
+        CopySource::Single(id, WriteFormat::Text) => {
             let clip = store.get(id)?.ok_or_else(|| ContractError::new(ErrorCode::NotFound, "clip not found"))?;
             let text = clip.snapshot.payloads.into_iter().find(|payload| payload.format_name == "CF_UNICODETEXT")
                 .ok_or_else(|| ContractError::invalid_input("clip has no Unicode text"))?;
             crate::clipboard::capture::validate_payloads(std::slice::from_ref(&text))
                 .map_err(|_| ContractError::invalid_input("invalid clipboard text"))?;
-            text.data
+            (WriteFormat::Text, text.data)
         }
-        WriteFormat::Png => {
+        CopySource::Single(id, WriteFormat::Png) => {
             let data = store.get_png(id)?;
             crate::png_clip::validate(&data)?;
-            data
+            (WriteFormat::Png, data)
+        }
+        CopySource::MergedText(ids) => {
+            if shared.state.lock().unwrap_or_else(|e| e.into_inner()).storage_failed {
+                return Err(unavailable().into());
+            }
+            (WriteFormat::Text, store.get_merged_utf16_text(&ids)?)
         }
     };
     before_write()?;
@@ -830,7 +901,7 @@ fn execute_copy(shared:&SharedRuntime,store:&Option<Store>,id:i64,format:WriteFo
     drop(writer);
     shared.state.lock().unwrap_or_else(|e|e.into_inner()).origins.finish(counter,attempt.sequence);
     drop(owner);
-    attempt.result
+    attempt.result.map_err(CopyFailure::from)
 }
 fn finish_thread(slot:&Mutex<Option<JoinHandle<()>>>,deadline:Instant,cleanup_failed:&std::sync::atomic::AtomicBool)->ContractResult<()> {
     use std::os::windows::io::AsRawHandle;
@@ -958,8 +1029,8 @@ fn storage_loop(shared:&SharedRuntime,store:&mut Option<Store>,queries:Receiver<
                 };
                 let _ = reply.send(result);
             }
-            Ok(Query::Copy(id,format,deadline,permit,reply))=>{
-                let result=execute_copy(shared,store,id,format,deadline);
+            Ok(Query::Copy(source,deadline,permit,reply))=>{
+                let result=execute_copy(shared,store,source,deadline);
                 drop(permit);let _=reply.send(result);shared.wake.notify_all();
             }
             #[cfg(feature="test-fixtures")]

@@ -257,6 +257,31 @@ pub async fn copy_manual_panel_png(
     Ok(PanelCopyResult { session_id, result })
 }
 
+#[derive(serde::Serialize)]
+pub struct PanelCopyMergedResult {
+    session_id: String,
+    result: CopyMergedTextResult,
+}
+
+#[tauri::command]
+pub async fn copy_manual_panel_merged_text(
+    window: tauri::WebviewWindow,
+    panel: tauri::State<'_, Arc<crate::manual_panel::PanelHost>>,
+    runtime: tauri::State<'_, Arc<HostRuntime>>,
+    request: serde_json::Value,
+) -> ContractResult<PanelCopyMergedResult> {
+    authorize_panel(&window)?;
+    let (session, request) = parse_panel_merged_copy(&request)?;
+    let panel = panel.inner().clone();
+    let runtime = runtime.inner().clone();
+    let session_id = session.clone();
+    let uncertain = CopyMergedTextResult::new(request.clone(), CopyOutcome::Unknown, Some(ErrorCode::CleanupFailed), None);
+    let result = tauri::async_runtime::spawn_blocking(move || {
+        runtime.copy_panel_merged_text(&panel.sessions, &session, request)
+    }).await.unwrap_or(Ok(uncertain))?;
+    Ok(PanelCopyMergedResult { session_id, result })
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -290,6 +315,30 @@ mod tests {
         assert!(runtime.set_startup_capture(enabled).unwrap().enabled);
         assert_eq!(events.load(Ordering::SeqCst), 1);
         runtime.shutdown(std::time::Duration::from_secs(1)).unwrap();
+    }
+
+    #[test]
+    fn merged_copy_requires_local_panel_and_strict_envelope() {
+        let local = tauri::Url::parse("http://tauri.localhost/").unwrap();
+        let external = tauri::Url::parse("https://example.invalid/").unwrap();
+        let envelope = serde_json::json!({
+            "session_id": "a".repeat(32),
+            "request": {"request_id":"merge","clip_ids":["2","1"]}
+        });
+        fn parse(label: &str, url: &tauri::Url, value: &serde_json::Value) -> ContractResult<(String, CopyMergedTextRequest)> {
+            validate_panel_caller(label, url)?;
+            parse_panel_merged_copy(value)
+        }
+        assert_eq!(parse("quick-panel", &local, &envelope).unwrap().1.clip_ids, ["2", "1"]);
+        for (caller, url) in [("main", &local), ("other", &local), ("quick-panel", &external)] {
+            assert_eq!(parse(caller, url, &envelope).unwrap_err().code, ErrorCode::PermissionUnknown);
+        }
+        let mut invalid = envelope.clone();
+        invalid["caller"] = serde_json::json!("quick-panel");
+        assert!(parse("quick-panel", &local, &invalid).is_err());
+        invalid = envelope;
+        invalid["session_id"] = serde_json::json!("forged");
+        assert!(parse("quick-panel", &local, &invalid).is_err());
     }
 
     #[test]

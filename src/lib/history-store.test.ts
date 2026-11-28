@@ -1,7 +1,7 @@
 import { afterEach, beforeEach, expect, it, vi } from "vitest";
 import { createHistoryModel } from "./history-store";
 import type { DesktopBridge } from "./desktop";
-import type { ClipSummary, GetClipTextResult, ListClipsResult, ListCursor, StatusResult } from "./ipc";
+import type { ClipSummary, CopyMergedTextResult, GetClipTextResult, ListClipsResult, ListCursor, StatusResult } from "./ipc";
 
 function deferred<T>() {
   let resolve!: (value: T) => void;
@@ -1664,5 +1664,223 @@ it("resumes an in-flight append after reconciling a missed favorite revision", a
   expect(model.store.getState().summaries.map(row => [row.id, row.favorited])).toEqual([
     ["3", true], ["2", true], ["1", false],
   ]);
+  stop();
+});
+
+it("keeps merge order through query, favorites and history refresh, and scopes receipts to the session", async () => {
+  const h = harness();
+  const pending = deferred<CopyMergedTextResult>();
+  const write = h.bridge.copyMergedText = vi.fn((_requestId: string, _clipIds: string[]) => pending.promise);
+  const single = h.bridge.copyText = vi.fn();
+  const png = h.bridge.copyPng = vi.fn();
+  const model = createHistoryModel(h.bridge);
+  const stop = model.start();
+  await settle();
+  const a = summary("1"), b = summary("2", "");
+  const first = h.listCalls.at(-1)!;
+  first.d.resolve(page(first.id, "", [a, b]));
+  await settle();
+  model.toggleMergeItem(b);
+  model.toggleMergeItem(a);
+  const identity = model.mergeIdentity();
+  model.setQuery("missing");
+  await vi.advanceTimersByTimeAsync(50);
+  let list = h.listCalls.at(-1)!;
+  list.d.resolve(page(list.id, "missing", []));
+  await settle();
+  model.setFavoritesOnly(true);
+  await vi.advanceTimersByTimeAsync(50);
+  list = h.listCalls.at(-1)!;
+  list.d.resolve(page(list.id, "missing", []));
+  await settle();
+  h.listeners.history_changed();
+  await settle();
+  list = h.listCalls.at(-1)!;
+  list.d.resolve(page(list.id, "missing", []));
+  await settle();
+  expect(model.mergeIdentity()).toBe(identity);
+  expect(model.store.getState().mergeItems.map(item => item.id)).toEqual(["2", "1"]);
+  const copying = model.copyMergedText();
+  expect(model.store.getState().copyBusy).toBe("merged");
+  await model.copyText();
+  await model.copyPng();
+  await model.copyMergedText();
+  expect(single).not.toHaveBeenCalled();
+  expect(png).not.toHaveBeenCalled();
+  expect(write).toHaveBeenCalledExactlyOnceWith(expect.any(String), ["2", "1"]);
+  model.moveMergeItem("1", -1);
+  model.setQuery("other");
+  const [request_id, clip_ids] = write.mock.calls[0];
+  pending.resolve({ request_id, clip_ids, outcome: "copied", reason: null, missing_clip_id: null });
+  await copying;
+  expect(model.store.getState().mergeItems.map(item => item.id)).toEqual(["1", "2"]);
+  model.setQuery("new query");
+  model.setFavoritesOnly(false);
+  expect(model.store.getState().mergeCopyMessage).toBe("已合并复制 2 条正文，可手动粘贴。");
+  stop();
+  expect(model.store.getState()).toMatchObject({ mergeItems: [], mergeRevision: 0, mergeCopyMessage: null, mergeError: null });
+});
+
+it("admits only Unicode text, bounds the queue and preview, and supports moving and removing by ID", async () => {
+  const h = harness();
+  const model = createHistoryModel(h.bridge);
+  const stop = model.start();
+  await settle();
+  for (const format_names of [["PNG"], ["HTML Format"]]) {
+    model.toggleMergeItem({ ...summary("22"), format_names });
+    expect(model.store.getState().mergeItems).toHaveLength(0);
+    expect(model.store.getState().mergeError).toMatch(/文本/);
+  }
+  for (let id = 1; id <= 21; id++) model.toggleMergeItem(summary(String(id), "😀".repeat(201)));
+  expect(model.store.getState().mergeItems).toHaveLength(20);
+  expect(model.store.getState().mergeItems[0].preview).toBe("😀".repeat(200));
+  expect(model.store.getState().mergeError).toMatch(/20/);
+  model.moveMergeItem("20", -1);
+  model.moveMergeItem("1", 1);
+  expect(model.store.getState().mergeItems.map(item => item.id).slice(0, 2)).toEqual(["2", "1"]);
+  expect(model.store.getState().mergeItems.map(item => item.id).slice(-2)).toEqual(["20", "19"]);
+  model.removeMergeItem("20");
+  model.toggleMergeItem(summary("1"));
+  expect(model.store.getState().mergeItems).toHaveLength(18);
+  model.clearMergeItems();
+  expect(model.store.getState().mergeItems).toEqual([]);
+  stop();
+});
+
+it("drops an unresolved merge receipt on restart and keeps physical copies serialized", async () => {
+  const h = harness();
+  const pending = deferred<CopyMergedTextResult>();
+  const write = h.bridge.copyMergedText = vi.fn((_requestId: string, _clipIds: string[]) => pending.promise);
+  const model = createHistoryModel(h.bridge);
+  const stop = model.start();
+  await settle();
+  model.toggleMergeItem(summary("1"));
+  model.toggleMergeItem(summary("2"));
+  const old = model.copyMergedText();
+  stop();
+
+  const stopAgain = model.start();
+  await settle();
+  expect(model.store.getState().mergeItems).toEqual([]);
+  model.toggleMergeItem(summary("3"));
+  model.toggleMergeItem(summary("4"));
+  await model.copyMergedText();
+  expect(write).toHaveBeenCalledTimes(1);
+  const [request_id, clip_ids] = write.mock.calls[0];
+  pending.resolve({ request_id, clip_ids, outcome: "copied", reason: null, missing_clip_id: null });
+  await old;
+  expect(model.store.getState()).toMatchObject({ copyBusy: false, mergeCopyMessage: null });
+  expect(model.canCopyMergedText()).toBe(true);
+  stopAgain();
+});
+
+it("clears the missing merge ID when retrying, removing the entry or clearing the queue", async () => {
+  const h = harness();
+  const a = summary("41"), missing = summary("73"), b = summary("92");
+  const write = h.bridge.copyMergedText = vi.fn(async (request_id, clip_ids): Promise<CopyMergedTextResult> => ({
+    request_id, clip_ids, outcome: "not_written", reason: "not_found", missing_clip_id: missing.id,
+  }));
+  const model = createHistoryModel(h.bridge);
+  const stop = model.start();
+  await settle();
+  for (const item of [a, missing, b]) model.toggleMergeItem(item);
+  await model.copyMergedText();
+  expect(model.store.getState().mergeMissingClipId).toBe(missing.id);
+
+  model.moveMergeItem(missing.id, -1);
+  expect(model.store.getState().mergeMissingClipId).toBe(missing.id);
+  const retry = model.copyMergedText();
+  expect(model.store.getState().mergeMissingClipId).toBeNull();
+  await retry;
+  expect(model.store.getState().mergeMissingClipId).toBe(missing.id);
+  model.removeMergeItem(missing.id);
+  expect(model.store.getState().mergeMissingClipId).toBeNull();
+
+  model.toggleMergeItem(missing);
+  const copying = model.copyMergedText();
+  model.clearMergeItems();
+  await copying;
+  expect(model.store.getState().mergeMissingClipId).toBeNull();
+  model.toggleMergeItem(a);
+  model.toggleMergeItem(missing);
+  await model.copyMergedText();
+  expect(model.store.getState().mergeMissingClipId).toBe(missing.id);
+  model.clearMergeItems();
+  expect(model.store.getState().mergeMissingClipId).toBeNull();
+  expect(write).toHaveBeenCalledTimes(4);
+  stop();
+});
+
+it.each(
+  (["merge first", "single first"] as const).flatMap(order => ([
+    ["text", "copied", null],
+    ["png", "copied", null],
+    ["text", "unknown", "timeout"],
+    ["text", "not_written", "busy"],
+  ] as const).map(([format, outcome, reason]) => ({ order, format, outcome, reason }))),
+)("keeps clipboard receipts current ($order, $format, $outcome)", async ({ order, format, outcome, reason }) => {
+  const h = harness();
+  const a = summary("1"), b = summary("2");
+  const image: ClipSummary = { ...summary("3"), kind: "png", format_names: ["PNG"] };
+  const singleResult = order === "merge first" ? { outcome, reason } : { outcome: "copied" as const, reason: null };
+  const mergeResult = order === "single first" ? { outcome, reason } : { outcome: "copied" as const, reason: null };
+  h.bridge.copyText = h.bridge.copyPng = vi.fn(async (request_id, clip_id) => ({ request_id, clip_id, ...singleResult }));
+  h.bridge.getPngPreview = vi.fn(async () => ({ width: 1, height: 1, sourceWidth: 1, sourceHeight: 1, rgba: new Uint8ClampedArray(4) }));
+  h.bridge.copyMergedText = vi.fn(async (request_id, clip_ids) => ({ request_id, clip_ids, ...mergeResult, missing_clip_id: null }));
+  const model = createHistoryModel(h.bridge);
+  const stop = model.start();
+  await settle();
+  const list = h.listCalls.at(-1)!;
+  list.d.resolve(page(list.id, "", [a, b, image]));
+  await settle();
+  model.toggleMergeItem(a);
+  model.toggleMergeItem(b);
+  const state = model.store.getState;
+  const merged = "已合并复制 2 条正文，可手动粘贴。";
+  const single = format === "png" ? "图片已复制，可手动粘贴。" : "已复制，可手动粘贴。";
+
+  if (order === "merge first") {
+    await model.copyMergedText();
+    expect(state().mergeCopyMessage).toBe(merged);
+  }
+  model.selectClip(format === "png" ? image.id : a.id);
+  await settle();
+  if (order === "merge first") expect(state().mergeCopyMessage).toBe(merged);
+  await (format === "png" ? model.copyPng() : model.copyText());
+
+  const laterReceipt = outcome === "unknown" ? "剪贴板可能已变化"
+    : outcome === "not_written" ? "未执行" : order === "merge first" ? single : merged;
+  if (order === "merge first") {
+    expect(state().copyMessage).toContain(laterReceipt);
+    expect(state().mergeCopyMessage).toBe(outcome === "not_written" ? merged : null);
+  } else {
+    expect(state().copyMessage).toBe(single);
+    await model.copyMergedText();
+    expect(state().mergeCopyMessage).toContain(laterReceipt);
+    expect(state().copyMessage).toBe(outcome === "not_written" ? single : null);
+  }
+  stop();
+});
+
+it.each([
+  ["not_written", "invalid_input", "合并正文超出 2 MiB 上限或包含非纯文本条目"],
+  ["not_written", "storage_unavailable", "历史存储暂不可用"],
+  ["not_written", "busy", "当前操作繁忙"],
+  ["not_written", "timeout", "请求在写入前已到期"],
+  ["not_written", "permission_unknown", "宿主未允许当前面板会话复制"],
+  ["unknown", "timeout", "剪贴板可能已变化"],
+] as const)("shows a dedicated %s/%s receipt without retrying", async (outcome, reason, message) => {
+  const h = harness();
+  const write = h.bridge.copyMergedText = vi.fn(async (request_id, clip_ids) => ({
+    request_id, clip_ids, outcome, reason, missing_clip_id: null,
+  }));
+  const model = createHistoryModel(h.bridge);
+  const stop = model.start();
+  await settle();
+  model.toggleMergeItem(summary("1"));
+  model.toggleMergeItem(summary("2"));
+  await model.copyMergedText();
+  expect(model.store.getState().mergeCopyMessage).toContain(message);
+  expect(write).toHaveBeenCalledTimes(1);
   stop();
 });

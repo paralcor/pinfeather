@@ -9,14 +9,19 @@ import type { SettingsControl } from "./lib/settings";
 import type { StartupCaptureControl } from "./lib/startup-capture";
 import { useResidency, type ResidencyControl } from "./lib/residency";
 import { useManualPanel } from "./lib/manual-panel-state";
-import { ManualPanelInput, isImeKey, type PanelAction, type PanelIntent } from "./lib/manual-panel-input";
+import { ManualPanelInput, isImeKey, isMergeAction, type PanelAction, type PanelIntent } from "./lib/manual-panel-input";
 import { canPauseWhileStarting, createHistoryModel, isDrainingCaptureQueue } from "./lib/history-store";
 import { normalizeQuery, type ClipSummary, type PngPreview } from "./lib/ipc";
 import { interactiveInput } from "./lib/measurement";
 
-function HistoryItem({ item, selected, disabled, onSelect }: { item: ClipSummary; selected: boolean; disabled: boolean; onSelect: (id: string) => void }) {
+function HistoryItem({ item, selected, disabled, onSelect, merge }: {
+  item: ClipSummary; selected: boolean; disabled: boolean; onSelect: (id: string) => void;
+  merge?: { index: number; disabled: boolean };
+}) {
   const date = new Date(item.captured_at_ms);
   const validTime = Number.isFinite(date.getTime());
+  const text = item.format_names.includes("CF_UNICODETEXT");
+  const previewButton = <button type="button" aria-pressed={selected} disabled={disabled} onClick={() => onSelect(item.id)}>{item.kind === "png" ? "查看图片" : "查看正文"}</button>;
   return (
     <li data-history-id={item.id}>
       <p className="preview">{item.preview || (item.kind === "png" ? "已保存 PNG 样本" : "已保存非文本内容")}</p>
@@ -27,7 +32,12 @@ function HistoryItem({ item, selected, disabled, onSelect }: { item: ClipSummary
         {item.favorited && <span>★ 已收藏</span>}
         <span>{item.source_confidence === "unknown" ? "来源未知" : "来源已核对"}</span>
       </p>
-      <button type="button" aria-pressed={selected} disabled={disabled} onClick={() => onSelect(item.id)}>{item.kind === "png" ? "查看图片" : "查看正文"}</button>
+      {merge ? <div className="history-row-actions">
+        {previewButton}
+        <button type="button" data-merge-action="toggle-merge" data-clip-id={item.id} aria-pressed={merge.index >= 0} disabled={merge.disabled || !text}>
+          {!text ? "仅支持文本" : merge.index < 0 ? "加入合并" : `已选 #${merge.index + 1} · 取消`}
+        </button>
+      </div> : previewButton}
     </li>
   );
 }
@@ -140,9 +150,18 @@ export default function App({ bridge = nativeBridge, panel, panelControl = nativ
     if (!editor || target !== editor) return undefined;
     return { value: editor.value, start: editor.selectionStart ?? editor.value.length, end: editor.selectionEnd ?? editor.value.length };
   }
-  function intent(action: PanelAction | null, target: EventTarget): PanelIntent | null {
+  function intent(action: PanelAction | null, target: HTMLElement, clipId?: string): PanelIntent | null {
     if (!action || closing || hidePending.current) return null;
     const state = model.store.getState();
+    if (isMergeAction(action)) {
+      if (state.status?.state === "stopping" || (target instanceof HTMLButtonElement && target.disabled)) return null;
+      if (action === "copy-merged" && !model.canCopyMergedText()) return null;
+      if (action === "toggle-merge") {
+        clipId ??= state.selectedId ?? undefined;
+        if (state.loading || state.error || !state.summaries.some(item => item.id === clipId)) return null;
+      }
+      return { action, target, clipId, context: model.mergeIdentity() };
+    }
     if (action === "copy" || action === "copy-png") {
       if (!browsing || state.loading || state.error || state.copyBusy || !state.status || state.status.state === "stopping" || state.status.services.storage !== "ready") return null;
       if (action === "copy-png" && (!bridge.copyPng || state.pngPreview?.phase !== "ready")) return null;
@@ -158,17 +177,21 @@ export default function App({ bridge = nativeBridge, panel, panelControl = nativ
     if (action === "hide" && input.imeSeen && !browsing) return null;
     return { action, target, context: model.copyIdentity() };
   }
-  function control(target: EventTarget) {
-    const element = (target as HTMLElement).closest<HTMLElement>("button");
+  function control(target: EventTarget): { action: PanelAction; target: HTMLButtonElement; clipId?: string } | null {
+    const element = (target as HTMLElement).closest<HTMLButtonElement>("button");
     if (element?.dataset.copyAction === "true") return { action: "copy" as const, target: element };
     if (element?.dataset.copyAction === "png") return { action: "copy-png" as const, target: element };
     if (element?.dataset.favoriteAction === "true") return { action: "favorite" as const, target: element };
     if (element?.dataset.hideAction === "true") return { action: "hide" as const, target: element };
+    if (element && isMergeAction(element.dataset.mergeAction)) {
+      return { action: element.dataset.mergeAction, target: element, clipId: element.dataset.clipId };
+    }
     return null;
   }
   function listAction(target: HTMLElement, key: string): PanelAction | null {
     if (!browsing) return null;
     if (key === "Enter" && target === listRef.current) return "copy";
+    if (key === " " && target === listRef.current) return "toggle-merge";
     if (key === "Escape" && listRef.current?.contains(target)) return "hide";
     return null;
   }
@@ -193,11 +216,22 @@ export default function App({ bridge = nativeBridge, panel, panelControl = nativ
       await hidePanel(true);
     }
   }
-  function perform(action: PanelAction) {
+  function perform(action: PanelAction, clipId?: string) {
     if (action === "copy") void model.copyText();
     else if (action === "copy-png") void model.copyPng();
     else if (action === "favorite") void model.setFavorite();
     else if (action === "hide") void hidePanel();
+    else if (action === "copy-merged") void model.copyMergedText();
+    else if (action === "merge-clear") model.clearMergeItems();
+    else if (clipId) {
+      if (action === "merge-remove") model.removeMergeItem(clipId);
+      else if (action === "merge-up") model.moveMergeItem(clipId, -1);
+      else if (action === "merge-down") model.moveMergeItem(clipId, 1);
+      else if (action === "toggle-merge") {
+        const item = model.store.getState().summaries.find(row => row.id === clipId);
+        if (item) model.toggleMergeItem(item);
+      }
+    }
   }
   function copyText() { if (actionsAllowed && !panel) void model.copyText(); }
   function copyPng() { if (actionsAllowed && !panel) void model.copyPng(); }
@@ -235,26 +269,37 @@ export default function App({ bridge = nativeBridge, panel, panelControl = nativ
   const hasPng = selectedFormats?.includes("PNG") ?? false;
   const imageOnly = hasPng && !copyHasText;
   const copyDisabled = !actionsAllowed || (!!panel && !browsing) || !!view.copyBusy || view.loading || !status || status.state === "stopping" || status.services.storage !== "ready";
+  const mergeEditingDisabled = !actionsAllowed || status?.state === "stopping";
   const favoriteDisabled = !actionsAllowed || (!!panel && !browsing) || view.favoriteBusy ||
     view.loading || !!view.error || status?.state === "stopping" || status?.services.storage !== "ready";
   return (
     <main className="shell history-shell" onCompositionStartCapture={event => { if (panel) { input.compositionStart(compositionQuery(event.target)); newInput(); } }} onCompositionUpdateCapture={event => { if (panel) { input.compositionUpdate(compositionQuery(event.target)); newInput(); } }} onCompositionEndCapture={event => { if (panel) { const editor = searchRef.current; const query = input.compositionEnd(event.target === editor ? event.data : "", event.target === editor ? editor?.value : undefined); if (query !== null) updateQuery(query); } }} onKeyUpCapture={event => {
       if (!panel) return;
-      const target = event.target as HTMLElement, ctrl = control(target);
-      const action = ctrl?.action ?? listAction(target, event.key);
-      const accepted = input.keyUp(event.nativeEvent, intent(action, ctrl?.target ?? target));
-      if (action) { event.preventDefault(); event.stopPropagation(); }
+      const target = event.target as HTMLElement;
+      const fromList = listAction(target, event.key);
+      const ctrl = fromList === "hide" ? null : control(target);
+      const action = ctrl?.action ?? fromList;
+      const candidate = intent(action, ctrl?.target ?? target, ctrl?.clipId);
+      const accepted = input.keyUp(event.nativeEvent, candidate);
+      if (action || (input.composingSearch && target.closest("button") && (event.key === "Enter" || event.key === " "))) {
+        event.preventDefault(); event.stopPropagation();
+      }
       if (accepted === "copy" && !ctrl) void copyFromList(target);
-      else if (accepted) perform(accepted);
+      else if (accepted) perform(accepted, candidate?.clipId);
     }} onKeyDownCapture={event => {
       if (!panel) return;
       const key = event.key, ime = isImeKey(event.nativeEvent);
       const target = event.target as HTMLElement;
       if (ime) newInput();
-      const ctrl = control(target);
-      const action = ctrl?.action ?? listAction(target, key);
-      const independentArrowDown = input.keyDown(event.nativeEvent, intent(action, ctrl?.target ?? target), compositionQuery(event.target));
-      if (action && (key === "Enter" || key === " " || key === "Escape")) {
+      const fromList = listAction(target, key);
+      const ctrl = fromList === "hide" ? null : control(target);
+      const action = ctrl?.action ?? fromList;
+      const candidate = intent(action, ctrl?.target ?? target, ctrl?.clipId);
+      const independentArrowDown = input.keyDown(
+        event.nativeEvent, candidate, compositionQuery(event.target), browsing && ctrl?.action === "copy",
+      );
+      if ((action && (key === "Enter" || key === " " || key === "Escape")) ||
+          (input.composingSearch && target.closest("button") && (key === "Enter" || key === " "))) {
         event.preventDefault(); event.stopPropagation(); return;
       }
       if (target.id === "history-search") {
@@ -283,19 +328,20 @@ export default function App({ bridge = nativeBridge, panel, panelControl = nativ
     }} onPointerDownCapture={event => {
       if (!panel) return;
       const ctrl = control(event.target);
-      input.pointerDown(event.nativeEvent, ctrl ? intent(ctrl.action, ctrl.target) : null);
+      input.pointerDown(event.nativeEvent, ctrl ? intent(ctrl.action, ctrl.target, ctrl.clipId) : null);
     }} onPointerUpCapture={event => {
       if (!panel) return;
       const ctrl = control(event.target);
-      input.pointerUp(event.nativeEvent, ctrl ? intent(ctrl.action, ctrl.target) : null);
+      input.pointerUp(event.nativeEvent, ctrl ? intent(ctrl.action, ctrl.target, ctrl.clipId) : null);
     }} onBlurCapture={event => { input.focusLeft(event.target); focusVersion.current++; }} onPointerCancelCapture={() => input.invalidate()} onClickCapture={event => {
       if (!panel) return;
       const ctrl = control(event.target);
       if (!ctrl) return;
       event.preventDefault(); event.stopPropagation();
-      if (input.takeClick(event.detail, intent(ctrl.action, ctrl.target))) perform(ctrl.action);
+      const candidate = intent(ctrl.action, ctrl.target, ctrl.clipId);
+      if (input.takeClick(event.detail, candidate)) perform(ctrl.action, candidate?.clipId);
     }}>
-      <header><h1 ref={titleRef} tabIndex={-1}>{panel ? "片羽 · 快捷面板" : "片羽"}</h1><p className="tagline">{panel ? browsing ? "上下键选择，Enter 复制，成功后收起。Esc 收起。" : "输入搜索词，按 ↓ 浏览结果" : "本地剪贴板历史"}</p>
+      <header><h1 ref={titleRef} tabIndex={-1}>{panel ? "片羽 · 快捷面板" : "片羽"}</h1><p className="tagline">{panel ? browsing ? "上下键选择，空格加入或取消合并，Enter 复制当前条目并收起。Esc 收起。" : "输入搜索词，按 ↓ 浏览结果" : "本地剪贴板历史"}</p>
         {panel ? <button type="button" data-hide-action="true" disabled={!actionsAllowed || (input.imeSeen && !browsing)}>隐藏快捷面板</button> : <>
           <button type="button" disabled={closing || !panelControl.available || panelState.snapshot?.phase === "stopping" || panelState.snapshot?.phase === "unavailable"} onClick={() => void panelState.open()}>打开快捷面板</button>
           <p role="status">{panelState.snapshot?.hotkey === "ready" ? "快捷键：Ctrl+Alt+V" : "可使用主窗口入口打开快捷面板。"}</p>
@@ -358,10 +404,45 @@ export default function App({ bridge = nativeBridge, panel, panelControl = nativ
             ? <p className="notice" role="status">没有匹配的历史正文。</p>
             : status?.services.storage === "ready" && <p className="notice" role="status">暂无历史。开始收录后，在其他应用中复制内容。</p>)}
           <div ref={viewportRef} className="history-viewport" role="region" aria-label="历史列表滚动区域">
-          <ol ref={listRef} className="history-list" tabIndex={panel ? browsing ? 0 : -1 : undefined} aria-label="历史条目">{view.summaries.map(item => <HistoryItem key={item.id} item={item} selected={view.selectedId === item.id} disabled={!actionsAllowed || view.loading} onSelect={id => panel ? enterBrowse(id) : model.selectClip(id)} />)}</ol>
+          <ol ref={listRef} className="history-list" tabIndex={panel ? browsing ? 0 : -1 : undefined} aria-label="历史条目">{view.summaries.map(item => <HistoryItem key={item.id} item={item} selected={view.selectedId === item.id} disabled={!actionsAllowed || view.loading} onSelect={id => panel ? enterBrowse(id) : model.selectClip(id)} merge={panel ? {
+            index: view.mergeItems.findIndex(row => row.id === item.id), disabled: mergeEditingDisabled || view.loading || !!view.error,
+          } : undefined} />)}</ol>
           </div>
           {view.cursor && <button disabled={!actionsAllowed || view.loading} onClick={() => { if (actionsAllowed) void model.more(); }}>加载更多</button>}
         </section>
+        {panel && view.mergeItems.length > 0 && <section className="merge-card" aria-labelledby="merge-heading">
+          <div className="toolbar">
+            <h2 id="merge-heading">已选合并</h2>
+            <div className="merge-actions">
+              <button type="button" data-merge-action="merge-clear" disabled={mergeEditingDisabled}>清空已选</button>
+              <button type="button" data-merge-action="copy-merged" disabled={!actionsAllowed || !model.canCopyMergedText()}>
+                {view.copyBusy === "merged" ? "正在合并复制…" : `合并复制（${view.mergeItems.length} 条）`}
+              </button>
+            </div>
+          </div>
+          <ol className="merge-items">
+            {view.mergeItems.map(({ id, preview }, index) => <li key={id}>
+              <div className="merge-item">
+                <div className="merge-item-content">
+                  <div className="merge-item-label">
+                    <span>#{id}</span>
+                    {view.mergeMissingClipId === id && <strong>已不存在</strong>}
+                  </div>
+                  <div className="merge-item-preview">{preview || "（空文本）"}</div>
+                </div>
+                <div className="merge-actions">
+                  <button type="button" data-merge-action="merge-up" data-clip-id={id} aria-label={`上移第 ${index + 1} 条`} disabled={mergeEditingDisabled || index === 0}>上移</button>
+                  <button type="button" data-merge-action="merge-down" data-clip-id={id} aria-label={`下移第 ${index + 1} 条`} disabled={mergeEditingDisabled || index === view.mergeItems.length - 1}>下移</button>
+                  <button type="button" data-merge-action="merge-remove" data-clip-id={id} aria-label={`移出第 ${index + 1} 条`} disabled={mergeEditingDisabled}>移出</button>
+                </div>
+              </div>
+            </li>)}
+          </ol>
+          <p className="notice">每条最多预览 200 个字符，合并复制时将按 ID 读取完整正文</p>
+          <pre className="preview-body merge-preview" aria-label="合并预览">{view.mergeItems.map(item => item.preview).join("\n\n")}</pre>
+        </section>}
+        {panel && view.mergeError && <p className="error" role="alert">{view.mergeError}</p>}
+        {panel && view.mergeCopyMessage && <p className="notice" role="status" aria-live="polite">{view.mergeCopyMessage}</p>}
         <section className="preview-card" aria-labelledby="preview-heading">
           <div className="toolbar">
             <h2 id="preview-heading">{hasPng ? "内容预览" : "正文预览"}</h2>
