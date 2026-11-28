@@ -1,149 +1,111 @@
-type KeyIdentity = { key: string; code?: string };
-export type InputCompletion = "ordinary" | "editing" | "pending" | "ready";
-type InputAction = "complete" | "edit";
+type KeyIdentity = { key: string; code?: string; keyCode?: number; isComposing?: boolean; repeat?: boolean; ctrlKey?: boolean; altKey?: boolean; metaKey?: boolean; shiftKey?: boolean };
 type CompositionQuery = { value: string; start: number; end: number };
-const actionCodes = new Map([["Enter", "Enter"], ["Escape", "Escape"], ["Space", " "], ["ArrowUp", "ArrowUp"], ["ArrowDown", "ArrowDown"]]);
-function candidateKey(event: KeyIdentity) {
-  if (!event.code) return event.key === "Process" ? null : event.key;
-  const key = actionCodes.get(event.code);
-  return key && (event.key === "Process" || event.key === key) ? key : null;
+export const mergeActions = ["copy-merged", "toggle-merge", "merge-remove", "merge-up", "merge-down", "merge-clear"] as const;
+type MergeAction = typeof mergeActions[number];
+export function isMergeAction(value: string | null | undefined): value is MergeAction {
+  return mergeActions.some(action => action === value);
 }
-/** Tracks candidate-key releases and fresh pointer gestures without a timer. */
+export type PanelAction = "copy" | "copy-png" | "favorite" | "hide" | MergeAction;
+export type PanelIntent = { action: PanelAction; target: EventTarget; context: string; clipId?: string };
+type Pointer = { button: number; pointerId: number; isPrimary?: boolean };
+type HeldKey = "key" | "ime-confirmation" | "ended-confirmation";
+const modifiers = new Set(["Control", "Alt", "Shift", "Meta"]);
+const imeConfirmation = /^(?:Enter|NumpadEnter|Space| |Arrow(?:Up|Down|Left|Right)|(?:Digit|Numpad)?[0-9]|Escape|Tab|Home|End|PageUp|PageDown)$/;
+const isConfirmation = (event: KeyIdentity) => imeConfirmation.test(event.key) || imeConfirmation.test(event.code ?? "");
+const anonymousConfirmation = "ime:unknown-confirmation";
+const identity = (event: KeyIdentity) => event.code ? `code:${event.code}` : `key:${event.key}`;
+export const isImeKey = (event: KeyIdentity) => !!event.isComposing || event.key === "Process" || event.keyCode === 229;
+const same = (a: PanelIntent, b: PanelIntent | null) => !!b && a.action === b.action && a.target === b.target && a.context === b.context && a.clipId === b.clipId;
+
+/** Receipts authorize one explicit operation, never native IME completion. */
 export class ManualPanelInput {
-  private completionState: InputCompletion = "ordinary";
-  private observedEnd = false;
-  private compositionQuery: CompositionQuery | null = null;
-  private inputPointer: InputAction | null = null;
-  private actionPointerReady = false;
-  private inputKey: (KeyIdentity & { action: InputAction }) | null = null;
-  private composing = false;
-  private awaitingRelease = false;
-  private releaseKey: string | null = null;
-  private releaseCode: string | null = null;
-  private releasedCommitKey: string | null = null;
-  private freshPointer = false;
-  private pointerCommitsComposition = false;
-  private suppressKeyboardClick = false;
-  get completion() { return this.completionState; }
-  get actionsAllowed() { return this.completionState === "ordinary" || this.completionState === "ready"; }
-  private observeIme() {
-    this.completionState = "editing";
-    this.observedEnd = false;
-    this.inputKey = null;
-    this.inputPointer = null;
-    this.actionPointerReady = false;
-  }
-  acknowledge() {
-    if (this.completionState !== "editing") return;
-    this.completionState = this.observedEnd ? "ready" : "pending";
-    this.inputKey = null;
-    this.freshPointer = false;
-    this.pointerCommitsComposition = false;
-    this.actionPointerReady = false;
-    this.suppressKeyboardClick = true;
-    if (this.observedEnd && this.releaseKey === null) this.awaitingRelease = false;
-  }
-  resumeEditing() {
-    if (this.completionState !== "ordinary") this.completionState = "editing";
-    this.compositionQuery = null;
-    this.inputKey = null;
-    this.suppressKeyboardClick = true;
-  }
-  inputKeyDown(action: InputAction, event: KeyIdentity & { repeat: boolean; isComposing: boolean; keyCode?: number }) {
-    if (event.repeat || event.isComposing || event.key === "Process" || event.keyCode === 229 || this.inputKey) return;
-    this.inputKey = { key: event.key, code: event.code, action };
-  }
-  inputKeyUp(event: KeyIdentity & { isComposing: boolean }) {
-    const held = this.inputKey;
-    if (!held || held.key !== event.key || held.code !== event.code || event.isComposing) return null;
-    this.inputKey = null;
-    return held.action;
-  }
-  inputClick(action: InputAction, detail: number) {
-    const allowed = detail > 0 && this.inputPointer === action;
-    this.inputPointer = null;
-    return allowed;
+  private query: CompositionQuery | null = null;
+  private compositionEnded = false;
+  private releasedImeConfirmation = false;
+  private seenIme = false;
+  private held = new Map<string, HeldKey>();
+  private overflow = false;
+  private key: (PanelIntent & { key: string; identity: string }) | null = null;
+  private pointer: (PanelIntent & { id: number }) | null = null;
+  private click: PanelIntent | null = null;
+  get imeSeen() { return this.seenIme; }
+  get composingSearch() { return this.query !== null; }
+  invalidate() { this.key = null; this.pointer = null; this.click = null; }
+  focusLeft(target: EventTarget) {
+    if (this.key?.target === target || this.pointer?.target === target || this.click?.target === target) this.invalidate();
   }
   compositionStart(query?: CompositionQuery) {
-    this.observeIme();
-    this.compositionQuery = query ?? null;
-    this.composing = true;
-    this.awaitingRelease = true;
-    this.releaseKey = null;
-    this.releaseCode = null;
-    this.releasedCommitKey = null;
-    this.freshPointer = false;
-    this.pointerCommitsComposition = false;
-    this.suppressKeyboardClick = true;
+    this.query = query ?? null;
+    this.compositionUpdate(query);
   }
   compositionUpdate(query?: CompositionQuery) {
-    if (!this.composing) this.compositionStart(query);
+    this.seenIme = true;
+    this.compositionEnded = false;
+    this.releasedImeConfirmation = false;
+    this.query ??= query ?? null;
+    this.invalidate();
   }
   compositionEnd(data = "", value?: string) {
-    const query = this.compositionQuery;
-    this.compositionQuery = null;
-    this.composing = false;
-    this.awaitingRelease = this.releasedCommitKey === null;
-    this.observedEnd = true;
-    if (this.completionState === "pending") {
-      this.completionState = "ready";
-      if (this.releaseKey === null) this.awaitingRelease = false;
+    const query = this.query; this.query = null; this.compositionEnded = true; this.invalidate();
+    for (const [id, press] of this.held) {
+      if (press === "ime-confirmation") this.held.set(id, "ended-confirmation");
     }
-    // End data belongs to this episode, even when the final change arrives later.
     if (!query) return null;
-    if (!data) return value ?? null;
-    return query.value.slice(0, query.start) + data + query.value.slice(query.end);
+    return data ? query.value.slice(0, query.start) + data + query.value.slice(query.end) : value ?? null;
   }
-  keyUp(release: string | (KeyIdentity & { isComposing: boolean })) {
-    const event: KeyIdentity & { isComposing?: boolean } = typeof release === "string" ? { key: release } : release;
-    if (["Control", "Alt", "Shift", "Meta"].includes(event.key)) return;
-    if (!this.composing && event.isComposing) return;
-    if (this.releaseKey === null || this.releaseKey !== candidateKey(event) || this.releaseCode !== (event.code || null)) return;
-    const terminal = this.releaseKey === "Enter" || this.releaseKey === "Escape";
-    if (this.composing && terminal) this.releasedCommitKey = this.releaseKey;
-    this.releaseKey = null;
-    this.releaseCode = null;
-    if (!this.composing && terminal) this.awaitingRelease = false;
-  }
-  pointerDown(action: InputAction | null = null) {
-    this.inputPointer = action;
-    this.actionPointerReady = this.actionsAllowed;
-    this.freshPointer = !this.composing;
-    this.pointerCommitsComposition = this.composing;
-    // A pointer begun during composition may itself commit the candidate.
-    // Only a new gesture after the end resolves a fence with no held candidate key.
-    if (this.freshPointer && this.releaseKey === null) this.awaitingRelease = false;
-  }
-  blocks(event: KeyIdentity & { keyCode?: number; isComposing: boolean; repeat: boolean }, query?: CompositionQuery) {
-    this.freshPointer = false;
-    const ime = event.isComposing || event.key === "Process" || event.keyCode === 229;
-    if (ime) { if (!this.composing && this.compositionQuery === null) this.compositionQuery = query ?? null; this.observeIme(); this.awaitingRelease = true; this.releaseKey = null; this.releaseCode = null; this.releasedCommitKey = null; this.suppressKeyboardClick = true; }
-    if ((this.composing || this.awaitingRelease) && !["Control", "Alt", "Shift", "Meta"].includes(event.key)) {
-      // Process marks IME handling; code identifies the physical key it obscures.
-      // Only the latest matching terminal key release can complete this fence.
-      // Navigation/Space may select or page candidates; their releases prove only themselves.
-      this.releasedCommitKey = null;
-      if (this.composing || ime || ["Enter", "Escape", "ArrowUp", "ArrowDown", " "].includes(event.key)) {
-        this.releaseKey = candidateKey(event) ?? event.key;
-        this.releaseCode = event.code || null;
-      }
+  keyDown(event: KeyIdentity, intent: PanelIntent | null, query?: CompositionQuery, browseCopy = false): boolean {
+    this.invalidate();
+    const ime = isImeKey(event);
+    const anonymous = !event.code && event.key === "Process";
+    const id = anonymous ? anonymousConfirmation : identity(event), alreadyHeld = this.held.has(id);
+    const otherHeld = this.held.size > (alreadyHeld ? 1 : 0);
+    const unidentified = !event.code && event.key === "Unidentified" && event.keyCode === 229;
+    const confirmation = ime && (anonymous || unidentified || isConfirmation(event));
+    const lateConfirmation = confirmation && (this.compositionEnded || this.held.get(id) === "ended-confirmation");
+    if (ime) {
+      this.seenIme = true;
+      // A candidate key can arrive after compositionend without starting another query.
+      if (!lateConfirmation) this.compositionUpdate(query);
+    } else {
+      this.compositionEnded = false;
     }
-    const blocked = this.composing || this.awaitingRelease || event.repeat;
-    if (["Enter", "Escape", " "].includes(event.key)) this.suppressKeyboardClick = blocked;
-    return blocked;
+    if (!modifiers.has(event.key)) {
+      if (!alreadyHeld && this.held.size >= 8) this.overflow = true;
+      else if (lateConfirmation) this.held.set(id, "ended-confirmation");
+      else if (!alreadyHeld) this.held.set(id, confirmation ? "ime-confirmation" : "key");
+    }
+    // A fresh single-copy button press in browse can follow a released IME key
+    // before the editor delivers compositionend.
+    const freshBrowseCopy = browseCopy && intent?.action === "copy" && this.releasedImeConfirmation;
+    const independent = !ime && (this.query === null || freshBrowseCopy) && !event.repeat && !alreadyHeld && !otherHeld && !this.overflow && !event.ctrlKey && !event.altKey && !event.metaKey && !event.shiftKey;
+    const validKey = event.key === "Enter" || event.key === " " || (event.key === "Escape" && intent?.action === "hide");
+    if (intent && validKey && independent) this.key = { ...intent, key: event.key, identity: id };
+    // Focus may move on ArrowDown. Keep tracking the press until keyUp reaches the panel.
+    return event.key === "ArrowDown" && independent && this.query === null;
   }
-  blocksClick(detail = 0) {
-    const pointer = detail > 0 && this.freshPointer;
-    const commitsComposition = detail > 0 && this.pointerCommitsComposition;
-    this.freshPointer = false;
-    this.pointerCommitsComposition = false;
-    return this.composing || commitsComposition || (detail === 0 && this.suppressKeyboardClick) || (this.awaitingRelease && !pointer);
+  keyUp(event: KeyIdentity, intent: PanelIntent | null): PanelAction | null {
+    const press = this.key; this.key = null; this.click = null;
+    const id = identity(event);
+    let released = this.held.get(id);
+    // A code-less Process press may be released with its physical key.
+    if (!this.held.delete(id) && !modifiers.has(event.key) && !event.repeat) {
+      released = this.held.get(anonymousConfirmation);
+      this.held.delete(anonymousConfirmation);
+    }
+    if (released === "ime-confirmation") this.releasedImeConfirmation = true;
+    if (!press || !same(press, intent) || press.key !== event.key || press.identity !== id || isImeKey(event) || event.ctrlKey || event.altKey || event.metaKey || event.shiftKey) return null;
+    return press.action;
   }
-  blocksActionClick(detail: number) {
-    // A late end may enable controls, but cannot authorize an already begun gesture.
-    const beganBlocked = detail > 0 && !this.actionPointerReady;
-    this.actionPointerReady = false;
-    const gestureBlocked = this.blocksClick(detail);
-    return !this.actionsAllowed || beganBlocked || gestureBlocked;
+  pointerDown(event: Pointer, intent: PanelIntent | null) {
+    this.invalidate();
+    if (intent && event.button === 0 && event.isPrimary !== false) this.pointer = { ...intent, id: event.pointerId };
+  }
+  pointerUp(event: Pointer, intent: PanelIntent | null) {
+    const press = this.pointer; this.pointer = null; this.click = null;
+    if (press && same(press, intent) && press.id === event.pointerId && event.button === 0 && event.isPrimary !== false) this.click = press;
+  }
+  takeClick(detail: number, intent: PanelIntent | null) {
+    const click = this.click; this.invalidate();
+    return detail > 0 && click !== null && same(click, intent);
   }
 }

@@ -290,6 +290,7 @@ fn require_field<'a>(
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize)]
 pub struct ListCursor {
+    pub favorites_only: bool,
     pub normalized_query: String,
     pub upper_id: String,
     pub last_captured_at_ms: i64,
@@ -299,6 +300,7 @@ pub struct ListCursor {
 fn parse_cursor(
     value: &serde_json::Value,
     expected_query: &str,
+    expected_favorites: Option<bool>,
 ) -> ContractResult<Option<ListCursor>> {
     if value.is_null() {
         return Ok(None);
@@ -308,6 +310,7 @@ fn parse_cursor(
         obj,
         &[
             "normalized_query",
+            "favorites_only",
             "upper_id",
             "last_captured_at_ms",
             "last_id",
@@ -319,6 +322,10 @@ fn parse_cursor(
     if nq != expected_query {
         return Err(reject("cursor does not match query"));
     }
+    let favorites_only = parse_favorites_only(obj)?;
+    if expected_favorites.is_some_and(|expected| expected != favorites_only) {
+        return Err(reject("cursor does not match favorites_only"));
+    }
     let upper_id = parse_positive_id(require_field(obj, "upper_id")?)?;
     let last_captured_at_ms = validate_timestamp_ms(require_field(obj, "last_captured_at_ms")?)?;
     let last_id = parse_positive_id(require_field(obj, "last_id")?)?;
@@ -326,6 +333,7 @@ fn parse_cursor(
         return Err(reject("cursor last_id exceeds upper_id"));
     }
     Ok(Some(ListCursor {
+        favorites_only,
         normalized_query: nq.to_string(),
         upper_id,
         last_captured_at_ms,
@@ -335,15 +343,22 @@ fn parse_cursor(
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct ListClipsRequest {
+    pub favorites_only: bool,
     pub request_id: String,
     pub query: String,
     pub limit: u32,
     pub cursor: Option<ListCursor>,
 }
 
+fn parse_favorites_only(obj: &serde_json::Map<String, serde_json::Value>) -> ContractResult<bool> {
+    obj.get("favorites_only").map_or(Ok(false), |value| {
+        value.as_bool().ok_or_else(|| reject("favorites_only must be a boolean"))
+    })
+}
+
 pub fn parse_list_clips_request(value: &serde_json::Value) -> ContractResult<ListClipsRequest> {
     let obj = expect_object(value)?;
-    reject_unknown_fields(obj, &["request_id", "query", "limit", "cursor"])?;
+    reject_unknown_fields(obj, &["request_id", "query", "limit", "cursor", "favorites_only"])?;
     let request_id = validate_request_id(require_field(obj, "request_id")?)?;
     let query = normalize_query(require_field(obj, "query")?)?;
     // 7.1：缺失 limit 为 50；显式 null、非整数或越界均拒绝。
@@ -353,12 +368,14 @@ pub fn parse_list_clips_request(value: &serde_json::Value) -> ContractResult<Lis
         Some(v) => validate_limit(v)?,
     };
     // 7.1：缺失或显式 null 的 cursor 均表示首页。
+    let favorites_only = parse_favorites_only(obj)?;
     let cursor = match obj.get("cursor") {
         None => None,
         Some(v) if v.is_null() => None,
-        Some(v) => parse_cursor(v, &query)?,
+        Some(v) => parse_cursor(v, &query, Some(favorites_only))?,
     };
     Ok(ListClipsRequest {
+        favorites_only,
         request_id,
         query,
         limit,
@@ -384,10 +401,53 @@ pub fn parse_panel_session(value:&serde_json::Value)->ContractResult<String>{
     let session=require_field(obj,"session_id")?.as_str().ok_or_else(||reject("invalid panel session"))?;
     if session.len()!=32||!session.bytes().all(|b|b.is_ascii_hexdigit()){return Err(reject("invalid panel session"));}Ok(session.into())
 }
-pub fn parse_panel_copy(value:&serde_json::Value)->ContractResult<(String,CopyClipTextRequest)>{
-    let obj=expect_object(value)?;reject_unknown_fields(obj,&["session_id","request"])?;
-    let session=parse_panel_session(&serde_json::json!({"session_id":require_field(obj,"session_id")?}))?;
-    Ok((session,parse_copy_clip_text_request(require_field(obj,"request")?)?))
+pub(crate) fn parse_panel_envelope(value: &serde_json::Value) -> ContractResult<(String, &serde_json::Value)> {
+    let obj = expect_object(value)?;
+    reject_unknown_fields(obj, &["session_id", "request"])?;
+    let session = parse_panel_session(&serde_json::json!({"session_id":require_field(obj,"session_id")?}))?;
+    Ok((session, require_field(obj, "request")?))
+}
+pub(crate) fn parse_panel_merged_copy(value: &serde_json::Value) -> ContractResult<(String, CopyMergedTextRequest)> {
+    let (session, request) = parse_panel_envelope(value)?;
+    Ok((session, parse_copy_merged_text_request(request)?))
+}
+
+pub fn parse_panel_copy(value: &serde_json::Value) -> ContractResult<(String, CopyClipTextRequest)> {
+    let (session, request) = parse_panel_envelope(value)?;
+    Ok((session, parse_copy_clip_text_request(request)?))
+}
+
+#[derive(Debug)]
+pub struct SetFavoriteRequest {
+    pub request_id: String,
+    pub clip_id: String,
+    pub favorited: bool,
+}
+
+pub fn parse_set_favorite_request(value: &serde_json::Value) -> ContractResult<SetFavoriteRequest> {
+    let obj = expect_object(value)?;
+    reject_unknown_fields(obj, &["request_id", "clip_id", "favorited"])?;
+    Ok(SetFavoriteRequest {
+        request_id: validate_request_id(require_field(obj, "request_id")?)?,
+        clip_id: parse_positive_id(require_field(obj, "clip_id")?)?,
+        favorited: require_field(obj, "favorited")?.as_bool()
+            .ok_or_else(|| reject("favorited must be a boolean"))?,
+    })
+}
+
+#[derive(Debug, Serialize)]
+pub struct FavoriteChange {
+    pub clip_id: String,
+    pub favorited: bool,
+    pub revision: String,
+}
+
+#[derive(Debug, Serialize)]
+pub struct SetFavoriteResult {
+    pub request_id: String,
+    pub changed: bool,
+    #[serde(flatten)]
+    pub change: FavoriteChange,
 }
 
 pub fn parse_copy_clip_text_request(value: &serde_json::Value) -> ContractResult<CopyClipTextRequest> {
@@ -397,6 +457,28 @@ pub fn parse_copy_clip_text_request(value: &serde_json::Value) -> ContractResult
         request_id: validate_request_id(require_field(obj, "request_id")?)?,
         clip_id: parse_positive_id(require_field(obj, "clip_id")?)?,
     })
+}
+
+pub const MIN_MERGE_CLIP_IDS: usize = 2;
+pub const MAX_MERGE_CLIP_IDS: usize = 20;
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+pub struct CopyMergedTextRequest {
+    pub request_id: String,
+    pub clip_ids: Vec<String>,
+}
+
+pub fn parse_copy_merged_text_request(value: &serde_json::Value) -> ContractResult<CopyMergedTextRequest> {
+    let obj = expect_object(value)?;
+    reject_unknown_fields(obj, &["request_id", "clip_ids"])?;
+    let request_id = validate_request_id(require_field(obj, "request_id")?)?;
+    let clip_ids = require_field(obj, "clip_ids")?.as_array()
+        .filter(|ids| (MIN_MERGE_CLIP_IDS..=MAX_MERGE_CLIP_IDS).contains(&ids.len()))
+        .ok_or_else(|| reject("invalid number of merge clip IDs"))?;
+    let clip_ids = clip_ids.iter().map(parse_positive_id).collect::<ContractResult<Vec<_>>>()?;
+    let distinct = clip_ids.iter().collect::<std::collections::BTreeSet<_>>();
+    if distinct.len() != clip_ids.len() { return Err(reject("duplicate merge clip ID")); }
+    Ok(CopyMergedTextRequest { request_id, clip_ids })
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
@@ -423,6 +505,11 @@ pub fn parse_copy_clip_text_result(value: &serde_json::Value, request: &CopyClip
     let request_id = validate_request_id(require_field(obj, "request_id")?)?;
     let clip_id = parse_positive_id(require_field(obj, "clip_id")?)?;
     if request_id != request.request_id || clip_id != request.clip_id { return Err(reject("copy correlation mismatch")); }
+    let (outcome, reason) = parse_copy_outcome(obj)?;
+    Ok(CopyClipTextResult { request_id, clip_id, outcome, reason })
+}
+
+fn parse_copy_outcome(obj: &serde_json::Map<String, serde_json::Value>) -> ContractResult<(CopyOutcome, Option<ErrorCode>)> {
     let outcome = match require_field(obj, "outcome")?.as_str() {
         Some("copied") => CopyOutcome::Copied,
         Some("not_written") => CopyOutcome::NotWritten,
@@ -432,7 +519,46 @@ pub fn parse_copy_clip_text_result(value: &serde_json::Value, request: &CopyClip
     let reason = require_field(obj, "reason")?;
     let reason = if reason.is_null() { None } else { Some(reason.as_str().and_then(ErrorCode::from_str).ok_or_else(||reject("invalid copy reason"))?) };
     if (outcome == CopyOutcome::Copied) != reason.is_none() { return Err(reject("invalid copy reason for outcome")); }
-    Ok(CopyClipTextResult { request_id, clip_id, outcome, reason })
+    Ok((outcome, reason))
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+pub struct CopyMergedTextResult {
+    pub request_id: String,
+    pub clip_ids: Vec<String>,
+    pub outcome: CopyOutcome,
+    pub reason: Option<ErrorCode>,
+    pub missing_clip_id: Option<String>,
+}
+
+impl CopyMergedTextResult {
+    pub(crate) fn new(
+        request: CopyMergedTextRequest, outcome: CopyOutcome, reason: Option<ErrorCode>, missing_clip_id: Option<String>,
+    ) -> Self {
+        Self { request_id: request.request_id, clip_ids: request.clip_ids, outcome, reason, missing_clip_id }
+    }
+}
+
+pub fn parse_copy_merged_text_result(value: &serde_json::Value, request: &CopyMergedTextRequest) -> ContractResult<CopyMergedTextResult> {
+    let obj = expect_object(value)?;
+    reject_unknown_fields(obj, &["request_id", "clip_ids", "outcome", "reason", "missing_clip_id"])?;
+    let ids = parse_copy_merged_text_request(&serde_json::json!({
+        "request_id": require_field(obj, "request_id")?,
+        "clip_ids": require_field(obj, "clip_ids")?,
+    }))?;
+    if ids != *request { return Err(reject("copy correlation mismatch")); }
+    let (outcome, reason) = parse_copy_outcome(obj)?;
+    let missing = require_field(obj, "missing_clip_id")?;
+    let missing_clip_id = if missing.is_null() {
+        None
+    } else {
+        let id = parse_positive_id(missing)?;
+        if outcome != CopyOutcome::NotWritten || reason != Some(ErrorCode::NotFound) || !ids.clip_ids.contains(&id) {
+            return Err(reject("invalid missing clip ID for outcome"));
+        }
+        Some(id)
+    };
+    Ok(CopyMergedTextResult::new(ids, outcome, reason, missing_clip_id))
 }
 
 pub fn parse_get_clip_text_request(
@@ -570,6 +696,31 @@ fn validate_path_segment(seg: &str) -> ContractResult<()> {
 
 pub fn normalize_windows_exe_path(input: &str) -> ContractResult<String> {
     normalize_windows_path(input, true, false)
+}
+
+pub(crate) fn windows_path_equal(left: &str, right: &str) -> bool {
+    // Owner matching fails closed; policy deduplication requires a successful comparison.
+    compare_windows_paths(left, right).unwrap_or(true)
+}
+
+pub(crate) fn compare_windows_paths(left: &str, right: &str) -> ContractResult<bool> {
+    use windows_sys::Win32::Globalization::CompareStringOrdinal;
+    let left: Vec<u16> = left.encode_utf16().collect();
+    let right: Vec<u16> = right.encode_utf16().collect();
+    match unsafe { CompareStringOrdinal(left.as_ptr(), left.len() as i32, right.as_ptr(), right.len() as i32, 1) } {
+        2 => Ok(true), 1 | 3 => Ok(false), _ => Err(ContractError::invalid_input("Windows path comparison failed")),
+    }
+}
+
+#[derive(Debug, Clone, serde::Serialize)]
+pub struct SettingsSnapshot {
+    pub revision: String,
+    pub schema_version: u32,
+    pub excluded_apps: Vec<String>,
+    pub saving: bool,
+    pub blocked: bool,
+    pub error: Option<String>,
+    pub last_skip: Option<String>,
 }
 
 pub fn normalize_windows_dir_path(input: &str) -> ContractResult<String> {
@@ -750,6 +901,7 @@ pub fn parse_error_code(value: &serde_json::Value) -> ContractResult<ErrorCode> 
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize)]
 pub struct ClipSummary {
+    pub favorited: bool,
     pub id: String,
     pub captured_at_ms: i64,
     pub kind: String,
@@ -775,6 +927,7 @@ pub fn parse_clip_summary(value: &serde_json::Value) -> ContractResult<ClipSumma
             "payload_bytes",
             "source_process",
             "source_confidence",
+            "favorited",
         ],
     )?;
     let id = parse_positive_id(require_field(obj, "id")?)?;
@@ -821,7 +974,10 @@ pub fn parse_clip_summary(value: &serde_json::Value) -> ContractResult<ClipSumma
         )
     };
     let source_confidence = parse_source_confidence(require_field(obj, "source_confidence")?)?;
+    let favorited = require_field(obj, "favorited")?.as_bool()
+        .ok_or_else(|| reject("favorited must be a boolean"))?;
     Ok(ClipSummary {
+        favorited,
         id,
         captured_at_ms,
         kind,
@@ -881,7 +1037,7 @@ pub const MAX_HISTORY_PAYLOAD_BYTES_VALUE: i64 = 268_435_456;
 pub const MAX_TEXT_FRAME_VALUE: usize = 65_536;
 pub const MAX_SUMMARIES_PER_PAGE: usize = 100;
 pub const MAX_LIST_RESULT_JSON_BYTES: usize = 1_048_576;
-pub const SCHEMA_VERSION: u32 = 1;
+pub const SCHEMA_VERSION: u32 = crate::store::SCHEMA_VERSION as u32;
 pub const APP_VERSION_MAX_BYTES: usize = 32;
 
 fn parse_service_state(value: &serde_json::Value) -> ContractResult<String> {
@@ -896,7 +1052,7 @@ fn parse_service_state(value: &serde_json::Value) -> ContractResult<String> {
     }
 }
 
-fn parse_u64_counter(value: &serde_json::Value) -> ContractResult<String> {
+pub(crate) fn parse_u64_counter(value: &serde_json::Value) -> ContractResult<String> {
     parse_u64_string(value)
 }
 
@@ -946,8 +1102,17 @@ pub struct QueueUsage {
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize)]
 pub struct HistoryUsage {
+    pub favorites: i64,
     pub items: i64,
     pub payload_bytes: i64,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+pub struct HistoryStatus {
+    pub items: i64,
+    pub payload_bytes: i64,
+    pub favorites: i64,
+    pub revision: String,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize)]
@@ -965,7 +1130,7 @@ pub struct StatusResult {
     pub capture: CaptureFlags,
     pub counters: CaptureCounters,
     pub queue: QueueUsage,
-    pub history: HistoryUsage,
+    pub history: HistoryStatus,
     pub data_dir: String,
     pub versions: VersionsInfo,
     pub last_paste: Option<PasteClipResult>,
@@ -1067,12 +1232,12 @@ pub fn parse_status_result(value: &serde_json::Value) -> ContractResult<StatusRe
     };
 
     let history_obj = expect_object(require_field(obj, "history")?)?;
-    reject_unknown_fields(history_obj, &["items", "payload_bytes"])?;
-    let history = HistoryUsage {
-        items: parse_bounded_count(
-            history_obj.get("items").ok_or_else(|| reject("missing field"))?,
-            MAX_HISTORY_ITEMS_VALUE,
-        )?,
+    reject_unknown_fields(history_obj, &["items", "payload_bytes", "favorites", "revision"])?;
+    let items = parse_bounded_count(require_field(history_obj, "items")?, MAX_HISTORY_ITEMS_VALUE)?;
+    let history = HistoryStatus {
+        items,
+        favorites: parse_bounded_count(require_field(history_obj, "favorites")?, items)?,
+        revision: parse_u64_counter(require_field(history_obj, "revision")?)?,
         payload_bytes: parse_bounded_count(
             history_obj
                 .get("payload_bytes")
@@ -1247,7 +1412,7 @@ pub fn parse_list_clips_result(value: &serde_json::Value) -> ContractResult<List
     let next_cursor = if cursor_raw.is_null() {
         None
     } else {
-        parse_cursor(cursor_raw, normalized)?
+        parse_cursor(cursor_raw, normalized, None)?
     };
     let result = ListClipsResult {
         request_id,
@@ -1889,7 +2054,8 @@ mod tests {
                     "omitted_format_count": 0,
                     "payload_bytes": 4,
                     "source_process": null,
-                    "source_confidence": "unknown"
+                    "source_confidence": "unknown",
+                    "favorited": false
                 });
                 let arr: Vec<Value> = (0..n).map(|_| summary.clone()).collect();
                 obj.insert("summaries".to_string(), Value::Array(arr));
@@ -1985,7 +2151,8 @@ mod tests {
                 "omitted_format_count": 0,
                 "payload_bytes": 4,
                 "source_process": long_source,
-                "source_confidence": "unknown"
+                "source_confidence": "unknown",
+                "favorited": false
             }));
         }
         let value = json!({

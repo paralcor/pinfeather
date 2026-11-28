@@ -1,4 +1,6 @@
 import { describe, expect, it } from "vitest";
+import mergedCopyFixture from "../../tests/fixtures/contracts/merged_copy.json";
+import { parseCopyMergedTextRequest, parseCopyMergedTextResult } from "./ipc";
 import primitivesFixture from "../../tests/fixtures/contracts/primitives.json";
 import queryLimitsFixture from "../../tests/fixtures/contracts/query_limits.json";
 import requestsFixture from "../../tests/fixtures/contracts/requests.json";
@@ -435,7 +437,7 @@ describe("7.2 response DTOs", () => {
           omitted_format_count: 0,
           payload_bytes: 4,
           source_process: null,
-          source_confidence: "unknown",
+          source_confidence: "unknown", favorited: false,
         };
         value.summaries = Array.from({ length: n }, () => ({ ...summary }));
         delete value.summaries_count;
@@ -460,7 +462,7 @@ describe("7.2 response DTOs", () => {
       omitted_format_count: 0,
       payload_bytes: 4,
       source_process: longSource,
-      source_confidence: "unknown",
+      source_confidence: "unknown", favorited: false,
     }));
     const result = parseListClipsResult({
       request_id: "r1",
@@ -503,4 +505,16 @@ describe("F6-F7 event revision and normalized_query", () => {
       }
     }
   });
+});
+
+it("validates merged copy requests and ordered receipts against shared fixtures", () => {
+  const request = parseCopyMergedTextRequest(mergedCopyFixture.request);
+  if (!request.ok) throw new Error("expected a valid fixture request");
+  expect(request.value.clip_ids).toEqual(["2", "1"]);
+  for (const { value, valid } of mergedCopyFixture.requests) {
+    expect(parseCopyMergedTextRequest(value).ok, JSON.stringify(value)).toBe(valid);
+  }
+  for (const { value, valid } of mergedCopyFixture.results) {
+    expect(parseCopyMergedTextResult(value, request.value).ok, JSON.stringify(value)).toBe(valid);
+  }
 });

@@ -2,7 +2,7 @@
 
 English contributions are welcome. Please follow the same rules below.
 
-片羽已有 Tauri/Rust/React 工程、共享契约、worker 传输与回收、只读目标探针及 schema v1 存储。E07 已在本机验证真实文本/链接复制、多格式保存、暂停、内部写回不自录及同目录重启；E09 已验证真实桌面宿主中的正文搜索、按需预览和长文续读。快捷面板与回贴尚未开放，IME 关卡、完整兼容矩阵及性能验收仍待完成。启动和人工验收步骤见[运行指南](rumo_clipboard_handoff/docs/pinfeather_development.md)，范围与证据边界见[交接文档](rumo_clipboard_handoff/docs/pinfeather_project_handoff.md)，界面方向见[原型说明](design/prototype/README.md)。
+当前功能、快捷面板和已知限制见 [README](README.md#当前状态)。桌面启动与人工验收见[运行指南](rumo_clipboard_handoff/docs/pinfeather_development.md)，工程背景见[交接文档](rumo_clipboard_handoff/docs/pinfeather_project_handoff.md)，界面方向见[原型说明](design/prototype/README.md)。
 
 ## 提 issue
 
@@ -16,16 +16,18 @@ English contributions are welcome. Please follow the same rules below.
 
 - 大的改动请先开 issue 讨论，避免做了之后方向不合适。
 - 一个 PR 只做一件事。几件不相关的事混在一起的 PR，会请你拆开再提交。
-- 按下列命令检查受影响范围，并在 PR 里写明实际运行结果、手动验证和未覆盖项；编译或 fixture 测试不代表真实剪贴板链路通过。
+- 按改动范围选择验证项，在 PR 中写明实际运行的命令、现场结果和未覆盖项。
 - 按 PR 模板填写改了什么、为什么改、怎么验证的，以及 AI 使用说明。
 
 ## 构建与检查
 
-在 Windows 仓库根目录运行，先按锁文件准备项目依赖；工具链和依赖版本见[实施方案](rumo_clipboard_handoff/docs/pinfeather_implementation_plan.md#41-依赖选择)。不自动安装系统组件或修改执行策略。
+在 Windows 仓库根目录运行。依赖按锁文件准备，工具链和依赖版本见[实施方案](rumo_clipboard_handoff/docs/pinfeather_implementation_plan.md#41-依赖选择)。预先准备系统构建工具，沿用现有 PowerShell 执行策略。将示例中的隔离测试根替换为本次任务目录。
 
 ```powershell
 $env:PATH = (Join-Path $env:USERPROFILE '.cargo\bin') + ';' + $env:PATH
-$pinfeatherTestRun = Join-Path 'D:\Develop\Misc Workspace\archive\pinfeather-core-prototype\runs' ((Get-Date -Format 'yyyyMMdd-HHmmss') + '-' + [Guid]::NewGuid().ToString('N'))
+$pinfeatherTestRoot = '<隔离测试根的绝对路径>'
+$pinfeatherRunId = (Get-Date -Format 'yyyyMMdd-HHmmss') + '-' + [Guid]::NewGuid().ToString('N')
+$pinfeatherTestRun = Join-Path $pinfeatherTestRoot "runs\$pinfeatherRunId"
 New-Item -ItemType Directory -Path $pinfeatherTestRun -Force | Out-Null
 $env:PINFEATHER_TEST_DATA_ROOT = $pinfeatherTestRun
 $env:TEMP = Join-Path $pinfeatherTestRun 'npm-temp'
@@ -34,7 +36,7 @@ New-Item -ItemType Directory -Path $env:TEMP | Out-Null
 npm ci
 npm test
 npm run build
-cargo test --locked --manifest-path src-tauri/Cargo.toml --features test-fixtures --lib --bins --test worker_protocol --test store_contract --test capture_contract --test internal_write_contract --test list_recent_contract --test runtime_storage_contract --test search_contract --test e09_restart_search_contract --test capture_windows -- --test-threads=1
+cargo test --locked --manifest-path src-tauri/Cargo.toml --features test-fixtures --lib --bins --test worker_protocol --test store_contract --test capture_contract --test internal_write_contract --test list_recent_contract --test runtime_storage_contract --test search_contract --test e09_restart_search_contract --test personal_history_contract --test personal_history_runtime --test capture_windows -- --test-threads=1
 cargo test --locked --manifest-path src-tauri/Cargo.toml --doc
 npm run tauri -- build --no-bundle
 ```
@@ -42,6 +44,16 @@ npm run tauri -- build --no-bundle
 普通 release 不启用 `test-fixtures`。文件测试只在上述显式目录内新建数据库，缺少 `PINFEATHER_TEST_DATA_ROOT` 会失败；其余存储规则使用内存库。常规测试不操作系统剪贴板、焦点或输入，`capture_windows` 的1项真实剪贴板测试保持ignored，不计通过数，只有用户确认隔离环境后才能单独运行。真实目标/IME 的人工步骤见[探针说明](rumo_clipboard_handoff/docs/pinfeather_w0_probe_guide.md)。`cargo fmt --manifest-path src-tauri/Cargo.toml -- --check` 和 `cargo clippy --manifest-path src-tauri/Cargo.toml --all-targets -- -D warnings` 需要相应组件；缺失时报告检查缺口，不写通过。
 
 开发启动使用 `tools/dev.ps1 -DataDir <本次隔离数据目录的绝对路径>`，默认暂停；目录必须与个人数据隔离。构建不制作或安装 MSI。
+
+## 按改动范围验证
+
+| 改动 | 验证 |
+| --- | --- |
+| 界面与文案 | 运行相关前端测试，实际操作一次受影响的界面。文档改动核对命令和链接。 |
+| 窗口焦点与系统剪贴板 | 在 Windows 用合成内容实测，记录目标应用、插入点和剪贴板结果。 |
+| 存储与备份 | 用隔离的旧库或备份测试读取、恢复到新目录，以及重启后数据完整性。 |
+| 退出与常驻 | 验证队列排空、失败提示和重试后的退出结果。 |
+| 调用权限 | 覆盖合法调用，并验证无权调用方被拒绝且无副作用。 |
 
 ## 依赖
 

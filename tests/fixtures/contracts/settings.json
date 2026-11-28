@@ -1,0 +1,19 @@
+{
+  "snapshot": {"revision":"7","schema_version":1,"excluded_apps":["C:\\Private\\vault.exe"],"saving":false,"blocked":false,"error":null,"last_skip":"unknown_owner"},
+  "invalid_snapshots": [
+    {"revision":"01","schema_version":1,"excluded_apps":[],"saving":false,"blocked":false,"error":null,"last_skip":null},
+    {"revision":"7","schema_version":2,"excluded_apps":[],"saving":false,"blocked":false,"error":null,"last_skip":null},
+    {"revision":"7","schema_version":1,"excluded_apps":["c:/private.exe"],"saving":false,"blocked":false,"error":null,"last_skip":null},
+    {"revision":"7","schema_version":1,"excluded_apps":[],"saving":false,"blocked":true,"error":null,"last_skip":null},
+    {"revision":"7","schema_version":1,"excluded_apps":[],"saving":false,"blocked":false,"error":null,"last_skip":"privacy"},
+    {"revision":"7","schema_version":1,"excluded_apps":[],"saving":false,"blocked":false,"error":null,"last_skip":null,"capture_enabled":true}
+  ],
+  "requests": [
+    {"value":{"paths":["c:/Private/old/../vault.exe"]},"expected":["C:\\Private\\vault.exe"]},
+    {"value":{"paths":[]},"expected":[]},
+    {"value":{"paths":["vault.exe"]},"expected":null},
+    {"value":{"paths":["C:\\Private\\vault.dll"]},"expected":null},
+    {"value":{"paths":[],"enabled":true},"expected":null},
+    {"value":{"paths":[7]},"expected":null}
+  ]
+}

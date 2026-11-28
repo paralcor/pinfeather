@@ -83,7 +83,9 @@ body {
 }
 .shell .error { margin: 0; color: var(--destructive); font-size: 12px; }
 
-.history-shell { max-width: 880px; padding: 28px 24px; gap: 20px; }
+.history-shell { max-width: 880px; padding: 28px 24px; padding-bottom: calc(92px + env(safe-area-inset-bottom, 0px)); gap: 20px; }
+.history-shell h1:focus-visible { outline: 2px solid var(--ring); outline-offset: 4px; border-radius: var(--radius-sm); }
+.back-to-top { position: fixed; right: max(16px, env(safe-area-inset-right, 0px)); bottom: max(16px, env(safe-area-inset-bottom, 0px)); max-width: calc(100vw - 32px); z-index: 10; box-shadow: var(--shadow); }
 .toolbar { display: flex; align-items: center; justify-content: space-between; flex-wrap: wrap; gap: 12px; }
 .toolbar h2 { margin: 0; font-size: 16px; }
 .toolbar p { margin: 0; }
@@ -97,15 +99,37 @@ button:disabled { cursor: default; opacity: .6; }
 button:focus-visible, summary:focus-visible { outline: 2px solid var(--ring); outline-offset: 3px; }
 .input-status:focus { outline: 2px solid var(--ring); outline-offset: 3px; }
 .counts { display: flex; flex-wrap: wrap; gap: 20px; margin: 0; }
-.history-list { padding: 0; list-style: none; margin: 12px 0; border-top: 1px solid var(--border); }
-.history-list li { padding: 14px 4px; border-bottom: 1px solid var(--border); }
-.history-list li button { margin-top: 8px; }
+.capture-diagnostics[open] > summary { margin-bottom: 12px; }
+.capture-diagnostics-body { display: grid; gap: 12px; }
+.history-viewport { max-height: clamp(180px, 40dvh, 360px); overflow-y: auto; scrollbar-gutter: stable; margin: 12px 0; }
+.history-viewport:focus-within { outline: 2px solid var(--ring); outline-offset: 3px; }
+.history-list { padding: 0; list-style: none; margin: 0; border-top: 1px solid var(--border); }
+.history-list li { padding: 10px 4px; border-bottom: 1px solid var(--border); display: grid; grid-template-columns: minmax(0, 1fr) auto; gap: 4px 12px; }
+.history-list .preview, .history-list .item-meta { grid-column: 1; min-width: 0; }
+.history-list li > button, .history-row-actions { grid-column: 2; grid-row: 1 / span 2; align-self: center; }
+.history-list li button { margin: 0; white-space: nowrap; }
+.history-row-actions, .merge-actions { display: flex; align-items: center; justify-content: flex-end; flex-wrap: wrap; gap: 4px; }
+.history-row-actions button, .merge-item button { padding: 4px 7px; font-size: 12px; }
+.favorites-filter[aria-pressed="true"],
 .history-list button[aria-pressed="true"] { border-color: var(--ring); background: var(--selected); }
 .history-list:focus-visible { outline: 2px solid var(--ring); outline-offset: 3px; }
-.preview { margin: 0 0 7px; white-space: pre-wrap; overflow-wrap: anywhere; }
+.preview { margin: 0; white-space: normal; overflow-wrap: anywhere; display: -webkit-box; -webkit-box-orient: vertical; -webkit-line-clamp: 2; line-clamp: 2; overflow: hidden; }
 .preview-card { padding: 16px; border: 1px solid var(--border); border-radius: var(--radius); background: var(--card); display: flex; flex-direction: column; gap: 12px; }
+.merge-card { display: grid; gap: 8px; padding: 10px; border: 1px solid var(--border); border-radius: var(--radius-sm); }
+.merge-card .notice { margin: 0; }
+.merge-items { margin: 0; padding-inline: 24px 4px; max-height: 144px; overflow: auto; }
+.merge-items li + li { margin-top: 4px; }
+.merge-item { display: flex; align-items: center; justify-content: space-between; gap: 8px; }
+.merge-item-content { min-width: 0; }
+.merge-item-label { display: flex; flex-wrap: wrap; column-gap: 6px; font-size: 12px; overflow-wrap: anywhere; }
+.merge-item-label strong { color: var(--destructive); }
+.merge-item-preview { overflow: hidden; white-space: nowrap; text-overflow: ellipsis; }
+.merge-item .merge-actions { flex-shrink: 0; }
+.merge-card .merge-preview { max-height: 120px; padding: 8px; }
 .preview-body { margin: 0; padding: 12px; border: 1px solid var(--border); border-radius: var(--radius-sm); background: var(--muted); color: var(--foreground); font: 12px/1.5 "Cascadia Code", "Cascadia Mono", Consolas, "Microsoft YaHei UI", monospace; white-space: pre-wrap; overflow-wrap: anywhere; word-break: break-word; max-height: 320px; overflow: auto; }
+.png-preview { margin: 0; color: var(--muted-foreground); }
+.png-preview canvas { display: block; max-width: 100%; height: auto; margin-bottom: var(--gap); }
 .item-meta { display: flex; flex-wrap: wrap; gap: 4px 14px; color: var(--muted-foreground); margin: 0; font-size: 12px; }
 .data-path { overflow-wrap: anywhere; margin: 8px 0 0; color: var(--muted-foreground); }
 summary { cursor: pointer; color: var(--muted-foreground); }
-@media (max-width: 480px) { .history-shell { padding: 20px 14px; } .counts { gap: 12px; } }
+@media (max-width: 480px) { .history-shell { padding: 20px 14px; padding-bottom: calc(84px + env(safe-area-inset-bottom, 0px)); } .counts { gap: 12px; } }

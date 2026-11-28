@@ -36,12 +36,14 @@
         },
         "history": {
           "items": 12,
-          "payload_bytes": 4096
+          "payload_bytes": 4096,
+          "favorites": 0,
+          "revision": "0"
         },
         "data_dir": "C:\\Data\\pf",
         "versions": {
           "app": "0.1.0",
-          "schema": 1,
+          "schema": 2,
           "worker_protocol": 1
         },
         "last_paste": null
@@ -81,12 +83,14 @@
         },
         "history": {
           "items": 12,
-          "payload_bytes": 4096
+          "payload_bytes": 4096,
+          "favorites": 0,
+          "revision": "0"
         },
         "data_dir": "C:\\Data\\pf",
         "versions": {
           "app": "0.1.0",
-          "schema": 1,
+          "schema": 2,
           "worker_protocol": 1
         },
         "last_paste": {
@@ -131,12 +135,14 @@
         },
         "history": {
           "items": 12,
-          "payload_bytes": 4096
+          "payload_bytes": 4096,
+          "favorites": 0,
+          "revision": "0"
         },
         "data_dir": "C:\\Data\\pf",
         "versions": {
           "app": "0.1.0",
-          "schema": 1,
+          "schema": 2,
           "worker_protocol": 1
         },
         "last_paste": null,
@@ -177,12 +183,14 @@
         },
         "history": {
           "items": 12,
-          "payload_bytes": 4096
+          "payload_bytes": 4096,
+          "favorites": 0,
+          "revision": "0"
         },
         "data_dir": "C:\\Data\\pf",
         "versions": {
           "app": "0.1.0",
-          "schema": 1,
+          "schema": 2,
           "worker_protocol": 1
         },
         "last_paste": null
@@ -221,12 +229,14 @@
         },
         "history": {
           "items": 12,
-          "payload_bytes": 4096
+          "payload_bytes": 4096,
+          "favorites": 0,
+          "revision": "0"
         },
         "data_dir": "C:\\Data\\pf",
         "versions": {
           "app": "0.1.0",
-          "schema": 1,
+          "schema": 2,
           "worker_protocol": 1
         },
         "last_paste": null
@@ -267,12 +277,14 @@
         },
         "history": {
           "items": 12,
-          "payload_bytes": 4096
+          "payload_bytes": 4096,
+          "favorites": 0,
+          "revision": "0"
         },
         "data_dir": "C:\\Data\\pf",
         "versions": {
           "app": "0.1.0",
-          "schema": 1,
+          "schema": 2,
           "worker_protocol": 1
         },
         "last_paste": null
@@ -312,12 +324,14 @@
         },
         "history": {
           "items": 12,
-          "payload_bytes": 4096
+          "payload_bytes": 4096,
+          "favorites": 0,
+          "revision": "0"
         },
         "data_dir": "C:\\Data\\pf",
         "versions": {
           "app": "0.1.0",
-          "schema": 1,
+          "schema": 2,
           "worker_protocol": 1
         },
         "last_paste": null
@@ -357,12 +371,14 @@
         },
         "history": {
           "items": 12,
-          "payload_bytes": 4096
+          "payload_bytes": 4096,
+          "favorites": 0,
+          "revision": "0"
         },
         "data_dir": "C:\\Data\\pf",
         "versions": {
           "app": "0.1.0",
-          "schema": 1,
+          "schema": 2,
           "worker_protocol": 1
         },
         "last_paste": null
@@ -402,12 +418,14 @@
         },
         "history": {
           "items": 12,
-          "payload_bytes": 4096
+          "payload_bytes": 4096,
+          "favorites": 0,
+          "revision": "0"
         },
         "data_dir": "C:\\Data\\pf",
         "versions": {
           "app": "0.1.0",
-          "schema": 1,
+          "schema": 2,
           "worker_protocol": 1
         },
         "last_paste": null
@@ -447,12 +465,14 @@
         },
         "history": {
           "items": 12,
-          "payload_bytes": 4096
+          "payload_bytes": 4096,
+          "favorites": 0,
+          "revision": "0"
         },
         "data_dir": "C:\\Data\\pf",
         "versions": {
           "app": "0.1.0",
-          "schema": 1,
+          "schema": 2,
           "worker_protocol": 1
         },
         "last_paste": null
@@ -492,12 +512,14 @@
         },
         "history": {
           "items": 12,
-          "payload_bytes": 4096
+          "payload_bytes": 4096,
+          "favorites": 0,
+          "revision": "0"
         },
         "data_dir": "C:\\Data\\pf",
         "versions": {
           "app": "0.1.0",
-          "schema": 1,
+          "schema": 2,
           "worker_protocol": 1
         },
         "last_paste": null
@@ -537,12 +559,14 @@
         },
         "history": {
           "items": 12,
-          "payload_bytes": 4096
+          "payload_bytes": 4096,
+          "favorites": 0,
+          "revision": "0"
         },
         "data_dir": "C:\\Data\\pf",
         "versions": {
           "app": "0.1.0",
-          "schema": 1,
+          "schema": 2,
           "worker_protocol": 1
         },
         "last_paste": null
@@ -582,12 +606,14 @@
         },
         "history": {
           "items": 12,
-          "payload_bytes": 4096
+          "payload_bytes": 4096,
+          "favorites": 0,
+          "revision": "0"
         },
         "data_dir": "C:\\Data\\pf",
         "versions": {
           "app": "0.1.0",
-          "schema": 1,
+          "schema": 2,
           "worker_protocol": 1
         },
         "last_paste": null
@@ -627,12 +653,14 @@
         },
         "history": {
           "items": 10001,
-          "payload_bytes": 4096
+          "payload_bytes": 4096,
+          "favorites": 0,
+          "revision": "0"
         },
         "data_dir": "C:\\Data\\pf",
         "versions": {
           "app": "0.1.0",
-          "schema": 1,
+          "schema": 2,
           "worker_protocol": 1
         },
         "last_paste": null
@@ -672,12 +700,14 @@
         },
         "history": {
           "items": 12,
-          "payload_bytes": 268435457
+          "payload_bytes": 268435457,
+          "favorites": 0,
+          "revision": "0"
         },
         "data_dir": "C:\\Data\\pf",
         "versions": {
           "app": "0.1.0",
-          "schema": 1,
+          "schema": 2,
           "worker_protocol": 1
         },
         "last_paste": null
@@ -717,12 +747,14 @@
         },
         "history": {
           "items": 12,
-          "payload_bytes": 4096
+          "payload_bytes": 4096,
+          "favorites": 0,
+          "revision": "0"
         },
         "data_dir": "relative",
         "versions": {
           "app": "0.1.0",
-          "schema": 1,
+          "schema": 2,
           "worker_protocol": 1
         },
         "last_paste": null
@@ -762,19 +794,21 @@
         },
         "history": {
           "items": 12,
-          "payload_bytes": 4096
+          "payload_bytes": 4096,
+          "favorites": 0,
+          "revision": "0"
         },
         "data_dir": "C:\\Data\\pf",
         "versions": {
           "app": "",
-          "schema": 1,
+          "schema": 2,
           "worker_protocol": 1
         },
         "last_paste": null
       }
     },
     {
-      "id": "st_schema_2",
+      "id": "st_schema_3",
       "expect": "reject",
       "value": {
         "revision": "3",
@@ -807,12 +841,14 @@
         },
         "history": {
           "items": 12,
-          "payload_bytes": 4096
+          "payload_bytes": 4096,
+          "favorites": 0,
+          "revision": "0"
         },
         "data_dir": "C:\\Data\\pf",
         "versions": {
           "app": "0.1.0",
-          "schema": 2,
+          "schema": 3,
           "worker_protocol": 1
         },
         "last_paste": null
@@ -852,12 +888,14 @@
         },
         "history": {
           "items": 12,
-          "payload_bytes": 4096
+          "payload_bytes": 4096,
+          "favorites": 0,
+          "revision": "0"
         },
         "data_dir": "C:\\Data\\pf",
         "versions": {
           "app": "0.1.0",
-          "schema": 1,
+          "schema": 2,
           "worker_protocol": 2
         },
         "last_paste": null
@@ -897,12 +935,14 @@
         },
         "history": {
           "items": 12,
-          "payload_bytes": 4096
+          "payload_bytes": 4096,
+          "favorites": 0,
+          "revision": "0"
         },
         "data_dir": "C:\\Data\\pf",
         "versions": {
           "app": "0.1.0",
-          "schema": 1,
+          "schema": 2,
           "worker_protocol": 1
         },
         "last_paste": null
@@ -1096,7 +1136,8 @@
             "omitted_format_count": 0,
             "payload_bytes": 4,
             "source_process": null,
-            "source_confidence": "unknown"
+            "source_confidence": "unknown",
+            "favorited": false
           }
         ],
         "next_cursor": null
@@ -1120,7 +1161,8 @@
             "omitted_format_count": 0,
             "payload_bytes": 4,
             "source_process": null,
-            "source_confidence": "unknown"
+            "source_confidence": "unknown",
+            "favorited": false
           }
         ],
         "next_cursor": {
@@ -1195,7 +1237,8 @@
             "omitted_format_count": 0,
             "payload_bytes": 4,
             "source_process": null,
-            "source_confidence": "unknown"
+            "source_confidence": "unknown",
+            "favorited": false
           }
         ],
         "next_cursor": null

@@ -4,7 +4,7 @@
 
 # Pinfeather
 
-A next-generation clipboard tool, in planning
+Local clipboard history for Windows
 
 [简体中文](README.md)
 
@@ -31,14 +31,24 @@ It comes from the idiom 吉光片羽. Even one feather left by the Jiguang, a my
 
 The English name, **Pinfeather**, is a new feather just coming in on a young bird, still wrapped in its sheath. And on a clipboard, `pin` is the action that keeps something important in place.
 
-## Plans
+## Current status
 
-Pinfeather is in planning and has no release yet. Planned directions:
+- **Capture and search.** Start or pause capture manually. Keep text, links, and supported formats from the source app. Search by text and preview long entries on demand. Star entries and use Show favorites only to filter the list.
+- **Quick panel.** Press `Ctrl+Alt+V`, enter a search term, press Down to browse, and press Enter to copy plain text. The panel closes after a successful copy. Press `Ctrl+V` in the target app. Select text entries across searches, reorder them, and copy them as one block while keeping the panel open.
+- **PNG images.** Preview a thumbnail and use Copy image to put the original PNG on the clipboard. Enter still copies text on entries that contain both formats. Both copy buttons keep the preview open.
+- **Local management.** Set app exclusions, delete individual unstarred entries, clear unstarred history, and back up saved history. Restore a backup to a new data directory. [History management and recovery (Chinese)](rumo_clipboard_handoff/docs/pinfeather_personal_history.md)
+- **Known limits.** The source and destination apps must support the registered PNG clipboard format. The full IME and app compatibility matrix and performance acceptance are pending.
 
-- **Collect**: keep the text, links and images you copy
-- **Search**: quickly find something you copied long ago
-- **Move**: copy on one device, paste on another
-- **Understand**: recognize what you copied, and organize, translate or rewrite it when you want
+## Run and verify
+
+On Windows with Node.js, the Rust MSVC toolchain, C++ build tools, and WebView2, run these commands from the repository root. Capture starts paused by default. The main window lets you opt in to restoring the last manual capture state for the current data directory. Use `--start-paused` to force a paused start.
+
+```powershell
+npm ci
+.\tools\dev.ps1 -DataDir '<absolute path to an isolated data directory>'
+```
+
+Run `npm test` and `npm run build` for frontend checks. See the [contributing guide](CONTRIBUTING.md#构建与检查) for Rust tests, desktop builds, and checks by area. See the [run guide (Chinese)](rumo_clipboard_handoff/docs/pinfeather_development.md) for desktop clipboard, quick panel, and restart checks.
 
 ## Contributing
 

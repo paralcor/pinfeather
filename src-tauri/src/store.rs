@@ -1,9 +1,9 @@
-//! Schema v1 storage. Connections are owned by their creating storage thread.
+//! SQLite history storage. Connections are owned by their creating storage thread.
 
 use crate::contracts::{
     ContractError, ContractResult, ErrorCode, HistoryUsage, JS_SAFE_INTEGER_MAX,
     MAX_HISTORY_ITEMS, MAX_HISTORY_PAYLOAD_BYTES, MAX_PAYLOAD_TOTAL_BYTES, MAX_PNG_BYTES,
-    MAX_PREVIEW_SCALARS, MAX_TEXT_FORMAT_BYTES,
+    MAX_PREVIEW_SCALARS, MAX_TEXT_FORMAT_BYTES, MIN_MERGE_CLIP_IDS, MAX_MERGE_CLIP_IDS,
 };
 use rusqlite::{params, Connection, OpenFlags, OptionalExtension, TransactionBehavior};
 use std::collections::BTreeSet;
@@ -12,7 +12,7 @@ use std::path::Path;
 use std::rc::Rc;
 use std::time::Duration;
 
-pub const SCHEMA_VERSION: i64 = 1;
+pub const SCHEMA_VERSION: i64 = 2;
 pub const APPLICATION_ID: i64 = 0x504E4631;
 
 // The SQL is also the v1 schema fingerprint. Unknown tables, triggers, views or
@@ -35,6 +35,10 @@ const PAYLOADS_SQL: &str = "CREATE TABLE payloads (
     byte_size INTEGER NOT NULL CHECK(byte_size >= 0 AND byte_size = length(data)),
     data BLOB NOT NULL,
     PRIMARY KEY(clip_id,format_name)
+)";
+const FAVORITES_SQL: &str = "CREATE TABLE favorites (
+    clip_id INTEGER PRIMARY KEY REFERENCES clips(id) ON DELETE CASCADE,
+    favorited_at_ms INTEGER NOT NULL CHECK(favorited_at_ms >= 0)
 )";
 const RECENT_INDEX_SQL: &str = "CREATE INDEX clips_recent ON clips(captured_at_ms DESC,id DESC)";
 
@@ -76,6 +80,13 @@ pub struct StoredClip {
     pub payload_bytes: i64,
 }
 
+#[derive(Debug)]
+pub enum MergedTextError {
+    NotFound(i64),
+    InvalidInput,
+    Storage(ContractError),
+}
+
 /// Construct and use on the dedicated storage thread. No connection or SQL is
 /// exposed to callers; Rc's marker also prevents moving a live Store to a thread.
 ///
@@ -105,7 +116,7 @@ fn sql_error(error: rusqlite::Error) -> ContractError {
 }
 
 #[derive(PartialEq, Eq)]
-enum SchemaState { Empty, Current }
+enum SchemaState { Empty, V1, Current }
 
 fn check_database(conn: &Connection) -> ContractResult<SchemaState> {
     let mut check = conn.prepare("PRAGMA quick_check").map_err(sql_error)?;
@@ -118,13 +129,21 @@ fn check_database(conn: &Connection) -> ContractResult<SchemaState> {
     let schema: Vec<(String, String)> = statement.query_map([], |r| Ok((r.get(0)?,r.get(1)?)))
         .map_err(sql_error)?.collect::<rusqlite::Result<_>>().map_err(sql_error)?;
     if app == 0 && version == 0 && schema.is_empty() { return Ok(SchemaState::Empty); }
-    if app != APPLICATION_ID || version != SCHEMA_VERSION { return Err(unavailable()); }
-    let expected = vec![
+    if app != APPLICATION_ID { return Err(unavailable()); }
+    let state = match version {
+        1 => SchemaState::V1,
+        SCHEMA_VERSION => SchemaState::Current,
+        _ => return Err(unavailable()),
+    };
+    let mut expected = vec![
         ("clips".to_string(), CLIPS_SQL.to_string()),
         ("clips_recent".to_string(), RECENT_INDEX_SQL.to_string()),
         ("payloads".to_string(), PAYLOADS_SQL.to_string()),
         ("sqlite_sequence".to_string(), "CREATE TABLE sqlite_sequence(name,seq)".to_string()),
     ];
+    if state == SchemaState::Current {
+        expected.insert(2, ("favorites".to_string(), FAVORITES_SQL.to_string()));
+    }
     if schema != expected { return Err(unavailable()); }
     if conn.prepare("PRAGMA foreign_key_check").map_err(sql_error)?.exists([]).map_err(sql_error)? {
         return Err(unavailable());
@@ -135,16 +154,26 @@ fn check_database(conn: &Connection) -> ContractResult<SchemaState> {
          OR NOT EXISTS(SELECT 1 FROM payloads WHERE clip_id=c.id))", [], |r| r.get(0),
     ).map_err(sql_error)?;
     if inconsistent { return Err(unavailable()); }
-    let usage = read_usage(conn)?;
-    if usage.items > MAX_HISTORY_ITEMS as i64 || usage.payload_bytes > MAX_HISTORY_PAYLOAD_BYTES as i64 {
+    let usage = read_schema_usage(conn, state == SchemaState::Current)?;
+    if usage.items > MAX_HISTORY_ITEMS as i64 || usage.payload_bytes > MAX_HISTORY_PAYLOAD_BYTES as i64
+        || !(0..=usage.items).contains(&usage.favorites) {
         return Err(unavailable());
     }
-    Ok(SchemaState::Current)
+    Ok(state)
 }
 
 fn read_usage(conn: &Connection) -> ContractResult<HistoryUsage> {
-    conn.query_row("SELECT count(*),coalesce(sum(payload_bytes),0) FROM clips", [], |r| {
-        Ok(HistoryUsage { items: r.get(0)?, payload_bytes: r.get(1)? })
+    read_schema_usage(conn, true)
+}
+
+fn read_schema_usage(conn: &Connection, has_favorites: bool) -> ContractResult<HistoryUsage> {
+    let sql = if has_favorites {
+        "SELECT count(*),coalesce(sum(payload_bytes),0),(SELECT count(*) FROM favorites) FROM clips"
+    } else {
+        "SELECT count(*),coalesce(sum(payload_bytes),0),0 FROM clips"
+    };
+    conn.query_row(sql, [], |r| {
+        Ok(HistoryUsage { items: r.get(0)?, payload_bytes: r.get(1)?, favorites: r.get(2)? })
     }).map_err(sql_error)
 }
 
@@ -228,7 +257,8 @@ fn initialize_or_check(conn: &mut Connection, permit: InitPermit<'_>) -> Contrac
     let tx = conn.transaction_with_behavior(TransactionBehavior::Immediate).map_err(sql_error)?;
     // Re-check under the write lock. A preflight result must not authorize DDL
     // against a database another opener initialized in the meantime.
-    if check_database(&tx)? == SchemaState::Empty {
+    let state = check_database(&tx)?;
+    if state == SchemaState::Empty {
         match permit {
             InitPermit::Denied => return Err(unavailable()),
             InitPermit::Memory => {}
@@ -247,6 +277,9 @@ fn initialize_or_check(conn: &mut Connection, permit: InitPermit<'_>) -> Contrac
         tx.execute_batch(PAYLOADS_SQL).map_err(sql_error)?;
         tx.execute_batch(RECENT_INDEX_SQL).map_err(sql_error)?;
         tx.pragma_update(None, "application_id", APPLICATION_ID).map_err(sql_error)?;
+    }
+    if state != SchemaState::Current {
+        tx.execute_batch(FAVORITES_SQL).map_err(sql_error)?;
         tx.pragma_update(None, "user_version", SCHEMA_VERSION).map_err(sql_error)?;
     }
     tx.commit().map_err(sql_error)
@@ -317,7 +350,7 @@ impl Store {
                     // one whose WAL holds the DROP) is rejected before any RW
                     // connection, which would checkpoint its WAL on close and
                     // rewrite the very scene we are refusing to adopt.
-                    if preflight(path)? != SchemaState::Current {
+                    if preflight(path)? == SchemaState::Empty {
                         return Err(unavailable());
                     }
                     InitPermit::Denied
@@ -391,7 +424,7 @@ impl Store {
     /// E06 recent summaries; BLOBs never cross this listing boundary.
     pub fn list_recent(&self,request:&crate::contracts::ListClipsRequest)->ContractResult<crate::contracts::ListClipsResult>{
         use crate::contracts::{parse_list_clips_request,parse_list_clips_result,ClipSummary,ListCursor,ListClipsResult,positive_id_as_i64,MAX_PAGE_JSON_BYTES};
-        let request=parse_list_clips_request(&serde_json::json!({"request_id":request.request_id,"query":request.query,"limit":request.limit,"cursor":request.cursor}))?;
+        let request=parse_list_clips_request(&serde_json::json!({"request_id":request.request_id,"query":request.query,"limit":request.limit,"cursor":request.cursor,"favorites_only":request.favorites_only}))?;
         let tx=self.conn.unchecked_transaction().map_err(sql_error)?;
         let upper=if let Some(c)=&request.cursor{positive_id_as_i64(&c.upper_id)}else{tx.query_row("SELECT coalesce(max(id),0) FROM clips",[],|r|r.get(0)).map_err(sql_error)?};
         let time=request.cursor.as_ref().map(|c|c.last_captured_at_ms);
@@ -400,11 +433,12 @@ impl Store {
         let mut statement=tx.prepare("SELECT c.id,c.captured_at_ms,c.preview,c.source_process,c.source_confidence,c.omitted_formats_json,c.payload_bytes,
             (SELECT group_concat(format_name,char(31)) FROM (SELECT format_name FROM payloads WHERE clip_id=c.id ORDER BY format_name)),
             c.text_full IS NOT NULL,
-            CASE WHEN lower(substr(c.text_full,1,7))='http://' OR lower(substr(c.text_full,1,8))='https://' THEN c.text_full ELSE NULL END
-            FROM clips c WHERE c.id<=?1 AND (?2 IS NULL OR c.captured_at_ms<?2 OR (c.captured_at_ms=?2 AND c.id<?3))
-            AND (?5='' OR instr(lower(c.text_full),lower(?5))>0)
+            CASE WHEN lower(substr(c.text_full,1,7))='http://' OR lower(substr(c.text_full,1,8))='https://' THEN c.text_full ELSE NULL END,
+            f.clip_id IS NOT NULL
+            FROM clips c LEFT JOIN favorites f ON f.clip_id=c.id WHERE c.id<=?1 AND (?2 IS NULL OR c.captured_at_ms<?2 OR (c.captured_at_ms=?2 AND c.id<?3))
+            AND (?5='' OR instr(lower(c.text_full),lower(?5))>0) AND (NOT ?6 OR f.clip_id IS NOT NULL)
             ORDER BY c.captured_at_ms DESC,c.id DESC LIMIT ?4").map_err(sql_error)?;
-        let mut rows=statement.query(params![upper,time,last,request.limit+1,request.query]).map_err(sql_error)?;
+        let mut rows=statement.query(params![upper,time,last,request.limit+1,request.query,request.favorites_only]).map_err(sql_error)?;
         while let Some(row)=rows.next().map_err(sql_error)? {
             if result.summaries.len()>=request.limit as usize {break;}
             let id:i64=row.get(0).map_err(sql_error)?;let at:i64=row.get(1).map_err(sql_error)?;
@@ -416,10 +450,10 @@ impl Store {
             let omitted:String=row.get(5).map_err(sql_error)?;
             let omitted:Vec<String>=serde_json::from_str(&omitted).map_err(|_|unavailable())?;
             let bytes:i64=row.get(6).map_err(sql_error)?;
-            let summary=ClipSummary{id:id.to_string(),captured_at_ms:at,kind:if link{"link"}else if !has_text&&formats.iter().any(|n|n=="PNG"){"png"}else{"text"}.into(),preview:row.get(2).map_err(sql_error)?,format_names:formats,omitted_format_count:omitted.len() as u64,payload_bytes:u64::try_from(bytes).map_err(|_|unavailable())?,source_process:row.get(3).map_err(sql_error)?,source_confidence:row.get(4).map_err(sql_error)?};
+            let summary=ClipSummary{id:id.to_string(),captured_at_ms:at,kind:if link{"link"}else if !has_text&&formats.iter().any(|n|n=="PNG"){"png"}else{"text"}.into(),preview:row.get(2).map_err(sql_error)?,format_names:formats,omitted_format_count:omitted.len() as u64,payload_bytes:u64::try_from(bytes).map_err(|_|unavailable())?,source_process:row.get(3).map_err(sql_error)?,source_confidence:row.get(4).map_err(sql_error)?,favorited:row.get(10).map_err(sql_error)?};
             result.summaries.push(summary);
             let current=result.summaries.last().unwrap();
-            result.next_cursor=Some(ListCursor{normalized_query:request.query.clone(),upper_id:upper.to_string(),last_captured_at_ms:current.captured_at_ms,last_id:current.id.clone()});
+            result.next_cursor=Some(ListCursor{normalized_query:request.query.clone(),favorites_only:request.favorites_only,upper_id:upper.to_string(),last_captured_at_ms:current.captured_at_ms,last_id:current.id.clone()});
             if serde_json::to_vec(&result).map_err(|_|unavailable())?.len()>MAX_PAGE_JSON_BYTES {
                 result.summaries.pop();
                 if result.summaries.is_empty(){return Err(unavailable());}
@@ -428,8 +462,11 @@ impl Store {
         }
         // Probe one row beyond the last emitted key, including budget truncation.
         result.next_cursor=if let Some(last)=result.summaries.last(){
-            let more:bool=tx.query_row("SELECT EXISTS(SELECT 1 FROM clips WHERE id<=?1 AND (captured_at_ms<?2 OR (captured_at_ms=?2 AND id<?3)) AND (?4='' OR instr(lower(text_full),lower(?4))>0))",params![upper,last.captured_at_ms,positive_id_as_i64(&last.id),request.query],|r|r.get(0)).map_err(sql_error)?;
-            if more{Some(ListCursor{normalized_query:request.query.clone(),upper_id:upper.to_string(),last_captured_at_ms:last.captured_at_ms,last_id:last.id.clone()})}else{None}
+            let more:bool=tx.query_row("SELECT EXISTS(SELECT 1 FROM clips c WHERE id<=?1 AND (captured_at_ms<?2 OR (captured_at_ms=?2 AND id<?3))
+                AND (?4='' OR instr(lower(text_full),lower(?4))>0)
+                AND (NOT ?5 OR EXISTS(SELECT 1 FROM favorites WHERE clip_id=c.id)))",
+                params![upper,last.captured_at_ms,positive_id_as_i64(&last.id),request.query,request.favorites_only],|r|r.get(0)).map_err(sql_error)?;
+            if more{Some(ListCursor{normalized_query:request.query.clone(),favorites_only:request.favorites_only,upper_id:upper.to_string(),last_captured_at_ms:last.captured_at_ms,last_id:last.id.clone()})}else{None}
         }else{None};
         drop(rows);drop(statement);tx.commit().map_err(sql_error)?;
         parse_list_clips_result(&serde_json::to_value(&result).map_err(|_|unavailable())?).map_err(|_|unavailable())
@@ -459,6 +496,63 @@ impl Store {
         Ok(Some(StoredClip { clip_id, snapshot: Snapshot { capture_id,captured_at_ms,source_process,source_confidence,omitted_formats,payloads },text_full,preview,payload_bytes }))
     }
 
+    pub fn get_merged_utf16_text(&self, clip_ids: &[i64]) -> Result<Vec<u8>, MergedTextError> {
+        use MergedTextError::{InvalidInput, NotFound, Storage};
+        const SEPARATOR: [u8; 8] = [b'\r', 0, b'\n', 0, b'\r', 0, b'\n', 0];
+        if !(MIN_MERGE_CLIP_IDS..=MAX_MERGE_CLIP_IDS).contains(&clip_ids.len()) {
+            return Err(InvalidInput);
+        }
+        let sql = |error| Storage(sql_error(error));
+        let tx = self.conn.unchecked_transaction().map_err(sql)?;
+        let mut parts = Vec::with_capacity(clip_ids.len());
+        let mut total = (clip_ids.len() - 1) * SEPARATOR.len() + 2;
+        {
+            let mut statement = tx.prepare(
+                "SELECT CASE WHEN length(p.data) <= ?2 THEN p.data END
+                 FROM clips c LEFT JOIN payloads p ON c.id = p.clip_id AND p.format_name = 'CF_UNICODETEXT'
+                 WHERE c.id = ?1",
+            ).map_err(sql)?;
+            for &id in clip_ids {
+                let mut rows = statement.query(params![id, MAX_TEXT_FORMAT_BYTES as i64]).map_err(sql)?;
+                let row = rows.next().map_err(sql)?.ok_or(NotFound(id))?;
+                let data = row.get_ref(0).map_err(sql)?.as_blob().map_err(|_| InvalidInput)?;
+                if data.len() % 2 != 0 {
+                    return Err(InvalidInput);
+                }
+                let units = || data.chunks_exact(2).map(|pair| u16::from_le_bytes([pair[0], pair[1]]));
+                let count = units().position(|unit| unit == 0).ok_or(InvalidInput)?;
+                let bytes = count * 2;
+                total += bytes;
+                if total > MAX_TEXT_FORMAT_BYTES || char::decode_utf16(units().take(count)).any(|unit| unit.is_err()) {
+                    return Err(InvalidInput);
+                }
+                parts.push(data[..bytes].to_vec());
+            }
+        }
+        tx.commit().map_err(sql)?;
+        let mut data = Vec::with_capacity(total);
+        for (index, part) in parts.into_iter().enumerate() {
+            if index != 0 { data.extend_from_slice(&SEPARATOR); }
+            data.extend(part);
+        }
+        data.extend_from_slice(&[0, 0]);
+        let payload = Payload { format_name: "CF_UNICODETEXT".into(), data };
+        crate::clipboard::capture::validate_payloads(std::slice::from_ref(&payload)).map_err(|_| InvalidInput)?;
+        Ok(payload.data)
+    }
+
+    pub(crate) fn get_png(&self, clip_id: i64) -> ContractResult<Vec<u8>> {
+        let data: Option<Option<Vec<u8>>> = self.conn.query_row(
+            "SELECT CASE WHEN length(p.data) <= ?2 THEN p.data END
+             FROM clips c LEFT JOIN payloads p ON c.id = p.clip_id AND p.format_name = 'PNG'
+             WHERE c.id = ?1",
+            params![clip_id, MAX_PNG_BYTES as i64],
+            |row| row.get(0),
+        ).optional().map_err(sql_error)?;
+        data.ok_or_else(|| ContractError::new(ErrorCode::NotFound, "clip not found"))?
+            .ok_or_else(|| ContractError::invalid_input("clip has no PNG within the storage limit"))
+    }
+
     /// E08.2 bounded UTF-8 text frames over text_full; raw payloads never cross
     /// this boundary.
     pub fn get_clip_text(&self, request: &crate::contracts::GetClipTextRequest) -> ContractResult<crate::contracts::GetClipTextResult> {
@@ -483,10 +577,73 @@ impl Store {
         parse_get_clip_text_result(&serde_json::to_value(&result).map_err(|_|unavailable())?,&request).map_err(|_|unavailable())
     }
 
-    /// Called only for explicitly selected test records in the first iteration.
+    pub fn set_favorite(&mut self, clip_id: i64, favorited: bool, now_ms: i64) -> ContractResult<(bool, HistoryUsage)> {
+        let tx = self.conn.transaction_with_behavior(TransactionBehavior::Immediate).map_err(sql_error)?;
+        if clip_id <= 0 { return Err(ContractError::invalid_input("invalid history id")); }
+        if now_ms < 0 { return Err(ContractError::invalid_input("invalid favorite timestamp")); }
+        let exists: bool = tx.query_row("SELECT EXISTS(SELECT 1 FROM clips WHERE id=?1)", [clip_id], |r| r.get(0)).map_err(sql_error)?;
+        if !exists { return Err(ContractError::new(ErrorCode::NotFound, "clip not found")); }
+        let changed = if favorited {
+            tx.execute("INSERT OR IGNORE INTO favorites VALUES (?1,?2)", params![clip_id, now_ms])
+        } else {
+            tx.execute("DELETE FROM favorites WHERE clip_id=?1", [clip_id])
+        }.map_err(sql_error)? != 0;
+        let usage = read_usage(&tx)?;
+        tx.commit().map_err(sql_error)?;
+        Ok((changed, usage))
+    }
+
+    pub fn clear_history(&mut self) -> ContractResult<(u64, HistoryUsage)> {
+        let tx = self.conn.transaction_with_behavior(TransactionBehavior::Immediate).map_err(sql_error)?;
+        let deleted = tx.execute("DELETE FROM clips WHERE id NOT IN (SELECT clip_id FROM favorites)", []).map_err(sql_error)?;
+        let usage = read_usage(&tx)?;
+        tx.commit().map_err(sql_error)?;
+        Ok((deleted as u64, usage))
+    }
+    /// VACUUM INTO writes one self-contained consistent database, including WAL contents.
+    /// SQLite refuses any existing nonempty output; explicitly refuse empty files too.
+    pub fn backup_to(&self, path: &Path) -> ContractResult<()> {
+        if std::fs::symlink_metadata(path).is_ok() { return Err(ContractError::invalid_input("backup target already exists")); }
+        ensure_no_leftover_sidecars(path)?;
+        self.conn.execute("VACUUM INTO ?1", [path.to_str().ok_or_else(unavailable)?]).map_err(sql_error)?;
+        if preflight(path)? != SchemaState::Current { return Err(unavailable()); }
+        Ok(())
+    }
+    /// Offline restore only: refuse unknown input before creating the destination.
+    /// Keep a Windows read lease throughout validation/copy so the backup cannot change.
+    pub fn restore_to_new_directory(source: &Path, directory: &Path) -> ContractResult<()> {
+        if !source.is_absolute() || !directory.is_absolute() || std::fs::symlink_metadata(directory).is_ok() {
+            return Err(ContractError::invalid_input("restore requires a new absolute directory"));
+        }
+        #[cfg(windows)]
+        let _lease = { use std::os::windows::fs::OpenOptionsExt; std::fs::OpenOptions::new().read(true).share_mode(1).open(source).map_err(|_|unavailable())? };
+        ensure_no_leftover_sidecars(source)?;
+        if preflight(source)? == SchemaState::Empty { return Err(unavailable()); }
+        let mut uri = tauri::Url::from_file_path(source).map_err(|_| unavailable())?;
+        uri.set_query(Some("mode=ro&immutable=1"));
+        let conn = Connection::open_with_flags(uri.as_str(), OpenFlags::SQLITE_OPEN_READ_ONLY | OpenFlags::SQLITE_OPEN_URI)
+            .map_err(sql_error)?;
+        let source_state = check_database(&conn)?;
+        if source_state == SchemaState::Empty { return Err(unavailable()); }
+        std::fs::create_dir(directory).map_err(|_|unavailable())?;
+        let target=directory.join("history.sqlite3");
+        conn.execute("VACUUM INTO ?1", [target.to_str().ok_or_else(unavailable)?]).map_err(sql_error)?;
+        if source_state == SchemaState::V1 {
+            let mut restored = Connection::open_with_flags(&target, OpenFlags::SQLITE_OPEN_READ_WRITE).map_err(sql_error)?;
+            initialize_or_check(&mut restored, InitPermit::Denied)?;
+            restored.close().map_err(|(_, error)| sql_error(error))?;
+        }
+        if preflight(&target)? != SchemaState::Current { return Err(unavailable()); }
+        Ok(())
+    }
+
     pub fn delete(&mut self, clip_id: i64) -> ContractResult<bool> {
         if clip_id <= 0 { return Err(ContractError::invalid_input("invalid history id")); }
         let tx = self.conn.transaction_with_behavior(TransactionBehavior::Immediate).map_err(sql_error)?;
+        let favorited: bool = tx.query_row("SELECT EXISTS(SELECT 1 FROM favorites WHERE clip_id=?1)", [clip_id], |r| r.get(0)).map_err(sql_error)?;
+        if favorited {
+            return Err(ContractError::invalid_input("clip is favorited; unfavorite before deleting"));
+        }
         let deleted = tx.execute("DELETE FROM clips WHERE id=?1", [clip_id]).map_err(sql_error)? > 0;
         tx.commit().map_err(sql_error)?;
         Ok(deleted)
@@ -509,8 +666,52 @@ mod tests {
         }
     }
 
+    fn merged_entry(store: &mut Store, name: &str, format: &str, data: Vec<u8>) -> i64 {
+        let mut entry = sample(name);
+        entry.payloads = vec![Payload { format_name: format.into(), data }];
+        store.insert(&entry).unwrap().clip_id
+    }
+
+    fn utf16(text: &str) -> Vec<u8> {
+        text.encode_utf16().chain([0]).flat_map(u16::to_le_bytes).collect()
+    }
+
+    #[test]
+    fn merged_text_reads_unicode_only_in_requested_order_and_keeps_empty_slots() {
+        let mut store = Store::open_in_memory().unwrap();
+        let a = store.insert(&sample("first")).unwrap().clip_id;
+        let empty = merged_entry(&mut store, "empty", "CF_UNICODETEXT", utf16(""));
+        let mut padded = utf16("B\n😀");
+        padded.extend([7, 8, 0, 216]);
+        let b = merged_entry(&mut store, "last", "CF_UNICODETEXT", padded);
+        let png = merged_entry(&mut store, "png", "PNG", b"\x89PNG\r\n\x1a\n".to_vec());
+        let html = merged_entry(&mut store, "html", "HTML Format", b"<p>x</p>".to_vec());
+        assert_eq!(store.get_merged_utf16_text(&[b, empty, a]).unwrap(), utf16("B\n😀\r\n\r\n\r\n\r\nA"));
+        assert!(matches!(store.get_merged_utf16_text(&[a, 99, 98]), Err(MergedTextError::NotFound(99))));
+        for unsupported in [png, html] {
+            assert!(matches!(store.get_merged_utf16_text(&[a, unsupported]), Err(MergedTextError::InvalidInput)));
+        }
+        assert!(store.conn.is_autocommit());
+    }
+
+    #[test]
+    fn merged_text_rejects_malformed_unicode_and_enforces_exact_byte_limit() {
+        let mut store = Store::open_in_memory().unwrap();
+        let a = merged_entry(&mut store, "limit", "CF_UNICODETEXT", utf16(&"x".repeat((MAX_TEXT_FORMAT_BYTES - 10) / 2)));
+        let b = merged_entry(&mut store, "second", "CF_UNICODETEXT", utf16(""));
+        let exact = store.get_merged_utf16_text(&[a, b]).unwrap();
+        assert_eq!(exact.len(), MAX_TEXT_FORMAT_BYTES);
+        assert_eq!(&exact[exact.len() - 10..], utf16("\r\n\r\n"));
+        for malformed in [utf16("x"), vec![0], vec![b'A', 0], vec![0, 216, 0, 0], vec![0; MAX_TEXT_FORMAT_BYTES + 2]] {
+            store.conn.execute("UPDATE payloads SET byte_size = ?1, data = ?2 WHERE clip_id = ?3",
+                params![malformed.len() as i64, malformed, b]).unwrap();
+            assert!(matches!(store.get_merged_utf16_text(&[a, b]), Err(MergedTextError::InvalidInput)));
+        }
+        assert!(store.conn.is_autocommit());
+    }
+
     fn assert_empty_and_consistent(store: &Store) {
-        assert_eq!(store.usage().unwrap(), HistoryUsage { items: 0, payload_bytes: 0 });
+        assert_eq!(store.usage().unwrap(), HistoryUsage { items: 0, payload_bytes: 0, favorites: 0 });
         assert_eq!(store.conn.query_row("SELECT count(*) FROM payloads", [], |r| r.get::<_, i64>(0)).unwrap(), 0);
         assert!(!store.conn.prepare("PRAGMA foreign_key_check").unwrap().exists([]).unwrap());
         assert_eq!(store.conn.query_row("PRAGMA quick_check", [], |r| r.get::<_, String>(0)).unwrap(), "ok");
@@ -550,7 +751,7 @@ mod tests {
         store.limits = (2, bytes * 2);
         let first = store.insert(&sample("a")).unwrap();
         let second = store.insert(&sample("b")).unwrap();
-        assert_eq!(second.usage, HistoryUsage { items: 2, payload_bytes: bytes * 2 });
+        assert_eq!(second.usage, HistoryUsage { items: 2, payload_bytes: bytes * 2, favorites: 0 });
         assert_eq!(store.insert(&sample("c")).unwrap_err().code, ErrorCode::CapacityExceeded);
         let retry = store.insert(&sample("a")).unwrap();
         assert!(!retry.inserted);
@@ -568,6 +769,20 @@ mod tests {
         items_only.limits = (1, i64::MAX);
         items_only.insert(&sample("a")).unwrap();
         assert_eq!(items_only.insert(&sample("b")).unwrap_err().code, ErrorCode::CapacityExceeded);
+    }
+
+    #[test]
+    fn png_lookup_returns_the_registered_payload_by_id_and_distinguishes_deletion() {
+        let mut store = Store::open_in_memory().unwrap();
+        let plain = store.insert(&sample("plain")).unwrap().clip_id;
+        let mut mixed = sample("mixed");
+        let png = crate::png_clip::sample_png(2, 1);
+        mixed.payloads.push(Payload { format_name: "PNG".into(), data: png.clone() });
+        let mixed_id = store.insert(&mixed).unwrap().clip_id;
+        assert_eq!(store.get_png(mixed_id).unwrap(), png);
+        assert_eq!(store.get_png(plain).unwrap_err().code, ErrorCode::InvalidInput);
+        assert!(store.delete(mixed_id).unwrap());
+        assert_eq!(store.get_png(mixed_id).unwrap_err().code, ErrorCode::NotFound);
     }
 
     #[test]
