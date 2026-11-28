@@ -4,7 +4,7 @@ import { parseResidencySnapshot, type ResidencyControl } from "./residency";
 import { parseSettingsSnapshot, type SettingsControl } from "./settings";
 import { parseStartupCaptureSnapshot, type StartupCaptureControl } from "./startup-capture";
 import { parseManualPanelSnapshot, parseManualPanelSessionRequest, parseManualPanelCopyRequest, type ManualPanelSnapshot } from "./ipc";
-import { parseCopyClipTextRequest, parseCopyClipTextResult, parsePngPreviewResult, type CopyClipTextResult, type PngPreview } from "./ipc";
+import { parseCopyClipTextRequest, parseCopyClipTextResult, parseCopyMergedTextRequest, parseCopyMergedTextResult, parsePngPreviewResult, type CopyClipTextResult, type CopyMergedTextResult, type PngPreview } from "./ipc";
 import { parseStatusResult, parseListClipsRequest, parseListClipsResult, parseGetClipTextRequest, parseGetClipTextResult, parseRevisionEvent, type StatusResult, type ListClipsResult, type ListCursor, type GetClipTextResult, type ContractResult } from "./ipc";
 import { parseSetExcludedAppsRequest, parseSetFavoriteRequest, parseSetFavoriteResult, parseFavoriteChange, type FavoriteChange, type SetFavoriteResult } from "./ipc";
 import { measurementEnabled, nativeMeasurement, type MeasurementTransport } from "./measurement";
@@ -45,6 +45,7 @@ export interface DesktopBridge {
   getPngPreview?(requestId: string, clipId: string): Promise<PngPreview>;
   copyText?(requestId: string, clipId: string): Promise<CopyClipTextResult>;
   copyPng?(requestId: string, clipId: string): Promise<CopyClipTextResult>;
+  copyMergedText?(requestId: string, clipIds: string[]): Promise<CopyMergedTextResult>;
   setFavorite?(requestId: string, clipId: string, favorited: boolean): Promise<SetFavoriteResult>;
   subscribeFavorite?(callback: (change: FavoriteChange) => void): Promise<() => void>;
   setEnabled(enabled: boolean): Promise<StatusResult>;
@@ -87,6 +88,7 @@ export const nativePanelControl: ManualPanelControl = {
       setFavorite: (requestId, clipId, favorited) => setFavorite(requestId, clipId, favorited, session),
       copyText: (requestId, clipId) => copyFromPanel("copy_manual_panel_text", session, requestId, clipId),
       copyPng: (requestId, clipId) => copyFromPanel("copy_manual_panel_png", session, requestId, clipId),
+      copyMergedText: (requestId, clipIds) => copyMergedFromPanel(session, requestId, clipIds),
     };
   },
 };
@@ -99,17 +101,38 @@ async function copyFromPanel(
 ): Promise<CopyClipTextResult> {
   const request = checked(parseCopyClipTextRequest({ request_id: requestId, clip_id: clipId }));
   const envelope = checked(parseManualPanelCopyRequest({ session_id: session, request }));
-  if (manualPanelCopyPending) return { ...request, outcome: "not_written", reason: "busy" };
+  return copyWithPanelPermit(command, envelope, value => parseCopyClipTextResult(value, request), {
+    busy: { ...request, outcome: "not_written", reason: "busy" },
+    unknown: { ...request, outcome: "unknown", reason: "protocol_error" },
+  });
+}
+
+async function copyMergedFromPanel(session: string, requestId: string, clipIds: string[]): Promise<CopyMergedTextResult> {
+  const request = checked(parseCopyMergedTextRequest({ request_id: requestId, clip_ids: clipIds }));
+  const envelope = { ...checked(parseManualPanelSessionRequest({ session_id: session })), request };
+  return copyWithPanelPermit("copy_manual_panel_merged_text", envelope, value => parseCopyMergedTextResult(value, request), {
+    busy: { ...request, outcome: "not_written", reason: "busy", missing_clip_id: null },
+    unknown: { ...request, outcome: "unknown", reason: "protocol_error", missing_clip_id: null },
+  });
+}
+
+async function copyWithPanelPermit<T>(
+  command: "copy_manual_panel_text" | "copy_manual_panel_png" | "copy_manual_panel_merged_text",
+  envelope: { session_id: string; request: { request_id: string } },
+  parse: (value: unknown) => ContractResult<T>,
+  fallback: { busy: T; unknown: T },
+): Promise<T> {
+  if (manualPanelCopyPending) return fallback.busy;
   manualPanelCopyPending = true;
   try {
     const raw: unknown = await invoke(command, { request: envelope });
-    if (typeof raw === "object" && raw !== null && "session_id" in raw && raw.session_id === session && "result" in raw && Object.keys(raw).sort().join(",") === "result,session_id") {
-      const parsed = parseCopyClipTextResult(raw.result, request);
+    if (typeof raw === "object" && raw !== null && "session_id" in raw && raw.session_id === envelope.session_id && "result" in raw && Object.keys(raw).sort().join(",") === "result,session_id") {
+      const parsed = parse(raw.result);
       if (parsed.ok) return parsed.value;
     }
   } catch { /* An accepted write keeps the permit after the old window session ends. */ }
   finally { manualPanelCopyPending = false; }
-  return { ...request, outcome: "unknown", reason: "protocol_error" };
+  return fallback.unknown;
 }
 
 async function copyFromMain(

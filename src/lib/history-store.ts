@@ -1,11 +1,39 @@
 import { createStore } from "zustand/vanilla";
-import type { ClipSummary, FavoriteChange, ListClipsResult, ListCursor, PngPreview, StatusResult } from "./ipc";
-import { normalizeQuery, parseGetClipTextRequest, parseGetClipTextResult, parseCopyClipTextResult } from "./ipc";
+import type { ClipSummary, CopyMergedTextResult, FavoriteChange, ListClipsResult, ListCursor, PngPreview, StatusResult } from "./ipc";
+import { MAX_MERGE_CLIP_IDS, MAX_PREVIEW_SCALARS, MIN_MERGE_CLIP_IDS, normalizeQuery, parseGetClipTextRequest, parseGetClipTextResult, parseCopyClipTextResult, parseCopyMergedTextResult } from "./ipc";
 import { readableError, type DesktopBridge } from "./desktop";
 import type { Identity, Receipt } from "./measurement";
 type PngPreviewState = { phase: "loading" } | { phase: "ready"; image: PngPreview } | { phase: "failed"; message: string };
 type CaptureChange = { action: "start"; afterRevision: string } | { action: "retry" | "pause" };
-export interface HistoryState { status: StatusResult | null; summaries: ClipSummary[]; listRevision: number; cursor: ListCursor | null; loading: boolean; changing: CaptureChange | false; error: string | null; hostMissing: boolean; query: string; favoritesOnly: boolean; favoriteBusy: boolean; favoriteMessage: string | null; selectedId: string | null; previewText: string; previewLoading: boolean; previewError: string | null; previewNextOffset: number | null; pngPreview: PngPreviewState | null; copyBusy: "text" | "png" | false; copyMessage: string | null; copyAvailable: boolean; }
+export interface HistoryState { status: StatusResult | null; summaries: ClipSummary[]; listRevision: number; cursor: ListCursor | null; loading: boolean; changing: CaptureChange | false; error: string | null; hostMissing: boolean; query: string; favoritesOnly: boolean; favoriteBusy: boolean; favoriteMessage: string | null; selectedId: string | null; previewText: string; previewLoading: boolean; previewError: string | null; previewNextOffset: number | null; pngPreview: PngPreviewState | null; copyBusy: "text" | "png" | "merged" | false; copyMessage: string | null; copyAvailable: boolean;
+  mergeItems: MergeItem[];
+  mergeRevision: number;
+  mergeCopyMessage: string | null;
+  mergeMissingClipId: string | null;
+  mergeError: string | null;
+}
+type MergeItem = Pick<ClipSummary, "id" | "preview">;
+const emptyMerge: Pick<HistoryState, "mergeItems" | "mergeRevision" | "mergeCopyMessage" | "mergeMissingClipId" | "mergeError"> = {
+  mergeItems: [], mergeRevision: 0, mergeCopyMessage: null, mergeMissingClipId: null, mergeError: null,
+};
+
+const uncertainMergedCopy = "无法确认合并复制结果，剪贴板可能已变化。请自行检查；不会自动重试。";
+
+function mergedCopyMessage(result: CopyMergedTextResult) {
+  if (result.outcome === "copied") return `已合并复制 ${result.clip_ids.length} 条正文，可手动粘贴。`;
+  if (result.outcome === "unknown") return uncertainMergedCopy;
+  switch (result.reason) {
+    case "not_found": return result.missing_clip_id
+      ? `未执行合并复制：条目 #${result.missing_clip_id} 已不存在，请从已选列表中移出后重试。`
+      : "未执行合并复制：有已选条目不存在，请检查已选列表。";
+    case "invalid_input": return "未执行合并复制：合并正文超出 2 MiB 上限或包含非纯文本条目。";
+    case "storage_unavailable": return "未执行合并复制：历史存储暂不可用。";
+    case "busy": return "未执行合并复制：当前操作繁忙，请稍后手动重试。";
+    case "timeout": return "未执行合并复制：请求在写入前已到期。";
+    case "permission_unknown": return "未执行合并复制：宿主未允许当前面板会话复制。";
+    default: return "未执行合并复制：无法开始复制，请稍后手动重试。";
+  }
+}
 export function canPauseWhileStarting({ changing, status }: Pick<HistoryState, "changing" | "status">) {
   return changing !== false && changing.action === "start" && status !== null &&
     status.capture.user_enabled && status.capture.admission_open && status.services.storage !== "failed" &&
@@ -36,7 +64,7 @@ export function createHistoryModel(bridge: DesktopBridge) {
       void measuredSerial.catch(() => { committedReceipt = null; });
     }
   }
-  const store = createStore<HistoryState>(() => ({ status: null, summaries: [], listRevision: 0, cursor: null, loading: false, changing: false, error: null, hostMissing: !bridge.available, query: "", favoritesOnly: false, favoriteBusy: false, favoriteMessage: null, selectedId: null, previewText: "", previewLoading: false, previewError: null, previewNextOffset: null, pngPreview: null, copyBusy: false, copyMessage: null, copyAvailable: bridge.available && typeof bridge.copyText === "function" }));
+  const store = createStore<HistoryState>(() => ({ status: null, summaries: [], listRevision: 0, cursor: null, loading: false, changing: false, error: null, hostMissing: !bridge.available, query: "", favoritesOnly: false, favoriteBusy: false, favoriteMessage: null, selectedId: null, previewText: "", previewLoading: false, previewError: null, previewNextOffset: null, pngPreview: null, copyBusy: false, copyMessage: null, copyAvailable: bridge.available && typeof bridge.copyText === "function", ...emptyMerge }));
   let active = false, ready = false, lifetime = 0, generation = 0, request = 0;
   let timer: ReturnType<typeof setTimeout> | null = null, wantPage1 = false, statusBusy = false, statusAgain = false;
   let selection = 0, previewRequest = 0;
@@ -515,6 +543,7 @@ export function createHistoryModel(bridge: DesktopBridge) {
         knownHistoryRevision = null;
         listStartedBeforeFirstStatus = false;
         lifetime++;
+        store.setState(emptyMerge);
         clearSelection();
       }
       disposers.splice(0).forEach(off => off());
@@ -555,6 +584,90 @@ export function createHistoryModel(bridge: DesktopBridge) {
       if (ownsRequest()) store.setState({ changing: false });
     }
   }
+  function updateMerge(mergeItems: MergeItem[]) {
+    store.setState(state => ({
+      mergeItems, mergeRevision: state.mergeRevision + 1, mergeError: null, mergeCopyMessage: null,
+      mergeMissingClipId: mergeItems.some(item => item.id === state.mergeMissingClipId) ? state.mergeMissingClipId : null,
+    }));
+  }
+
+  function toggleMergeItem(item: ClipSummary) {
+    if (!active) return;
+    if (!item.format_names.includes("CF_UNICODETEXT")) {
+      store.setState({ mergeError: "只有含纯文本正文的条目可以加入合并。" });
+      return;
+    }
+    const { mergeItems } = store.getState();
+    if (mergeItems.some(row => row.id === item.id)) {
+      removeMergeItem(item.id);
+    } else if (mergeItems.length >= MAX_MERGE_CLIP_IDS) {
+      store.setState({ mergeError: `最多选择 ${MAX_MERGE_CLIP_IDS} 条正文，请移出一条后再选。` });
+    } else {
+      updateMerge([...mergeItems, { id: item.id, preview: Array.from(item.preview).slice(0, MAX_PREVIEW_SCALARS).join("") }]);
+    }
+  }
+
+  function removeMergeItem(id: string) {
+    const { mergeItems } = store.getState();
+    if (active && mergeItems.some(item => item.id === id)) updateMerge(mergeItems.filter(item => item.id !== id));
+  }
+
+  function moveMergeItem(id: string, delta: -1 | 1) {
+    const { mergeItems } = store.getState();
+    const from = mergeItems.findIndex(item => item.id === id);
+    const to = from + delta;
+    if (!active || from < 0 || to < 0 || to >= mergeItems.length) return;
+    const items = [...mergeItems];
+    [items[from], items[to]] = [items[to], items[from]];
+    updateMerge(items);
+  }
+
+  function clearMergeItems() {
+    if (active && store.getState().mergeItems.length) updateMerge([]);
+  }
+
+  function mergeIdentity() {
+    const { mergeItems, mergeRevision } = store.getState();
+    return [lifetime, "merge", mergeRevision, mergeItems.map(item => item.id).join(",")].join(":");
+  }
+
+  function canCopyMergedText() {
+    const { mergeItems, status } = store.getState();
+    return active && ready && bridge.available && !!bridge.copyMergedText && !copyPending &&
+      mergeItems.length >= MIN_MERGE_CLIP_IDS && mergeItems.length <= MAX_MERGE_CLIP_IDS &&
+      status?.services.storage === "ready" && status.state !== "stopping";
+  }
+
+  async function copyMergedText() {
+    if (!bridge.copyMergedText || !canCopyMergedText()) return;
+    const token = lifetime, sequence = ++copyRequest;
+    const request = { request_id: `copy-${sequence}`, clip_ids: store.getState().mergeItems.map(item => item.id) };
+    copyPending = true;
+    store.setState({ copyBusy: "merged", mergeCopyMessage: null, mergeMissingClipId: null });
+    let message = uncertainMergedCopy;
+    let mayHaveWritten = true;
+    let missingClipId: string | null = null;
+    try {
+      const result = parseCopyMergedTextResult(await bridge.copyMergedText(request.request_id, [...request.clip_ids]), request);
+      if (result.ok) {
+        message = mergedCopyMessage(result.value);
+        mayHaveWritten = result.value.outcome !== "not_written";
+        missingClipId = result.value.missing_clip_id;
+      }
+    } catch { /* A transport failure cannot confirm the write. */ }
+    finally {
+      copyPending = false;
+      if (active && token === lifetime && sequence === copyRequest) {
+        store.setState(state => ({
+          copyBusy: false,
+          mergeCopyMessage: message,
+          mergeMissingClipId: state.mergeItems.some(item => item.id === missingClipId) ? missingClipId : null,
+          ...(mayHaveWritten ? { copyMessage: null } : {}),
+        }));
+      } else store.setState({ copyBusy: false });
+    }
+  }
+
   async function copy(format: "text" | "png"): Promise<boolean> {
     const state = store.getState();
     const selected = state.summaries.find(item => item.id === state.selectedId);
@@ -567,6 +680,7 @@ export function createHistoryModel(bridge: DesktopBridge) {
     copyPending = true;
     store.setState({ copyBusy: format, copyMessage: null });
     let copied = false;
+    let mayHaveWritten = true;
     let message = "无法确认复制结果，剪贴板可能已变化。请自行检查；不会自动重试。";
     try {
       const parsed = parseCopyClipTextResult(await write.call(bridge, request.request_id, request.clip_id), request);
@@ -577,6 +691,7 @@ export function createHistoryModel(bridge: DesktopBridge) {
           message = format === "png" ? "图片已复制，可手动粘贴。" : "已复制，可手动粘贴。";
         }
         if (result.outcome === "not_written") {
+          mayHaveWritten = false;
           const reasons: Partial<Record<NonNullable<typeof result.reason>, string>> = {
             busy: "当前操作繁忙，请稍后手动重试。", not_found: "历史条目已不存在。", invalid_input: format === "png" ? "PNG 已损坏或超出复制限制。" : "此条目没有可复制的纯文本。", timeout: "请求在写入前已到期。", permission_unknown: "宿主未允许复制。", storage_unavailable: "历史存储不可用。",
           };
@@ -586,8 +701,11 @@ export function createHistoryModel(bridge: DesktopBridge) {
     } catch { /* Once dispatched, transport failure is uncertain; never replay. */ }
     finally {
       copyPending = false;
-      store.setState({ copyBusy: false });
-      if (ownsPreview(token, sel, gen)) store.setState({ copyMessage: message });
+      store.setState({
+        copyBusy: false,
+        ...(active && token === lifetime && mayHaveWritten ? { mergeCopyMessage: null } : {}),
+        ...(ownsPreview(token, sel, gen) ? { copyMessage: message } : {}),
+      });
     }
     return copied;
   }
@@ -604,5 +722,5 @@ export function createHistoryModel(bridge: DesktopBridge) {
     });
   }
   function copyIdentity() { return `${lifetime}:${generation}:${selection}`; }
-  return { store, start, refresh, more, toggle, setEnabled, setQuery, setFavoritesOnly, setFavorite, selectClip, retryPreview, retryPng, morePreview, copyText: () => copy("text"), copyPng: () => copy("png"), copyIdentity, measurementReceipt, acknowledgeMeasurement };
+  return { store, start, refresh, more, toggle, setEnabled, setQuery, setFavoritesOnly, setFavorite, selectClip, retryPreview, retryPng, morePreview, copyText: () => copy("text"), copyPng: () => copy("png"), copyIdentity, toggleMergeItem, removeMergeItem, moveMergeItem, clearMergeItems, canCopyMergedText, copyMergedText, mergeIdentity, measurementReceipt, acknowledgeMeasurement };
 }

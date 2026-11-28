@@ -62,7 +62,7 @@ fn request()->CopyClipTextRequest{CopyClipTextRequest{request_id:"copy-1".into()
 #[test]
 fn m2_pipeline_timeout_retains_borrowed_listener_and_same_capture_owner_on_retry(){
     let f=fixture(vec![text("m2 writer Drop")]);f.control.block.store(12,Ordering::Release);
-    let reply=f.runtime.queue_copy(1,WriteFormat::Text,Instant::now()+Duration::from_secs(5)).unwrap();f.entered.recv_timeout(Duration::from_secs(2)).unwrap();
+    let reply=f.runtime.queue_copy(CopySource::Single(1,WriteFormat::Text),Instant::now()+Duration::from_secs(5)).unwrap();f.entered.recv_timeout(Duration::from_secs(2)).unwrap();
     let(listener_release,listener_wait)=mpsc::channel();let listener_thread=std::thread::spawn(move||{listener_wait.recv().unwrap();});
     let listener=crate::clipboard::listener::ClipboardListener::m2_synthetic(listener_thread);
     let worker=crate::clipboard::worker::WorkerSupervisor::m2_synthetic(&[0]);let shared=f.runtime.shared.clone();
@@ -337,7 +337,7 @@ fn explicit_copy_registration_and_factory_failure_never_open(){
 #[test]
 fn explicit_copy_pending_origin_and_concurrent_write_rejected_until_close(){
     let f=fixture(vec![text("A")]);f.control.block.store(11,Ordering::Release);
-    let rx=f.runtime.queue_copy(1,WriteFormat::Text,Instant::now()+Duration::from_secs(5)).unwrap();f.entered.recv_timeout(Duration::from_secs(2)).unwrap();
+    let rx=f.runtime.queue_copy(CopySource::Single(1,WriteFormat::Text),Instant::now()+Duration::from_secs(5)).unwrap();f.entered.recv_timeout(Duration::from_secs(2)).unwrap();
     let marker=f.control.written.lock().unwrap().transferred[0].1.clone();
     assert_eq!(f.runtime.shared.state.lock().unwrap().origins.classify(Some(&marker),Some(99),50),Classification::Pending);
     assert_outcome(copied(&f),CopyOutcome::NotWritten,Some(ErrorCode::Busy));assert_eq!(f.control.written.lock().unwrap().created,1);
@@ -359,7 +359,7 @@ fn explicit_copy_actual_three_second_timeout_keeps_running_write_admission(){
 fn explicit_copy_deadline_after_open_prevents_empty_and_closes_once(){
     let f=fixture(vec![text("A")]);f.control.block.store(1,Ordering::Release);
     let deadline=Instant::now()+Duration::from_secs(1);
-    let rx=f.runtime.queue_copy(1,WriteFormat::Text,deadline).unwrap();
+    let rx=f.runtime.queue_copy(CopySource::Single(1,WriteFormat::Text),deadline).unwrap();
     f.entered.recv_timeout(Duration::from_secs(2)).unwrap();
     // The receive deadline confirms expiry while Open is held by an owned barrier.
     assert!(matches!(rx.recv_timeout(deadline.saturating_duration_since(Instant::now())),Err(mpsc::RecvTimeoutError::Timeout)));
@@ -370,7 +370,7 @@ fn explicit_copy_deadline_after_open_prevents_empty_and_closes_once(){
 fn explicit_copy_expired_queued_request_never_constructs_writer(){
     let f=fixture(vec![text("A")]);
     let pause=pause_commit(&f);
-    let rx=f.runtime.queue_copy(1,WriteFormat::Text,Instant::now()-Duration::from_secs(1)).unwrap();
+    let rx=f.runtime.queue_copy(CopySource::Single(1,WriteFormat::Text),Instant::now()-Duration::from_secs(1)).unwrap();
     assert!(matches!(rx.try_recv(),Err(mpsc::TryRecvError::Empty)));assert!(f.runtime.shared.copy_busy.load(Ordering::Acquire));
     drop(pause);let failure=rx.recv_timeout(Duration::from_secs(2)).unwrap().unwrap_err();assert!(!failure.may_have_written);assert_eq!(failure.error.code,ErrorCode::Timeout);
     assert_eq!(f.control.written.lock().unwrap().created,0);
@@ -386,7 +386,7 @@ fn explicit_copy_full_query_queue_releases_rejected_permit(){
 #[test]
 fn explicit_copy_shutdown_before_queued_work_never_opens_writer(){
     let f=fixture(vec![text("A")]);let pause=pause_commit(&f);
-    let rx=f.runtime.queue_copy(1,WriteFormat::Text,Instant::now()+Duration::from_secs(5)).unwrap();
+    let rx=f.runtime.queue_copy(CopySource::Single(1,WriteFormat::Text),Instant::now()+Duration::from_secs(5)).unwrap();
     assert!(f.runtime.shutdown(Duration::ZERO).is_err());assert_outcome(copied(&f),CopyOutcome::NotWritten,Some(ErrorCode::Busy));
     drop(pause);f.runtime.shutdown(Duration::from_secs(2)).unwrap();
     assert!(rx.recv_timeout(Duration::from_secs(2)).is_err());assert_eq!(f.control.written.lock().unwrap().created,0);assert!(!f.runtime.shared.copy_busy.load(Ordering::Acquire));
@@ -394,7 +394,7 @@ fn explicit_copy_shutdown_before_queued_work_never_opens_writer(){
 #[test]
 fn explicit_copy_shutdown_during_open_prevents_empty(){
     let f=fixture(vec![text("A")]);f.control.block.store(1,Ordering::Release);
-    let rx=f.runtime.queue_copy(1,WriteFormat::Text,Instant::now()+Duration::from_secs(5)).unwrap();f.entered.recv_timeout(Duration::from_secs(2)).unwrap();
+    let rx=f.runtime.queue_copy(CopySource::Single(1,WriteFormat::Text),Instant::now()+Duration::from_secs(5)).unwrap();f.entered.recv_timeout(Duration::from_secs(2)).unwrap();
     assert!(f.runtime.shutdown(Duration::ZERO).is_err());f.release.send(()).unwrap();
     let failure=rx.recv_timeout(Duration::from_secs(2)).unwrap().unwrap_err();assert!(!failure.may_have_written);assert_eq!(failure.error.code,ErrorCode::Busy);
     f.runtime.shutdown(Duration::from_secs(2)).unwrap();let w=f.control.written.lock().unwrap();assert_eq!(w.calls,2);assert_eq!(w.closed,1);assert!(w.transferred.is_empty());
@@ -402,7 +402,7 @@ fn explicit_copy_shutdown_during_open_prevents_empty(){
 #[test]
 fn explicit_copy_shutdown_keeps_writer_owned_and_rejects_future_calls(){
     let f=fixture(vec![text("A")]);f.control.block.store(11,Ordering::Release);
-    let rx=f.runtime.queue_copy(1,WriteFormat::Text,Instant::now()+Duration::from_secs(5)).unwrap();f.entered.recv_timeout(Duration::from_secs(2)).unwrap();
+    let rx=f.runtime.queue_copy(CopySource::Single(1,WriteFormat::Text),Instant::now()+Duration::from_secs(5)).unwrap();f.entered.recv_timeout(Duration::from_secs(2)).unwrap();
     assert_eq!(f.runtime.shutdown(Duration::ZERO).unwrap_err().code,ErrorCode::CleanupFailed);
     assert!(f.runtime.storage.lock().unwrap().is_some());assert!(f.runtime.shared.copy_busy.load(Ordering::Acquire));
     assert_outcome(copied(&f),CopyOutcome::NotWritten,Some(ErrorCode::Busy));
@@ -447,7 +447,7 @@ fn synthetic_capture(f:&Fixture,failed:bool,cleanup_fails:bool)->SyntheticCaptur
 fn explicit_copy_listener_owner_survives_managed_cleanup_until_close_finishes(){
     let f=fixture(vec![text("owner lifetime")]);let capture=synthetic_capture(&f,false,false);
     f.control.block.store(11,Ordering::Release);
-    let rx=f.runtime.queue_copy(1,WriteFormat::Text,Instant::now()+Duration::from_secs(5)).unwrap();f.entered.recv_timeout(Duration::from_secs(2)).unwrap();
+    let rx=f.runtime.queue_copy(CopySource::Single(1,WriteFormat::Text),Instant::now()+Duration::from_secs(5)).unwrap();f.entered.recv_timeout(Duration::from_secs(2)).unwrap();
     capture.end.send(()).unwrap();capture.started.recv_timeout(Duration::from_secs(2)).unwrap();
     let destroyed_while_borrowed=capture.destroyed.recv_timeout(Duration::from_millis(100)).is_ok();
     let shutdown=f.runtime.shutdown(Duration::ZERO);
@@ -466,7 +466,7 @@ fn explicit_copy_listener_owner_survives_before_open_and_writer_drop(){
     for (block,fail) in [(13,0),(12,0),(12,11)]{
         let f=fixture(vec![text("owner phases")]);let capture=synthetic_capture(&f,false,false);f.control.block.store(block,Ordering::Release);
         f.control.fail.store(fail,Ordering::Release);
-        let rx=f.runtime.queue_copy(1,WriteFormat::Text,Instant::now()+Duration::from_secs(5)).unwrap();f.entered.recv_timeout(Duration::from_secs(2)).unwrap();
+        let rx=f.runtime.queue_copy(CopySource::Single(1,WriteFormat::Text),Instant::now()+Duration::from_secs(5)).unwrap();f.entered.recv_timeout(Duration::from_secs(2)).unwrap();
         capture.end.send(()).unwrap();capture.started.recv_timeout(Duration::from_secs(2)).unwrap();
         assert!(capture.destroyed.recv_timeout(Duration::from_millis(100)).is_err());
         assert_eq!(f.runtime.shutdown(Duration::ZERO).unwrap_err().code,ErrorCode::CleanupFailed);assert!(!f.runtime.exit_ready.load(Ordering::Acquire));
@@ -513,7 +513,7 @@ fn explicit_copy_listener_owner_unpublished_or_revoked_queued_work_never_constru
     assert_outcome(copied(&f),CopyOutcome::NotWritten,Some(ErrorCode::InjectionFailed));assert_eq!(f.control.written.lock().unwrap().created,0);
     f.runtime.shared.publish_copy_owner(99);
     let capture=synthetic_capture(&f,true,false);let pause=pause_commit(&f);
-    let rx=f.runtime.queue_copy(1,WriteFormat::Text,Instant::now()+Duration::from_secs(5)).unwrap();
+    let rx=f.runtime.queue_copy(CopySource::Single(1,WriteFormat::Text),Instant::now()+Duration::from_secs(5)).unwrap();
     capture.end.send(()).unwrap();capture.started.recv_timeout(Duration::from_secs(2)).unwrap();capture.destroyed.recv_timeout(Duration::from_secs(2)).unwrap();
     drop(pause);f.runtime.shutdown(Duration::from_secs(2)).unwrap();
     assert!(rx.recv_timeout(Duration::from_secs(2)).is_err());assert_eq!(f.control.written.lock().unwrap().created,0);assert_eq!(f.control.written.lock().unwrap().calls,0);
@@ -615,4 +615,116 @@ fn explicit_copy_late_external_capture_then_paused_failed_write_retains_internal
     f.runtime.list(list()).unwrap();
     assert_eq!(f.runtime.status().history.items,2,"late external classification cannot unprotect the current internal clipboard");
     assert_eq!(f.runtime.status().counters.ignored,"1");
+}
+
+#[test]
+fn merged_copy_contract_fixtures() {
+    let fixture: serde_json::Value = serde_json::from_str(include_str!("../../tests/fixtures/contracts/merged_copy.json")).unwrap();
+    let request = parse_copy_merged_text_request(&fixture["request"]).unwrap();
+    assert_eq!(request.clip_ids, ["2", "1"]);
+    for case in fixture["requests"].as_array().unwrap() {
+        assert_eq!(parse_copy_merged_text_request(&case["value"]).is_ok(), case["valid"].as_bool().unwrap(), "{case}");
+    }
+    for case in fixture["results"].as_array().unwrap() {
+        assert_eq!(parse_copy_merged_text_result(&case["value"], &request).is_ok(), case["valid"].as_bool().unwrap(), "{case}");
+    }
+}
+
+fn merged_request(ids: &[&str]) -> CopyMergedTextRequest {
+    CopyMergedTextRequest { request_id: "merged".into(), clip_ids: ids.iter().map(|id| (*id).into()).collect() }
+}
+
+#[test]
+fn merged_copy_shares_permit_across_hide_and_is_ignored_by_capture() {
+    let f = fixture(vec![text("first")]);
+    f.runtime.set_enabled(true).unwrap();
+    f.runtime.inject_response(2, response(vec![text("second")])).unwrap();
+    f.committed.recv_timeout(Duration::from_secs(2)).unwrap();
+
+    let panel = Arc::new(crate::manual_panel::PanelSessions::new(true));
+    let window = ManualPanelWindow;
+    let old = panel.open(&window).unwrap().session_id.unwrap();
+    let denied = f.runtime.copy_panel_merged_text(&panel, &old, merged_request(&["2", "1"])).unwrap();
+    assert_eq!((denied.outcome, denied.reason), (CopyOutcome::NotWritten, Some(ErrorCode::PermissionUnknown)));
+    panel.ready(&old, &window).unwrap();
+    f.control.block.store(2, Ordering::Release);
+    let (runtime, sessions, session) = (f.runtime.clone(), panel.clone(), old.clone());
+    let copying = std::thread::spawn(move || runtime.copy_panel_merged_text(&sessions, &session, merged_request(&["2", "1"])).unwrap());
+    f.entered.recv_timeout(Duration::from_secs(2)).unwrap();
+    panel.hide(&old, &window, false).unwrap();
+    let fresh = panel.open(&window).unwrap().session_id.unwrap();
+    panel.ready(&fresh, &window).unwrap();
+    let busy = f.runtime.copy_panel_merged_text(&panel, &fresh, merged_request(&["1", "2"])).unwrap();
+    assert_eq!((busy.outcome, busy.reason), (CopyOutcome::NotWritten, Some(ErrorCode::Busy)));
+    assert_outcome(copied(&f), CopyOutcome::NotWritten, Some(ErrorCode::Busy));
+    f.release.send(()).unwrap();
+    let result = copying.join().unwrap();
+    assert_eq!((result.clip_ids, result.outcome, result.reason, result.missing_clip_id),
+        (vec!["2".to_owned(), "1".to_owned()], CopyOutcome::Copied, None, None));
+    assert_eq!(panel.snapshot().session_id.as_deref(), Some(fresh.as_str()));
+    let written = f.control.written.lock().unwrap();
+    assert_eq!(written.transferred.iter().map(|(name, _)| name.as_str()).collect::<Vec<_>>(),
+        [INTERNAL, HISTORY, CLOUD, "CF_UNICODETEXT"]);
+    let merged = "second\r\n\r\nfirst";
+    assert_eq!(STANDARD.encode(&written.transferred[3].1), text(merged).data);
+    let marker = STANDARD.encode(&written.transferred[0].1);
+    drop(written);
+    let mut internal = response(vec![text(merged)]);
+    internal.sequence_before = 50;
+    internal.sequence_locked = 50;
+    internal.sequence_after = 50;
+    internal.owner.hwnd = Some("99".into());
+    internal.internal_origin = Some(marker);
+    f.runtime.inject_response(50, internal).unwrap();
+    assert_eq!(f.runtime.status().counters.ignored, "1");
+    assert_eq!(f.runtime.status().history.items, 2);
+}
+
+#[test]
+fn merged_copy_reports_first_missing_id_and_refuses_failed_live_store() {
+    let f = fixture(vec![text("first")]);
+    let panel = crate::manual_panel::PanelSessions::new(true);
+    let window = ManualPanelWindow;
+    let session = panel.open(&window).unwrap().session_id.unwrap();
+    panel.ready(&session, &window).unwrap();
+    let missing = f.runtime.copy_panel_merged_text(&panel, &session, merged_request(&["1", "4", "3"])).unwrap();
+    assert_eq!((missing.outcome, missing.reason, missing.missing_clip_id.as_deref()),
+        (CopyOutcome::NotWritten, Some(ErrorCode::NotFound), Some("4")));
+    f.runtime.shared.state.lock().unwrap().storage_failed = true;
+    let failed = f.runtime.copy_panel_merged_text(&panel, &session, merged_request(&["1", "4"])).unwrap();
+    assert_eq!((failed.outcome, failed.reason, failed.missing_clip_id),
+        (CopyOutcome::NotWritten, Some(ErrorCode::StorageUnavailable), None));
+    assert_eq!(f.control.written.lock().unwrap().created, 0);
+    f.runtime.shared.state.lock().unwrap().storage_failed = false;
+}
+
+#[test]
+fn merged_copy_open_timeout_keeps_permit_until_cleanup_and_never_empties() {
+    let f = fixture(vec![text("first")]);
+    f.runtime.set_enabled(true).unwrap();
+    f.runtime.inject_response(2, response(vec![text("second")])).unwrap();
+    f.committed.recv_timeout(Duration::from_secs(2)).unwrap();
+    f.runtime.set_enabled(false).unwrap();
+
+    let panel = Arc::new(crate::manual_panel::PanelSessions::new(true));
+    let window = ManualPanelWindow;
+    let session = panel.open(&window).unwrap().session_id.unwrap();
+    panel.ready(&session, &window).unwrap();
+    f.control.block.store(13, Ordering::Release);
+    let (runtime, sessions, old) = (f.runtime.clone(), panel.clone(), session.clone());
+    let copying = std::thread::spawn(move || runtime.copy_panel_merged_text(&sessions, &old, merged_request(&["2", "1"])).unwrap());
+    f.entered.recv_timeout(Duration::from_secs(2)).unwrap();
+    let timed_out = copying.join().unwrap();
+    assert_eq!((timed_out.outcome, timed_out.reason, timed_out.missing_clip_id),
+        (CopyOutcome::Unknown, Some(ErrorCode::Timeout), None));
+    assert_outcome(copied(&f), CopyOutcome::NotWritten, Some(ErrorCode::Busy));
+    f.release.send(()).unwrap();
+    let started = Instant::now();
+    while f.runtime.shared.copy_busy.load(Ordering::Acquire) {
+        assert!(started.elapsed() < Duration::from_secs(2), "writer cleanup did not release permit");
+        std::thread::sleep(Duration::from_millis(5));
+    }
+    let written = f.control.written.lock().unwrap();
+    assert_eq!((written.calls, written.closed, written.dropped), (2, 1, 1));
+    assert!(written.transferred.is_empty());
 }

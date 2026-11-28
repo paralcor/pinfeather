@@ -407,6 +407,11 @@ pub(crate) fn parse_panel_envelope(value: &serde_json::Value) -> ContractResult<
     let session = parse_panel_session(&serde_json::json!({"session_id":require_field(obj,"session_id")?}))?;
     Ok((session, require_field(obj, "request")?))
 }
+pub(crate) fn parse_panel_merged_copy(value: &serde_json::Value) -> ContractResult<(String, CopyMergedTextRequest)> {
+    let (session, request) = parse_panel_envelope(value)?;
+    Ok((session, parse_copy_merged_text_request(request)?))
+}
+
 pub fn parse_panel_copy(value: &serde_json::Value) -> ContractResult<(String, CopyClipTextRequest)> {
     let (session, request) = parse_panel_envelope(value)?;
     Ok((session, parse_copy_clip_text_request(request)?))
@@ -454,6 +459,28 @@ pub fn parse_copy_clip_text_request(value: &serde_json::Value) -> ContractResult
     })
 }
 
+pub const MIN_MERGE_CLIP_IDS: usize = 2;
+pub const MAX_MERGE_CLIP_IDS: usize = 20;
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+pub struct CopyMergedTextRequest {
+    pub request_id: String,
+    pub clip_ids: Vec<String>,
+}
+
+pub fn parse_copy_merged_text_request(value: &serde_json::Value) -> ContractResult<CopyMergedTextRequest> {
+    let obj = expect_object(value)?;
+    reject_unknown_fields(obj, &["request_id", "clip_ids"])?;
+    let request_id = validate_request_id(require_field(obj, "request_id")?)?;
+    let clip_ids = require_field(obj, "clip_ids")?.as_array()
+        .filter(|ids| (MIN_MERGE_CLIP_IDS..=MAX_MERGE_CLIP_IDS).contains(&ids.len()))
+        .ok_or_else(|| reject("invalid number of merge clip IDs"))?;
+    let clip_ids = clip_ids.iter().map(parse_positive_id).collect::<ContractResult<Vec<_>>>()?;
+    let distinct = clip_ids.iter().collect::<std::collections::BTreeSet<_>>();
+    if distinct.len() != clip_ids.len() { return Err(reject("duplicate merge clip ID")); }
+    Ok(CopyMergedTextRequest { request_id, clip_ids })
+}
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
 #[serde(rename_all = "snake_case")]
 pub enum CopyOutcome { Copied, NotWritten, Unknown }
@@ -478,6 +505,11 @@ pub fn parse_copy_clip_text_result(value: &serde_json::Value, request: &CopyClip
     let request_id = validate_request_id(require_field(obj, "request_id")?)?;
     let clip_id = parse_positive_id(require_field(obj, "clip_id")?)?;
     if request_id != request.request_id || clip_id != request.clip_id { return Err(reject("copy correlation mismatch")); }
+    let (outcome, reason) = parse_copy_outcome(obj)?;
+    Ok(CopyClipTextResult { request_id, clip_id, outcome, reason })
+}
+
+fn parse_copy_outcome(obj: &serde_json::Map<String, serde_json::Value>) -> ContractResult<(CopyOutcome, Option<ErrorCode>)> {
     let outcome = match require_field(obj, "outcome")?.as_str() {
         Some("copied") => CopyOutcome::Copied,
         Some("not_written") => CopyOutcome::NotWritten,
@@ -487,7 +519,46 @@ pub fn parse_copy_clip_text_result(value: &serde_json::Value, request: &CopyClip
     let reason = require_field(obj, "reason")?;
     let reason = if reason.is_null() { None } else { Some(reason.as_str().and_then(ErrorCode::from_str).ok_or_else(||reject("invalid copy reason"))?) };
     if (outcome == CopyOutcome::Copied) != reason.is_none() { return Err(reject("invalid copy reason for outcome")); }
-    Ok(CopyClipTextResult { request_id, clip_id, outcome, reason })
+    Ok((outcome, reason))
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+pub struct CopyMergedTextResult {
+    pub request_id: String,
+    pub clip_ids: Vec<String>,
+    pub outcome: CopyOutcome,
+    pub reason: Option<ErrorCode>,
+    pub missing_clip_id: Option<String>,
+}
+
+impl CopyMergedTextResult {
+    pub(crate) fn new(
+        request: CopyMergedTextRequest, outcome: CopyOutcome, reason: Option<ErrorCode>, missing_clip_id: Option<String>,
+    ) -> Self {
+        Self { request_id: request.request_id, clip_ids: request.clip_ids, outcome, reason, missing_clip_id }
+    }
+}
+
+pub fn parse_copy_merged_text_result(value: &serde_json::Value, request: &CopyMergedTextRequest) -> ContractResult<CopyMergedTextResult> {
+    let obj = expect_object(value)?;
+    reject_unknown_fields(obj, &["request_id", "clip_ids", "outcome", "reason", "missing_clip_id"])?;
+    let ids = parse_copy_merged_text_request(&serde_json::json!({
+        "request_id": require_field(obj, "request_id")?,
+        "clip_ids": require_field(obj, "clip_ids")?,
+    }))?;
+    if ids != *request { return Err(reject("copy correlation mismatch")); }
+    let (outcome, reason) = parse_copy_outcome(obj)?;
+    let missing = require_field(obj, "missing_clip_id")?;
+    let missing_clip_id = if missing.is_null() {
+        None
+    } else {
+        let id = parse_positive_id(missing)?;
+        if outcome != CopyOutcome::NotWritten || reason != Some(ErrorCode::NotFound) || !ids.clip_ids.contains(&id) {
+            return Err(reject("invalid missing clip ID for outcome"));
+        }
+        Some(id)
+    };
+    Ok(CopyMergedTextResult::new(ids, outcome, reason, missing_clip_id))
 }
 
 pub fn parse_get_clip_text_request(

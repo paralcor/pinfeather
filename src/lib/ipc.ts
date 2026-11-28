@@ -370,12 +370,69 @@ export function parseCopyClipTextResult(value: unknown, request: CopyClipTextReq
   const ids = parseCopyClipTextRequest({ request_id: value.request_id, clip_id: value.clip_id });
   if (!ids.ok) return ids;
   if (ids.value.request_id !== request.request_id || ids.value.clip_id !== request.clip_id) return err(invalid("copy correlation mismatch"));
+  const receipt = parseCopyOutcome(value);
+  return receipt.ok ? ok({ ...ids.value, ...receipt.value }) : receipt;
+}
+
+function parseCopyOutcome(value: Record<string, unknown>): ContractResult<Pick<CopyClipTextResult, "outcome" | "reason">> {
   const outcome = value.outcome;
   if (outcome !== "copied" && outcome !== "not_written" && outcome !== "unknown") return err(invalid("invalid copy outcome"));
   const reason = value.reason;
   if (reason !== null && (typeof reason !== "string" || !ERROR_CODES.includes(reason as ErrorCode))) return err(invalid("invalid copy reason"));
   if ((outcome === "copied") !== (reason === null)) return err(invalid("invalid copy reason for outcome"));
-  return ok({ ...ids.value, outcome, reason: reason as ErrorCode | null });
+  return ok({ outcome, reason: reason as ErrorCode | null });
+}
+
+export const MIN_MERGE_CLIP_IDS = 2;
+export const MAX_MERGE_CLIP_IDS = 20;
+
+export interface CopyMergedTextRequest {
+  request_id: string;
+  clip_ids: string[];
+}
+
+export interface CopyMergedTextResult extends CopyMergedTextRequest, Pick<CopyClipTextResult, "outcome" | "reason"> {
+  missing_clip_id: string | null;
+}
+
+export function parseCopyMergedTextRequest(value: unknown): ContractResult<CopyMergedTextRequest> {
+  if (!isPlainObject(value)) return err(invalid("request must be an object"));
+  const bad = rejectUnknownFields(value, ["request_id", "clip_ids"]);
+  if (bad) return err(bad);
+  const requestId = validateRequestId(value.request_id);
+  if (!requestId.ok) return requestId;
+  if (!Array.isArray(value.clip_ids) || value.clip_ids.length < MIN_MERGE_CLIP_IDS || value.clip_ids.length > MAX_MERGE_CLIP_IDS) {
+    return err(invalid("invalid number of merge clip IDs"));
+  }
+  const ids = new Set<string>();
+  for (const raw of value.clip_ids) {
+    const id = parsePositiveId(raw);
+    if (!id.ok) return id;
+    if (ids.has(id.value)) return err(invalid("duplicate merge clip ID"));
+    ids.add(id.value);
+  }
+  return ok({ request_id: requestId.value, clip_ids: [...ids] });
+}
+
+export function parseCopyMergedTextResult(value: unknown, request: CopyMergedTextRequest): ContractResult<CopyMergedTextResult> {
+  if (!isPlainObject(value)) return err(invalid("result must be an object"));
+  const bad = rejectUnknownFields(value, ["request_id", "clip_ids", "outcome", "reason", "missing_clip_id"]);
+  if (bad) return err(bad);
+  const ids = parseCopyMergedTextRequest({ request_id: value.request_id, clip_ids: value.clip_ids });
+  if (!ids.ok) return ids;
+  if (ids.value.request_id !== request.request_id || ids.value.clip_ids.length !== request.clip_ids.length ||
+      ids.value.clip_ids.some((id, index) => id !== request.clip_ids[index])) {
+    return err(invalid("copy correlation mismatch"));
+  }
+  const receipt = parseCopyOutcome(value);
+  if (!receipt.ok) return receipt;
+  const { outcome, reason } = receipt.value;
+  const missing = value.missing_clip_id;
+  if (missing !== null &&
+      (outcome !== "not_written" || reason !== "not_found" || typeof missing !== "string" || !ids.value.clip_ids.includes(missing))) {
+    return err(invalid("invalid missing clip ID for outcome"));
+  }
+  return ok({ ...ids.value, outcome, reason, missing_clip_id: missing });
 }
 
 export interface PngPreview {

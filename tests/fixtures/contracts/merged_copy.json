@@ -1,0 +1,42 @@
+{
+  "request": {"request_id": "merge-1", "clip_ids": ["2", "1"]},
+  "requests": [
+    {"valid": true, "value": {"request_id": "merge-1", "clip_ids": ["2", "1"]}},
+    {"valid": true, "value": {"request_id": "merge-1", "clip_ids": ["1", "2", "3", "4", "5", "6", "7", "8", "9", "10", "11", "12", "13", "14", "15", "16", "17", "18", "19", "20"]}},
+    {"valid": true, "value": {"request_id": "merge-1", "clip_ids": ["1", "9223372036854775807"]}},
+    {"valid": false, "value": {"request_id": "merge-1", "clip_ids": []}},
+    {"valid": false, "value": {"request_id": "merge-1", "clip_ids": ["1"]}},
+    {"valid": false, "value": {"request_id": "merge-1", "clip_ids": ["1", "2", "3", "4", "5", "6", "7", "8", "9", "10", "11", "12", "13", "14", "15", "16", "17", "18", "19", "20", "21"]}},
+    {"valid": false, "value": {"request_id": "merge-1", "clip_ids": ["2", "2"]}},
+    {"valid": false, "value": {"request_id": "merge-1", "clip_ids": ["1", "01"]}},
+    {"valid": false, "value": {"request_id": "merge-1", "clip_ids": ["1", "0"]}},
+    {"valid": false, "value": {"request_id": "merge-1", "clip_ids": ["1", "-2"]}},
+    {"valid": false, "value": {"request_id": "merge-1", "clip_ids": ["1", "9223372036854775808"]}},
+    {"valid": false, "value": {"request_id": "merge-1", "clip_ids": ["1", 2]}},
+    {"valid": false, "value": {"request_id": "merge-1", "clip_ids": ["2", "1"], "text": "extra"}},
+    {"valid": false, "value": {"request_id": "", "clip_ids": ["2", "1"]}},
+    {"valid": false, "value": {"request_id": "merge-1"}}
+  ],
+  "results": [
+    {"valid": true, "value": {"request_id": "merge-1", "clip_ids": ["2", "1"], "outcome": "copied", "reason": null, "missing_clip_id": null}},
+    {"valid": true, "value": {"request_id": "merge-1", "clip_ids": ["2", "1"], "outcome": "not_written", "reason": "not_found", "missing_clip_id": "2"}},
+    {"valid": true, "value": {"request_id": "merge-1", "clip_ids": ["2", "1"], "outcome": "not_written", "reason": "not_found", "missing_clip_id": null}},
+    {"valid": true, "value": {"request_id": "merge-1", "clip_ids": ["2", "1"], "outcome": "not_written", "reason": "busy", "missing_clip_id": null}},
+    {"valid": true, "value": {"request_id": "merge-1", "clip_ids": ["2", "1"], "outcome": "unknown", "reason": "timeout", "missing_clip_id": null}},
+    {"valid": false, "value": {"request_id": "merge-1", "clip_ids": ["1", "2"], "outcome": "copied", "reason": null, "missing_clip_id": null}},
+    {"valid": false, "value": {"request_id": "merge-1", "clip_ids": ["2"], "outcome": "copied", "reason": null, "missing_clip_id": null}},
+    {"valid": false, "value": {"request_id": "merge-1", "clip_ids": ["2", "1", "3"], "outcome": "copied", "reason": null, "missing_clip_id": null}},
+    {"valid": false, "value": {"request_id": "other", "clip_ids": ["2", "1"], "outcome": "copied", "reason": null, "missing_clip_id": null}},
+    {"valid": false, "value": {"request_id": "merge-1", "clip_ids": ["2", "1"], "outcome": "copied", "reason": null, "missing_clip_id": "2"}},
+    {"valid": false, "value": {"request_id": "merge-1", "clip_ids": ["2", "1"], "outcome": "copied", "reason": "busy", "missing_clip_id": null}},
+    {"valid": false, "value": {"request_id": "merge-1", "clip_ids": ["2", "1"], "outcome": "unknown", "reason": null, "missing_clip_id": null}},
+    {"valid": false, "value": {"request_id": "merge-1", "clip_ids": ["2", "1"], "outcome": "unknown", "reason": "not_found", "missing_clip_id": "2"}},
+    {"valid": false, "value": {"request_id": "merge-1", "clip_ids": ["2", "1"], "outcome": "not_written", "reason": null, "missing_clip_id": null}},
+    {"valid": false, "value": {"request_id": "merge-1", "clip_ids": ["2", "1"], "outcome": "not_written", "reason": "busy", "missing_clip_id": "2"}},
+    {"valid": false, "value": {"request_id": "merge-1", "clip_ids": ["2", "1"], "outcome": "not_written", "reason": "not_found", "missing_clip_id": "3"}},
+    {"valid": false, "value": {"request_id": "merge-1", "clip_ids": ["2", "1"], "outcome": "not_written", "reason": "not_found", "missing_clip_id": 2}},
+    {"valid": false, "value": {"request_id": "merge-1", "clip_ids": ["2", "1"], "outcome": "unknown", "reason": "private", "missing_clip_id": null}},
+    {"valid": false, "value": {"request_id": "merge-1", "clip_ids": ["2", "1"], "outcome": "copied", "reason": null}},
+    {"valid": false, "value": {"request_id": "merge-1", "clip_ids": ["2", "1"], "outcome": "copied", "reason": null, "missing_clip_id": null, "extra": true}}
+  ]
+}
